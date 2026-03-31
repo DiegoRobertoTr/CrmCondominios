@@ -1,4 +1,4 @@
-# app.py (CORRIGIDO - Rotas públicas ANTES da verificação de login)
+# app.py
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos
 from pymongo import MongoClient
@@ -8,7 +8,7 @@ import streamlit.components.v1 as components
 from streamlit_js_eval import streamlit_js_eval
 from urllib.parse import urlencode
 
-#--- ⭐ Configuração da página ---
+# --- ⭐ Configuração da página ---
 st.set_page_config(
     page_title="CRM Tracecom",
     page_icon="favicon.ico",
@@ -16,10 +16,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-#🔹 🔹 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO 🔹 🔹 🔹
+# 🔹 🔹 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO 🔹 🔹 🔹
 query_params = st.query_params.to_dict()
 
-#✅ Rota para pesquisa de satisfação
+# ✅ Rota para pesquisa de satisfação
 if query_params.get("page") == ["satisfacao"]:
     id_cliente = query_params.get("id", [""])[0]
     tipo = query_params.get("tipo", [""])[0]
@@ -35,10 +35,13 @@ if query_params.get("page") == ["satisfacao"]:
     redirect_url = link_base
     if params:
         redirect_url += "&" + urlencode(params)
-    st.markdown(f'<meta http-equiv="refresh" content="0; url={redirect_url}" />', unsafe_allow_html=True)
+    st.markdown(f'''
+        <meta http-equiv="refresh" content="0;url={redirect_url}">
+        <p>Redirecionando para pesquisa de satisfação...</p>
+    ''', unsafe_allow_html=True)
     st.stop()
 
-#✅ HotSpots WiFi — ROTA PÚBLICA (portal captive)
+# ✅ HotSpots WiFi — ROTA PÚBLICA (portal captive)
 if query_params.get("page") == ["hotspots/captive"]:
     try:
         from modules.hotspots.captive_portal import render_captive_portal
@@ -48,7 +51,7 @@ if query_params.get("page") == ["hotspots/captive"]:
         st.exception(e)
     st.stop()
 
-#✅ HotSpots — Confirmação de acesso (pública)
+# ✅ HotSpots — Confirmação de acesso (pública)
 if query_params.get("page") == ["hotspots/confirmar"]:
     try:
         from modules.hotspots.confirmar_acesso import confirmar_acesso
@@ -57,7 +60,7 @@ if query_params.get("page") == ["hotspots/confirmar"]:
         st.error(f"Erro na confirmação: {e}")
     st.stop()
 
-#--- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
+# --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
 
 # Função auxiliar: coleção de usuários
 def get_usuarios_collection():
@@ -66,24 +69,28 @@ def get_usuarios_collection():
         password = st.secrets["mongo"]["MONGO_PASSWORD"]
         cluster_url = st.secrets["mongo"]["MONGO_CLUSTER_URL"]
     except KeyError:
-        username = st.secrets["MONGO_USERNAME"]
-        password = st.secrets["MONGO_PASSWORD"]
-        cluster_url = st.secrets["MONGO_CLUSTER_URL"]
+        username = st.secrets.get("MONGO_USERNAME", "")
+        password = st.secrets.get("MONGO_PASSWORD", "")
+        cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "cluster0.6eywlbl.mongodb.net")
+    
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
-    uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority"
+    uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
     return MongoClient(uri).crm_db.usuarios
 
-#--- Conexão com clientes ---
+# --- Conexão com clientes ---
 if "clientes_collection" not in st.session_state:
     st.session_state["clientes_collection"] = auth.get_db_connection()
 clientes_collection = st.session_state["clientes_collection"]
 
 # Garante índices
-clientes_collection.create_index("celular", unique=True)
-clientes_collection.create_index("nome_completo")
+try:
+    clientes_collection.create_index("celular", unique=True)
+    clientes_collection.create_index("nome_completo")
+except Exception:
+    pass  # Índices já podem existir
 
-#--- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
+# --- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
 
@@ -126,14 +133,15 @@ if not st.session_state["logado"]:
             st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
 
-#--- 🚪 Redireciona para login se não autenticado ---
+# --- 🚪 Redireciona para login se não autenticado ---
 if not st.session_state["logado"]:
     st.title("🔐 CRM Tracecom - Login")
     auth.login()
     st.stop()
 
-#--- ✅ Interface principal ---
+# --- ✅ Interface principal ---
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
+
 if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     chaves_para_deletar = [k for k in st.session_state.keys() if not k.startswith("__")]
     for k in chaves_para_deletar:
@@ -145,32 +153,51 @@ if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
 st.sidebar.divider()
 st.sidebar.header("📋 Módulos")
 
+# --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
 perfil = st.session_state["perfil"]
 
-modulo_map = {
-    "embaixador": ["Painel Embaixador"],
-    "tecnico": ["Painel Técnico"],
-    "pap": ["Cadastro Porta a Porta"],
-    "revenda": ["Painel Revenda"],
-    "admin": [
-        "Cadastro", "Follow-up", "Agendamentos",
-        "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-        "Acompanhamento Técnicos", "Relatórios",
-        "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
-        "Monitoramento de E-mails", "Teste de Integração",
-        "Endereços Bloqueados"
-    ],
-    "recepcao": [
-        "Cadastro", "Follow-up", "Agendamentos",
-        "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
-        "Endereços Bloqueados"
-    ],
-}
+# ✅ Importa permissões centralizadas
+try:
+    from modules.permissoes import get_modulos_permitidos
+    opcoes_modulos = get_modulos_permitidos(perfil)
+except ImportError:
+    # Fallback se módulo não existir ainda
+    modulo_map = {
+        "embaixador": ["Painel Embaixador"],
+        "tecnico": ["Painel Técnico"],
+        "pap": ["Cadastro Porta a Porta"],
+        "revenda": ["Painel Revenda"],
+        "admin": [
+            "Cadastro", "Follow-up", "Agendamentos",
+            "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
+            "Acompanhamento Técnicos", "Relatórios",
+            "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
+            "Monitoramento de E-mails", "Teste de Integração",
+            "Endereços Bloqueados"
+        ],
+        "recepcao": [
+            "Cadastro", "Follow-up", "Agendamentos",
+            "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
+            "Endereços Bloqueados"
+        ],
+        "atendente_n1": [
+            "Cadastro", "Follow-up", "Agendamentos",
+            "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
+            "Endereços Bloqueados"
+        ],
+        "supervisao_n1": [
+            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas"
+        ],
+    }
+    opcoes_modulos = modulo_map.get(perfil, [])
 
-opcoes_modulos = modulo_map.get(perfil, [])
+# ✅ Adiciona Admin Funcionários apenas para admin
+if perfil == "admin" and "Admin Funcionários" not in opcoes_modulos:
+    opcoes_modulos.append("Admin Funcionários")
+
 modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
-#--- 🔒 Logout ---
+# --- 🔒 Logout ---
 if st.sidebar.button("🚪 Logout"):
     auth.remove_local_storage_token()
     for k in list(st.session_state.keys()):
@@ -179,14 +206,14 @@ if st.sidebar.button("🚪 Logout"):
     st.session_state["logado"] = False
     st.rerun()
 
-#--- 🏢 Cabeçalho ---
+# --- 🏢 Cabeçalho ---
 col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=80)
 with col2:
     st.title("📋 CRM Tracecom")
 
-#--- 📦 Carregamento de módulos ---
+# --- 📦 Carregamento de módulos ---
 try:
     if modulo == "Cadastro":
         cadastro.render_cadastro(clientes_collection)
@@ -205,7 +232,7 @@ try:
         revenda.render_revenda(get_usuarios_collection(), clientes_collection)
     elif modulo == "Painel Técnico" and perfil == "tecnico":
         from modules import tecnico
-        login_tecnico = st.session_state.get("login_tecnico", " ")
+        login_tecnico = st.session_state.get("login_tecnico", "")
         tecnico.render_tecnico(clientes_collection, login_tecnico)
     elif modulo == "Admin Embaixadores" and perfil == "admin":
         from modules import admin_embaixadores
@@ -225,13 +252,13 @@ try:
     elif modulo == "Acompanhamento Técnicos" and perfil == "admin":
         from modules import acompanhamento_tecnicos
         acompanhamento_tecnicos.render_acompanhamento_tecnicos(clientes_collection, get_usuarios_collection())
-    elif modulo == "Roteiro de Vendas" and perfil in ["admin", "recepcao"]:
+    elif modulo == "Roteiro de Vendas" and perfil in ["admin", "recepcao", "atendente_n1", "supervisao_n1"]:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
-    elif modulo == "HotSpots WiFi" and perfil in ["admin", "recepcao"]:
+    elif modulo == "HotSpots WiFi" and perfil in ["admin", "recepcao", "atendente_n1"]:
         from modules.hotspots.hotspots import render_hotspots
         render_hotspots(clientes_collection)
-    elif modulo == "Satisfação" and perfil in ["admin", "recepcao"]:
+    elif modulo == "Satisfação" and perfil in ["admin", "recepcao", "atendente_n1"]:
         import pandas as pd
         st.title("Dashboard de Satisfação — LGPD Compliant")
         db = clientes_collection.database
@@ -256,9 +283,12 @@ try:
     elif modulo == "Teste de Integração" and perfil == "admin":
         from modules import teste_integracao
         teste_integracao.render_teste_integracao()
-    elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao"]:
+    elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao", "atendente_n1"]:
         from modules import enderecos_bloqueados
         enderecos_bloqueados.render_enderecos_bloqueados(clientes_collection)
+    elif modulo == "Admin Funcionários" and perfil == "admin":
+        from modules import admin_funcionarios
+        admin_funcionarios.render_admin_funcionarios(get_usuarios_collection())
     else:
         st.info("Selecione um módulo no menu lateral.")
 except Exception as e:
