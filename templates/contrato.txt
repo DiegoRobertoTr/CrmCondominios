@@ -1,0 +1,129 @@
+CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE INTERNET E SOLUÇÕES
+CONTRATADA: Tracecom Soluções em Ti Infraestrutura e Telecomunicações Ltda., inscrita no CNPJ sob nº 09.637.271/0001-27, com sede na cidade de Miguel Pereira - RJ.
+CONTRATANTE: {{ nome_contratante }}, inscrito no CPF/CNPJ sob nº {{ cpf_cnpj_contratante }}, residente/domiciliado à {{ endereco_contratante }}{% if numero_contratante %}, {{ numero_contratante }}{% endif %}{% if bairro %} - {{ bairro }}{% endif %}{% if cidade %} - {{ cidade }}{% endif %}, telefone {{ telefone_contratante }}.
+As partes acima identificadas celebram o presente contrato, que será regido pelas cláusulas e condições abaixo:
+________________________________________
+
+1. OBJETO
+O presente contrato tem como objeto a prestação, pela CONTRATADA, de serviços de conexão à rede mundial de computadores (Internet), conforme plano contratado {{ plano_contratado }} em modalidade {{ modalidade }}.
+
+1.1. Compatibilidade Técnica
+A CONTRATADA informa que os serviços digitais agregados (como Tracecanais, Globoplay, Max,
+Disney, Telemedicina, Telefonia Voip, entre outros) requerem dispositivos compatíveis e conexão
+estável com a internet. A CONTRATADA não se responsabiliza por eventuais incompatibilidades
+decorrentes de dispositivos desatualizados, sistemas operacionais não suportados, configurações de rede interna ou limitações técnicas do equipamento do CONTRATANTE.
+O CONTRATANTE declara ciência de que é sua responsabilidade verificar previamente a
+compatibilidade técnica dos dispositivos utilizados com os serviços digitais ofertados.
+
+1.2. A ativação dos serviços contratados está condicionada à prévia verificação de viabilidade técnica no endereço informado pelo CONTRATANTE.
+Caso seja constatada inviabilidade técnica para instalação, o presente contrato será automaticamente rescindido, sem qualquer ônus ou penalidade para as partes, não havendo início de cobrança, fidelidade ou obrigação financeira.
+
+________________________________________
+
+
+
+2. DISPONIBILIDADE DO SERVIÇO
+2.1. O serviço estará disponível 24 (vinte e quatro) horas por dia, 7 (sete) dias por semana, ressalvadas interrupções por:
+a) Falta de energia elétrica para a CONTRATADA;
+b) Falhas nos serviços de operadoras;
+c) Manutenção técnica necessária;
+d) Casos fortuitos ou força maior.
+2.2. Interrupções significativas e comprovadas resultarão em desconto proporcional ao período de indisponibilidade, conforme regulamentação da Anatel.
+
+________________________________________
+
+3. LOGIN E SENHA DO CONTRATANTE
+3.1. A CONTRATADA fornecerá login e senha privativos ao CONTRATANTE.
+3.2. O CONTRATANTE é responsável por sua guarda e uso.
+3.3. O CONTRATANTE assume total responsabilidade por quaisquer prejuízos que cause a terceiros ou venha a sofrer pela utilização indevida de seu código ou de sua senha privativa.
+3.4. Não serão permitidas conexões simultâneas utilizando o mesmo login e senha privativa de acesso aos serviços.
+
+________________________________________
+
+4. TAXA DE INSTALAÇÃO, FIDELIDADE E PRAZO
+4.1. A instalação padrão contempla até 250 (duzentos e cinquenta) metros de cabeamento de fibra óptica, podendo haver necessidade de metragem adicional em razão de características técnicas do local.
+Caso seja necessária metragem excedente, será cobrado o valor de R$ 1,00 (um real) por metro adicional, podendo tal concordância ser registrada por meio de mensagem eletrônica, termo físico ou registro fotográfico..
+O CONTRATANTE poderá optar por não prosseguir com a instalação caso não concorde com o valor adicional, hipótese em que o contrato será rescindido sem aplicação de multa de fidelidade.
+4.2. O presente contrato terá prazo de fidelidade de 12 (doze) meses, contados a partir da data efetiva de instalação e ativação do serviço no endereço do CONTRATANTE, momento em que se inicia a disponibilização do acesso à internet.
+Caso haja rescisão antecipada durante o período de fidelidade, será aplicada multa limitada a até 30% (trinta por cento) sobre o valor das parcelas vincendas.
+4.3. Após o período de fidelidade, o contrato passa a vigorar por prazo indeterminado.
+
+________________________________________
+
+5. PAGAMENTO E REAJUSTE
+5.1. O pagamento será mensal.
+5.2. O não pagamento implica na suspensão do serviço e multa de 2% sobre o valor devido, além de juros de mora de 1% (um por cento) ao mês.
+5.3. O valor será reajustado anualmente pelo IGP-M ou índice equivalente.
+
+________________________________________
+
+6. DA REDUÇÃO DE VELOCIDADE POR INADIMPLÊNCIA
+6.1. Em caso de inadimplência superior a 15 (quinze) dias contados da data do vencimento da fatura, a CONTRATADA poderá, mediante comunicação prévia com no mínimo 1 (um) dia útil de antecedência, realizar a redução da velocidade do serviço de internet contratado pelo CONTRATANTE para o limite de 512 Kbps (quinhentos e doze kilobits por segundo), até a regularização do débito.
+6.2. A redução de velocidade não caracteriza suspensão total do serviço, e garantirá ao CONTRATANTE acesso a funcionalidades básicas como canais de atendimento, visualização de boletos, aplicativos de mensagem e sites governamentais.
+6.3. A normalização da velocidade ocorrerá em até 24 (vinte e quatro) horas após a efetiva compensação do pagamento da(s) fatura(s) em atraso.
+6.4. A CONTRATADA se compromete a manter canais de comunicação acessíveis para suporte, renegociação ou emissão de segunda via de fatura, mesmo durante o período de redução de velocidade.
+
+7. DA INSCRIÇÃO EM ÓRGÃOS DE PROTEÇÃO AO CRÉDITO
+Em caso de inadimplemento por prazo superior a 30 (trinta) dias contados do vencimento da fatura, a CONTRATADA poderá, mediante notificação prévia enviada ao CONTRATANTE com no mínimo 10 (dez) dias de antecedência, proceder à inscrição do nome do CONTRATANTE nos cadastros de inadimplentes, como SPC, Serasa, entre outros, conforme permitido pela legislação vigente.
+
+________________________________________
+
+8. UTILIZAÇÃO DOS SERVIÇOS
+8.1. O CONTRATANTE compromete-se a não violar a legislação vigente, incluindo:
+a) Uso indevido de dados ou senhas;
+b) Transmissão de conteúdo ilegal.
+8.2. A CONTRATADA pode suspender serviços em caso de uso inadequado.
+
+________________________________________
+
+9. RISCOS NA UTILIZAÇÃO
+A CONTRATADA não se responsabiliza por danos decorrentes de atos de terceiros, falhas de segurança em dispositivos do CONTRATANTE, ou uso inadequado da rede, não abrangendo falhas diretamente atribuíveis à infraestrutura da CONTRATADA.
+
+________________________________________
+
+10. EQUIPAMENTOS EM COMODATO
+10.1. A CONTRATADA poderá ceder ao CONTRATANTE, em regime de comodato, os equipamentos necessários para a prestação dos serviços contratados. A entrega dos equipamentos poderá ser registrada por meio de protocolo ou termo auxiliar.
+10.2. Obrigações do CONTRATANTE:
+a) Conservar os equipamentos em perfeitas condições de uso e funcionamento;
+b) Ser responsável por qualquer dano, extravio ou furto dos equipamentos enquanto estiverem em sua posse, exceto nos casos de força maior ou mediante apresentação de boletim de ocorrência;
+c) Devolver os equipamentos em perfeitas condições de uso no término ou rescisão do contrato, mediante comunicação prévia da CONTRATADA.
+10.3. O não pagamento de qualquer parcela devida pelo CONTRATANTE por um período igual ou superior a 45 (quarenta e cinco) dias encerra o comodato e autoriza a CONTRATADA a solicitar a devolução voluntária dos equipamentos no prazo de até 10 (dez) dias corridos, contados do recebimento da notificação.
+a) Após esse prazo, a CONTRATADA poderá adotar as medidas legais cabíveis para restituição do bem, incluindo ação de reintegração de posse ou cobrança do valor correspondente dos equipamentos.
+
+________________________________________
+
+11. RESCISÃO
+11.1. O CONTRATANTE poderá solicitar o cancelamento do serviço a qualquer momento após o período de fidelidade, sem necessidade de aviso prévio, conforme determina a Resolução 632/2014 da Anatel. A rescisão será efetivada no momento da solicitação, salvo se houver valores pendentes, os quais permanecerão devidos pelo CONTRATANTE.
+
+________________________________________
+
+12. DISPOSIÇÕES GERAIS
+12.1. O contrato será regido pelas leis brasileiras.
+12.2. Fica eleito o foro da Comarca de Paraíba do Sul - RJ para dirimir controvérsias.
+
+________________________________________
+
+13. DA VALIDAÇÃO DE IDENTIDADE E PREVENÇÃO A FRAUDES
+
+13.1. A CONTRATADA poderá, a seu exclusivo critério e com a finalidade de garantir a segurança contratual, prevenção a fraudes e proteção de dados, exigir a validação presencial da identidade do CONTRATANTE, mediante comparecimento à sede da empresa com apresentação de documento oficial original com foto.
+13.2. A exigência de validação presencial não configura recusa injustificada de contratação, tratando-se de procedimento interno de segurança e conformidade cadastral.
+13.3. A CONTRATADA poderá ainda solicitar documentos complementares ou realizar verificações adicionais sempre que identificar inconsistências cadastrais, divergências de informação ou necessidade de confirmação de identidade.
+
+________________________________________
+
+14. SERVIÇO DE TELEFONIA VOIP
+14.1. A contratação ou utilização do serviço de telefonia VoIP (Voz sobre IP) está vinculada obrigatoriamente à contratação de um plano de internet da CONTRATADA. O serviço de telefonia VoIP não será prestado de forma independente.
+14.2. O CONTRATANTE deverá manter, no mínimo, o plano básico vigente na data da contratação ou alteração do serviço de telefonia VoIP, garantindo a compatibilidade técnica e operacional do serviço.
+14.3. A suspensão ou rescisão do plano de internet contratado resultará na suspensão automática do serviço de telefonia VoIP, sem direito a reembolso ou compensação por parte da CONTRATADA.
+
+________________________________________
+
+15. VIGÊNCIA E FORMALIZAÇÃO
+15.1. O presente contrato poderá ser formalizado por meio de assinatura digital realizada em ambiente eletrônico disponibilizado pela CONTRATADA ou por assinatura presencial, garantindo autenticidade, integridade e validade jurídica.
+15.2. A formalização da assinatura estabelece a relação contratual entre as partes, ficando a contagem do prazo de fidelidade e início da cobrança condicionados à efetiva instalação e ativação do serviço no endereço do CONTRATANTE, conforme disposto na cláusula 4.2.
+
+
+
+Paraíba do Sul - RJ, _____ de ______________ de ___________
+CONTRATANTE: _____________________________
+CONTRATADA: _____________________________
