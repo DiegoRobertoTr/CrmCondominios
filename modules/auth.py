@@ -1,4 +1,4 @@
-# auth.py (AJUSTADO para MongoDB Atlas Free Tier + Cluster0)
+# modules/auth.py
 import streamlit as st
 from pymongo import MongoClient
 import urllib.parse
@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
-# --- 🔐 Funções de localStorage (via components.html - confiável) ---
+# --- 🔐 Funções de localStorage (via components.html) ---
 def remove_local_storage_token():
     """Remove o token de autenticação do localStorage do navegador"""
     components.html(
@@ -94,6 +94,11 @@ def login():
                 st.sidebar.error("❌ Usuário ou senha inválidos")
                 return
 
+            # ✅ Verifica se usuário está ativo
+            if not usuario.get("ativo", True):
+                st.sidebar.error("❌ Usuário desativado. Contate o administrador.")
+                return
+
             # Valida senha com SHA-256
             senha_hash = hashlib.sha256(senha_input.encode()).hexdigest()
             if usuario.get("senha_hash") != senha_hash:
@@ -101,7 +106,14 @@ def login():
                 return
 
             perfil = usuario.get("perfil")
-            if perfil not in ["embaixador", "tecnico", "pap", "revenda"]:
+            
+            # ✅ Atualizado para incluir novos perfis internos
+            perfis_validos = [
+                "embaixador", "tecnico", "pap", "revenda",  # Externos
+                "admin", "recepcao", "atendente_n1", "supervisao_n1"  # Internos
+            ]
+            
+            if perfil not in perfis_validos:
                 st.sidebar.error("❌ Perfil não reconhecido.")
                 return
 
