@@ -27,21 +27,17 @@ def get_mongo_client():
     ✅ URI ajustada para Atlas Free Tier com appName=Cluster0
     """
     try:
-        # Formato aninhado [mongo] (recomendado)
         username = st.secrets["mongo"]["MONGO_USERNAME"]
         password = st.secrets["mongo"]["MONGO_PASSWORD"]
         cluster_url = st.secrets["mongo"]["MONGO_CLUSTER_URL"]
     except KeyError:
-        # Fallback para formato plano (compatibilidade)
         username = st.secrets.get("MONGO_USERNAME", "")
         password = st.secrets.get("MONGO_PASSWORD", "")
         cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "cluster0.6eywlbl.mongodb.net")
     
-    # Codifica credenciais para URI
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
     
-    # ✅ URI COM APPNAME=Cluster0 (obrigatório para seu cluster)
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
     
     return MongoClient(uri)
@@ -61,7 +57,6 @@ def login():
     login_input = st.sidebar.text_input("Usuário", key="login_input")
     senha_input = st.sidebar.text_input("Senha", type="password", key="senha_input")
     
-    # ✅ Só exibe "Manter conectado" para usuários DINÂMICOS (não fixos)
     is_fixed_user = (
         login_input == st.secrets["usuarios"]["recepcao_login"] or
         login_input == st.secrets["usuarios"]["admin_login"]
@@ -107,10 +102,11 @@ def login():
 
             perfil = usuario.get("perfil")
             
-            # ✅ Atualizado para incluir novos perfis internos
+            # ✅ Atualizado para incluir novos perfis de supervisão
             perfis_validos = [
                 "embaixador", "tecnico", "pap", "revenda",  # Externos
-                "admin", "recepcao", "atendente_n1", "supervisao_n1"  # Internos
+                "admin", "recepcao", "atendente_n1",  # Internos básicos
+                "supervisao_n1", "supervisao_n2", "supervisao_n3"  # ← NOVOS
             ]
             
             if perfil not in perfis_validos:
@@ -154,12 +150,11 @@ def _handle_persistent_login(login):
     token = str(uuid.uuid4())
     expira_em = datetime.utcnow() + timedelta(days=30)
     
-    # 1. Atualiza token no MongoDB
     usuarios_coll = get_usuarios_collection()
     result = usuarios_coll.update_one(
         {"login": login},
         {"$set": {"token_autologin": token, "token_expira_em": expira_em}},
-        upsert=False  # ← Só atualiza se usuário já existir
+        upsert=False
     )
 
     if result.matched_count == 0:
@@ -167,7 +162,6 @@ def _handle_persistent_login(login):
         st.toast("❌ Não foi possível salvar a sessão. Verifique o usuário no banco.", icon="🚨")
         return
 
-    # 2. ✅ Salva token no localStorage via JavaScript (confiável)
     components.html(
         f"""
         <script>
@@ -178,7 +172,6 @@ def _handle_persistent_login(login):
         height=0, width=0,
     )
 
-    # 3. Registra sessão ativa no Streamlit (backup em memória)
     if "active_sessions" not in st.session_state:
         st.session_state["active_sessions"] = {}
     st.session_state["active_sessions"][token] = {
