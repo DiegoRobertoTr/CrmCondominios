@@ -1,0 +1,65 @@
+TERMO DE COMODATO DE EQUIPAMENTOS
+
+CONTRATADA: Tracecom Soluções em Ti Infraestrutura e Telecomunicações Ltda., inscrita no CNPJ sob nº "09.637.271/0001-27", com sede na cidade de Miguel Pereira - RJ.
+
+CONTRATANTE: {{ nome_contratante }}, inscrito(a) no CPF/CNPJ sob nº {{ cpf_cnpj_contratante }}, residente/domiciliado à {{ endereco_contratante }}{% if numero_contratante %}, {{ numero_contratante }}{% endif %}{% if bairro %} - {{ bairro }}{% endif %}{% if cidade %} - {{ cidade }}{% endif %}, telefone {{ telefone_contratante }}.
+
+As partes acima identificadas celebram o presente TERMO DE COMODATO, que se regerá pelas cláusulas e condições a seguir:
+
+1. DO OBJETO
+1.1. A CONTRATADA cede em regime de comodato, a título gratuito, o(s) seguinte(s) equipamento(s):
+   - Descrição: {{ equipamento_descricao }}
+   - Marca/Modelo: {{ equipamento_modelo }}
+   - Informação Adicional: {{ equipamento_codigo }}
+   - Acessórios: {{ equipamento_acessorios }}
+
+2. DA FINALIDADE
+2.1. O equipamento tem como finalidade exclusiva a prestação dos serviços contratados de internet e/ou telefonia VoIP.
+2.2. É vedado ao CONTRATANTE utilizar o equipamento para qualquer outra finalidade que não a prevista neste termo.
+
+3. DA POSSE E USO
+3.1. O CONTRATANTE declara estar ciente de que receberá o(s) equipamento(s) em perfeitas condições de uso no momento da instalação, comprometendo-se, a partir de então, a:
+   a. Conservá-lo(s) em perfeito estado de funcionamento;
+   b. Utilizá-lo(s) apenas para a finalidade contratada;
+   c. Não ceder, emprestar, alugar ou transferir a terceiros;
+   d. Não realizar modificações, reparos ou alterações técnicas sem autorização expressa da CONTRATADA.
+
+4. DA RESPONSABILIDADE
+4.1. O CONTRATANTE será integralmente responsável pelo equipamento enquanto estiver em sua posse, respondendo por quaisquer danos, avarias ou extravios, exceto nos casos de força maior devidamente comprovada.
+4.2. Em caso de dano, furto ou roubo, o CONTRATANTE deverá comunicar imediatamente à CONTRATADA e apresentar boletim de ocorrência policial no prazo máximo de 48 (quarenta e oito) horas.
+
+5. DA MANUTENÇÃO
+5.1. A CONTRATADA se responsabiliza pelas manutenções técnicas necessárias ao pleno funcionamento do equipamento, desde que não decorrentes de uso inadequado pelo CONTRATANTE.
+5.2. O CONTRATANTE deverá comunicar imediatamente qualquer defeito ou anomalia no funcionamento do equipamento.
+
+6. DA DEVOLUÇÃO
+6.1. O equipamento deverá ser devolvido à CONTRATADA nas seguintes situações:
+   a. Rescisão do contrato principal de prestação de serviços;
+   b. Suspensão do serviço por inadimplência superior a 45 (quarenta e cinco) dias;
+   c. A pedido da CONTRATADA, mediante aviso prévio de 30 (trinta) dias.
+6.2. A devolução deverá ocorrer no prazo máximo de 10 (dez) dias corridos após a notificação, com todos os acessórios e em condições equivalentes às do recebimento, considerando desgaste normal pelo uso.
+6.3. O não cumprimento do prazo de devolução sujeitará o CONTRATANTE ao pagamento de multa diária de 1% (um por cento) do valor do equipamento, limitada a 30% (trinta por cento), sem prejuízo das medidas judiciais cabíveis.
+
+7. DA INADIMPLÊNCIA
+7.1. Em caso de inadimplemento superior a 45 (quarenta e cinco) dias, a CONTRATADA poderá requerer a devolução imediata do equipamento, mediante comunicação prévia ao CONTRATANTE, facultado à CONTRATADA o agendamento para retirada do equipamento, independentemente de medida judicial.
+
+8. DA DISPONIBILIDADE DO SERVIÇO
+8.1. A devolução do equipamento não implica na rescisão automática do contrato principal de prestação de serviços, que permanecerá válido conforme suas próprias condições.
+
+9. DA RESCISÃO
+9.1. O presente termo será automaticamente rescindido com o término do contrato principal de prestação de serviços, sem necessidade de comunicação prévia.
+
+10. DAS DISPOSIÇÕES GERAIS
+10.1. O CONTRATANTE autoriza a CONTRATADA a cadastrar os dados deste termo em sistemas de proteção ao crédito, em caso de descumprimento das obrigações aqui estabelecidas.
+10.2. Este termo não gera obrigação de renovação ou substituição do equipamento por outro de modelo mais atual.
+10.3. Fica eleito o foro da Comarca de Paraíba do Sul - RJ para dirimir quaisquer controvérsias decorrentes deste instrumento.
+
+E por estarem assim justos e contratados, firmam o presente termo em 2 (duas) vias de igual teor e forma, para todos os efeitos legais.
+
+Paraíba do Sul - RJ, ____ de _______________ de _______
+
+_______________________________________
+CONTRATANTE
+
+_______________________________________
+CONTRATADA
