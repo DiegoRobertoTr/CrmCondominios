@@ -16,12 +16,21 @@ PERMISSOES_POR_PERFIL = {
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
         "HotSpots WiFi", "Satisfação", "Endereços Bloqueados"
     ],
-    "atendente_n1": [  # ← NOVO PERFIL
+    "atendente_n1": [
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
         "HotSpots WiFi", "Satisfação", "Endereços Bloqueados"
     ],
-    "supervisao_n1": [  # ← NOVO PERFIL
+    "supervisao_n1": [  # ← Nível 1: Operacional
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas"
+    ],
+    "supervisao_n2": [  # ← Nível 2: Admin Parcial
+        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+        "Admin Embaixadores", "Admin PaP", "Admin Revendas"
+    ],
+    "supervisao_n3": [  # ← Nível 3: Admin + Relatórios
+        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+        "Admin Embaixadores", "Admin PaP", "Admin Revendas",
+        "Relatórios"
     ],
     # --- Parceiros Externos ---
     "embaixador": ["Painel Embaixador"],
@@ -40,4 +49,7 @@ def pode_acessar_modulo(perfil, modulo):
 
 def get_perfis_internos():
     """Retorna perfis que são funcionários internos (para cadastro)"""
-    return ["admin", "recepcao", "atendente_n1", "supervisao_n1"]
+    return [
+        "admin", "recepcao", "atendente_n1",
+        "supervisao_n1", "supervisao_n2", "supervisao_n3"
+    ]
