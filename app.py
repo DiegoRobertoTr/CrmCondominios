@@ -1,4 +1,4 @@
-# app.py
+# app.py (COMPLETO ATUALIZADO - Com Supervisão N1, N2, N3)
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos
 from pymongo import MongoClient
@@ -156,7 +156,7 @@ st.sidebar.header("📋 Módulos")
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
 perfil = st.session_state["perfil"]
 
-# ✅ Importa permissões centralizadas
+# ✅ Importa permissões centralizadas (se existir)
 try:
     from modules.permissoes import get_modulos_permitidos
     opcoes_modulos = get_modulos_permitidos(perfil)
@@ -170,7 +170,7 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Acompanhamento Técnicos", "Relatórios",
+            "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
             "Monitoramento de E-mails", "Teste de Integração",
             "Endereços Bloqueados"
@@ -187,6 +187,15 @@ except ImportError:
         ],
         "supervisao_n1": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas"
+        ],
+        "supervisao_n2": [
+            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+            "Admin Embaixadores", "Admin PaP", "Admin Revendas"
+        ],
+        "supervisao_n3": [
+            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+            "Admin Embaixadores", "Admin PaP", "Admin Revendas",
+            "Relatórios"
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
@@ -221,7 +230,7 @@ try:
         followup.render_followup(clientes_collection)
     elif modulo == "Agendamentos":
         agendamentos.render_agendamentos(clientes_collection)
-    elif modulo == "Relatórios" and perfil == "admin":
+    elif modulo == "Relatórios" and perfil in ["admin", "supervisao_n3"]:
         from modules import relatorios
         relatorios.render_relatorios(clientes_collection)
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
@@ -234,25 +243,28 @@ try:
         from modules import tecnico
         login_tecnico = st.session_state.get("login_tecnico", "")
         tecnico.render_tecnico(clientes_collection, login_tecnico)
-    elif modulo == "Admin Embaixadores" and perfil == "admin":
+    elif modulo == "Admin Embaixadores" and perfil in ["admin", "supervisao_n2", "supervisao_n3"]:
         from modules import admin_embaixadores
         admin_embaixadores.render_admin_embaixadores(get_usuarios_collection(), clientes_collection)
-    elif modulo == "Admin Revendas" and perfil == "admin":
+    elif modulo == "Admin Revendas" and perfil in ["admin", "supervisao_n2", "supervisao_n3"]:
         from modules import admin_revenda
         admin_revenda.render_admin_revenda(get_usuarios_collection(), clientes_collection)
     elif modulo == "Admin Técnicos" and perfil == "admin":
         from modules import admin_tecnicos
         admin_tecnicos.render_admin_tecnicos(get_usuarios_collection())
-    elif modulo == "Admin PaP" and perfil == "admin":
+    elif modulo == "Admin PaP" and perfil in ["admin", "supervisao_n2", "supervisao_n3"]:
         from modules import pap_admin
         pap_admin.render_pap_admin(get_usuarios_collection(), clientes_collection)
+    elif modulo == "Admin Funcionários" and perfil == "admin":
+        from modules import admin_funcionarios
+        admin_funcionarios.render_admin_funcionarios(get_usuarios_collection())
     elif modulo == "Cadastro Porta a Porta" and perfil == "pap":
         from modules import pap
         pap.render_pap(clientes_collection)
     elif modulo == "Acompanhamento Técnicos" and perfil == "admin":
         from modules import acompanhamento_tecnicos
         acompanhamento_tecnicos.render_acompanhamento_tecnicos(clientes_collection, get_usuarios_collection())
-    elif modulo == "Roteiro de Vendas" and perfil in ["admin", "recepcao", "atendente_n1", "supervisao_n1"]:
+    elif modulo == "Roteiro de Vendas" and perfil in ["admin", "recepcao", "atendente_n1", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
     elif modulo == "HotSpots WiFi" and perfil in ["admin", "recepcao", "atendente_n1"]:
@@ -286,9 +298,6 @@ try:
     elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao", "atendente_n1"]:
         from modules import enderecos_bloqueados
         enderecos_bloqueados.render_enderecos_bloqueados(clientes_collection)
-    elif modulo == "Admin Funcionários" and perfil == "admin":
-        from modules import admin_funcionarios
-        admin_funcionarios.render_admin_funcionarios(get_usuarios_collection())
     else:
         st.info("Selecione um módulo no menu lateral.")
 except Exception as e:
