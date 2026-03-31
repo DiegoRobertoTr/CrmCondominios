@@ -1,4 +1,4 @@
-# app.py (COMPLETO ATUALIZADO - Com Supervisão N1, N2, N3)
+# app.py
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos
 from pymongo import MongoClient
@@ -156,7 +156,7 @@ st.sidebar.header("📋 Módulos")
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
 perfil = st.session_state["perfil"]
 
-# ✅ Importa permissões centralizadas (se existir)
+# ✅ Importa permissões centralizadas
 try:
     from modules.permissoes import get_modulos_permitidos
     opcoes_modulos = get_modulos_permitidos(perfil)
@@ -170,7 +170,7 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios",
+            "Admin Funcionários", "Condomínios", "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
             "Monitoramento de E-mails", "Teste de Integração",
             "Endereços Bloqueados"
@@ -200,9 +200,12 @@ except ImportError:
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Adiciona Admin Funcionários apenas para admin
-if perfil == "admin" and "Admin Funcionários" not in opcoes_modulos:
-    opcoes_modulos.append("Admin Funcionários")
+# ✅ Adiciona Admin Funcionários e Condomínios apenas para admin
+if perfil == "admin":
+    if "Admin Funcionários" not in opcoes_modulos:
+        opcoes_modulos.append("Admin Funcionários")
+    if "Condomínios" not in opcoes_modulos:
+        opcoes_modulos.append("Condomínios")
 
 modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
@@ -233,6 +236,9 @@ try:
     elif modulo == "Relatórios" and perfil in ["admin", "supervisao_n3"]:
         from modules import relatorios
         relatorios.render_relatorios(clientes_collection)
+    elif modulo == "Condomínios" and perfil == "admin":
+        from modules import condominios
+        condominios.render_cadastro_condominio()
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
         from modules import embaixador
         embaixador.render_embaixador(get_usuarios_collection(), clientes_collection)
