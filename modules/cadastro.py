@@ -2017,7 +2017,10 @@ def render_cadastro(clientes_collection):
                                 "bairro": bairro,
                                 "telefone_contratante": celular_principal,
                                 "plano_contratado": plano_escolhido,
-                                "modalidade": "Pós Pago"
+                                "modalidade": "Pós Pago",
+                                "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}", ""),
+                                "bloco": bloco if bloco else "",
+                                "apartamento": apartamento if apartamento else ""
                             }
                             st.session_state["gerando_contrato_principal"] = True
                             st.session_state["nome_arquivo_contrato_principal"] = f"Contrato_{nome_completo.replace(' ', '_')}.pdf"
@@ -2049,7 +2052,10 @@ def render_cadastro(clientes_collection):
                                 "equipamento_descricao": equip_desc,
                                 "equipamento_modelo": equip_modelo,
                                 "equipamento_codigo": equip_codigo,
-                                "equipamento_acessorios": equip_acessorios
+                                "equipamento_acessorios": equip_acessorios,
+                                "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}", ""),
+                                "bloco": bloco if bloco else "",
+                                "apartamento": apartamento if apartamento else ""
                             }
                             st.session_state["gerando_comodato_principal"] = True
                             st.session_state["nome_arquivo_comodato_principal"] = f"Termo_Comodato_{nome_completo.replace(' ', '_')}.pdf"
