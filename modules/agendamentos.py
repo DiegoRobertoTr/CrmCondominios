@@ -1,4 +1,4 @@
-# modules/agendamentos.py
+modules/agendamentos.py
 import streamlit as st
 from datetime import datetime, timedelta
 import calendar
@@ -34,12 +34,11 @@ def render_agendamentos(clientes_collection):
         mostrar_calendario(clientes_collection)
 
 # ============================================================================
-# Funções existentes (sem alteração)
+# Funções existentes (com atualização de condomínio)
 # ============================================================================
 
 def mostrar_pool(clientes_collection):
     st.subheader("📋 Clientes que seguiram para ativação (sem agendamento)")
-    
     query = {
         "seguiu_ativacao": "Sim",
         "$or": [
@@ -49,7 +48,7 @@ def mostrar_pool(clientes_collection):
         ]
     }
     clientes = list(clientes_collection.find(query))
-    
+
     pool_valido = []
     for c in clientes:
         data = c.get("retorno_agendado")
@@ -67,17 +66,32 @@ def mostrar_pool(clientes_collection):
                 st.write(f"**Origem:** {cliente.get('origem', 'N/A')}")
                 st.write(f"**Plano:** {cliente.get('plano_escolhido', 'N/A')}")
                 st.write(f"**Cadastrado por:** {cliente.get('cadastrado_por', 'N/A')}")
+                
+                # 🏢 NOVO: Exibir informações de condomínio
+                if cliente.get("condominio_nome"):
+                    st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')}")
+                if cliente.get("bloco") or cliente.get("apartamento"):
+                    bloco = cliente.get("bloco", "")
+                    apto = cliente.get("apartamento", "")
+                    unidade_parts = []
+                    if bloco:
+                        unidade_parts.append(f"Bloco {bloco}")
+                    if apto:
+                        unidade_parts.append(f"Apto {apto}")
+                    if unidade_parts:
+                        st.write(f"**Unidade:** {' / '.join(unidade_parts)}")
+                
                 if cliente.get("observacoes"):
                     st.write(f"**Observações:** {cliente['observacoes']}")
             
             with col2:
                 data_agendamento = st.date_input(
-                    "Agendar para: ",
+                    "Agendar para:",
                     min_value=datetime.today().date(),
                     key=f"data_{cliente['_id']}"
                 )
                 periodo = st.selectbox(
-                    "Período: ",
+                    "Período:",
                     ["Selecione...", "Horário Comercial", "Manhã", "Tarde"],
                     index=0,
                     key=f"periodo_{cliente['_id']}"
@@ -85,7 +99,7 @@ def mostrar_pool(clientes_collection):
                 
                 # ✅ NOVO: Campo de observações específicas
                 observacao_agendamento = st.text_input(
-                    "📝 Observações específicas: ",
+                    "📝 Observações específicas:",
                     placeholder="Ex: Após 14 horas, Cliente em casa até 15h, etc.",
                     key=f"obs_{cliente['_id']}"
                 )
@@ -120,13 +134,12 @@ def mostrar_pool(clientes_collection):
 
 def mostrar_agendados(clientes_collection):
     st.subheader("📅 Clientes Agendados")
-    
     query = {
         "seguiu_ativacao": "Sim",
         "retorno_agendado": {"$exists": True, "$ne": None, "$ne": ""}
     }
     clientes = list(clientes_collection.find(query))
-    
+
     clientes_validos = []
     for c in clientes:
         data = c.get("retorno_agendado")
@@ -164,6 +177,21 @@ def mostrar_agendados(clientes_collection):
                 st.write(f"**Origem:** {cliente.get('origem', 'N/A')}")
                 st.write(f"**Plano:** {cliente.get('plano_escolhido', 'N/A')}")
                 st.write(f"**Cadastrado por:** {cliente.get('cadastrado_por', 'N/A')}")
+                
+                # 🏢 NOVO: Exibir informações de condomínio
+                if cliente.get("condominio_nome"):
+                    st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')}")
+                if cliente.get("bloco") or cliente.get("apartamento"):
+                    bloco = cliente.get("bloco", "")
+                    apto = cliente.get("apartamento", "")
+                    unidade_parts = []
+                    if bloco:
+                        unidade_parts.append(f"Bloco {bloco}")
+                    if apto:
+                        unidade_parts.append(f"Apto {apto}")
+                    if unidade_parts:
+                        st.write(f"**Unidade:** {' / '.join(unidade_parts)}")
+                
                 if cliente.get("observacoes"):
                     st.write(f"**Observações:** {cliente['observacoes']}")
                 
@@ -208,7 +236,7 @@ def mostrar_agendados(clientes_collection):
                 if status_agendamento != "cancelado":
                     motivo_atual = cliente.get("motivo_cancelamento", "")
                     motivo_cancelamento = st.text_input(
-                        "Motivo do cancelamento: ",
+                        "Motivo do cancelamento:",
                         value=motivo_atual,
                         key=f"motivo_{cliente['_id']}",
                         placeholder="Ex: Não atendeu o horário"
@@ -254,17 +282,17 @@ def mostrar_calendario(clientes_collection):
             novo_mes = mes_atual.replace(day=1) - timedelta(days=1)
             st.session_state.mes_visualizado_agendamento = novo_mes.replace(day=1)
             st.rerun()
-    
+
     with col_title:
         st.markdown(f"### {calendar.month_name[mes].capitalize()} {ano}")
-    
+
     with col_next:
         if st.button("Mês Próximo >>", key="prox_mes_agend"):
             proximo = mes_atual.replace(day=28) + timedelta(days=4)
             st.session_state.mes_visualizado_agendamento = proximo.replace(day=1)
             st.rerun()
 
-    # Legenda visual (consistente com followup.py)
+    # Legenda visual (consistente com followup)
     st.caption(
         "🎨 Legendas: "
         "⚪ Sem agendamento | "
@@ -286,11 +314,11 @@ def mostrar_calendario(clientes_collection):
         }
     }
     todos_agendados = list(clientes_collection.find(query_agendamentos))
-    
+
     agenda_por_dia = defaultdict(list)
     for cliente in todos_agendados:
         data = cliente.get("retorno_agendado")
-        if isinstance(data, str) and data:  # garante que seja string não vazia
+        if isinstance(data, str) and data:
             agenda_por_dia[data].append(cliente)
 
     # Gerar calendário
@@ -324,16 +352,16 @@ def mostrar_calendario(clientes_collection):
                 cor = "#f8f9fa"
                 texto = str(dia_num)
             elif qtd <= 2:
-                cor = "#d4edda"  # verde claro
+                cor = "#d4edda"
                 texto = f"{dia_num}<br/>({qtd})"
             elif qtd <= 5:
-                cor = "#fff3cd"  # amarelo claro
+                cor = "#fff3cd"
                 texto = f"{dia_num}<br/>({qtd})"
             elif qtd <= 10:
-                cor = "#ffeacc"  # laranja claro
+                cor = "#ffeacc"
                 texto = f"{dia_num}<br/>({qtd})"
             else:
-                cor = "#f8d7da"  # vermelho claro
+                cor = "#f8d7da"
                 texto = f"{dia_num}<br/>({qtd})"
 
             # Destaque para dias vencidos com agendamento
@@ -343,7 +371,6 @@ def mostrar_calendario(clientes_collection):
                 borda = "border: 2px solid #e74c3c;"
                 icone = "❗ "
 
-            # Estilo aprimorado: sombra, padding, raio, centralização
             estilo = (
                 f"background-color: {cor}; "
                 f"padding: 12px 6px; "
@@ -367,7 +394,7 @@ def mostrar_calendario(clientes_collection):
 
     # Seleção de data (com estado sincronizado pelo "👁️")
     data_selecionada = st.date_input(
-        "Selecione um dia para ver os agendamentos: ",
+        "Selecione um dia para ver os agendamentos:",
         value=st.session_state.get("data_selecionada_agendamento", datetime.now().date()),
         min_value=datetime(2020, 1, 1),
         key="data_selecionada_agendamento"
@@ -403,6 +430,17 @@ def mostrar_calendario(clientes_collection):
                 endereco_completo += f" - {bairro}"
             if cidade:
                 endereco_completo += f" - {cidade}"
+
+            # 🏢 NOVO: Incluir informações de condomínio no endereço
+            if cliente.get("condominio_nome"):
+                endereco_completo += f" - {cliente.get('condominio_nome')}"
+            if cliente.get("bloco") or cliente.get("apartamento"):
+                bloco = cliente.get("bloco", "")
+                apto = cliente.get("apartamento", "")
+                if bloco:
+                    endereco_completo += f" - Bloco {bloco}"
+                if apto:
+                    endereco_completo += f" - Apto {apto}"
 
             status_exib = {
                 "ativado": "✅ Ativado",
@@ -471,6 +509,17 @@ def mostrar_calendario(clientes_collection):
                     endereco_completo += f" - {bairro}"
                 if cidade:
                     endereco_completo += f" - {cidade}"
+                
+                # 🏢 NOVO: Incluir informações de condomínio
+                if cliente.get("condominio_nome"):
+                    endereco_completo += f" - {cliente.get('condominio_nome')}"
+                if cliente.get("bloco") or cliente.get("apartamento"):
+                    bloco = cliente.get("bloco", "")
+                    apto = cliente.get("apartamento", "")
+                    if bloco:
+                        endereco_completo += f" - Bloco {bloco}"
+                    if apto:
+                        endereco_completo += f" - Apto {apto}"
 
                 st.markdown(f"""
                 **Cliente:** {nome}  
@@ -481,6 +530,20 @@ def mostrar_calendario(clientes_collection):
                 **Período:** {periodo}  
                 **Status Ativado:** {'✅ Sim' if ativo else '❌ Não'}  
                 """)
+
+                # 🏢 NOVO: Exibir condomínio separadamente se existir
+                if cliente.get("condominio_nome"):
+                    st.info(f"🏢 **Condomínio:** {cliente.get('condominio_nome')}")
+                    if cliente.get("bloco") or cliente.get("apartamento"):
+                        bloco = cliente.get("bloco", "")
+                        apto = cliente.get("apartamento", "")
+                        unidade_parts = []
+                        if bloco:
+                            unidade_parts.append(f"Bloco {bloco}")
+                        if apto:
+                            unidade_parts.append(f"Apto {apto}")
+                        if unidade_parts:
+                            st.info(f"📍 **Unidade:** {' / '.join(unidade_parts)}")
 
                 # ✅ NOVO: Mostrar observações de agendamento
                 if cliente.get("observacoes_agendamento"):
@@ -499,12 +562,12 @@ def mostrar_calendario(clientes_collection):
                 if novo_status_ativo != ativo:
                     try:
                         update_fields = {"ativo": novo_status_ativo}
-                        if novo_status_ativo:  # Se estiver marcando como ativo
+                        if novo_status_ativo:
                             update_fields["status_agendamento"] = "ativado"
                             update_fields["data_ativacao"] = datetime.now()
-                        else:  # Se desmarcar (raro, mas possível)
+                        else:
                             update_fields["status_agendamento"] = "agendado"
-                            update_fields.pop("data_ativacao", None)  # remove se existir
+                            update_fields.pop("data_ativacao", None)
 
                         clientes_collection.update_one(
                             {"_id": cliente["_id"]},
@@ -520,28 +583,26 @@ def mostrar_calendario(clientes_collection):
                 
                 with col_reag_data:
                     nova_data = st.date_input(
-                        "Reagendar para: ",
+                        "Reagendar para:",
                         min_value=datetime.today().date(),
                         key=f"reag_{cliente['_id']}"
                     )
                 
                 with col_reag_periodo:
-                    # Pré-seleciona o período atual do cliente, se válido
                     periodo_atual = cliente.get("periodo", "Selecione...")
                     opcoes = ["Selecione...", "Horário Comercial", "Manhã", "Tarde"]
                     index_inicial = opcoes.index(periodo_atual) if periodo_atual in opcoes else 0
                     novo_periodo = st.selectbox(
-                        "Período: ",
+                        "Período:",
                         opcoes,
                         index=index_inicial,
                         key=f"periodo_reag_{cliente['_id']}"
                     )
                 
-                # ✅ NOVO: Campo de observações no reagendamento
                 with col_reag_obs:
                     obs_atual = cliente.get("observacoes_agendamento", "")
                     nova_observacao = st.text_input(
-                        "📝 Observações: ",
+                        "📝 Observações:",
                         value=obs_atual,
                         placeholder="Ex: Após 14h",
                         key=f"reag_obs_{cliente['_id']}"
@@ -578,7 +639,7 @@ def mostrar_calendario(clientes_collection):
                 if status_agendamento != "cancelado":
                     motivo_atual = cliente.get("motivo_cancelamento", "")
                     motivo_cancelamento = st.text_input(
-                        "Motivo do cancelamento: ",
+                        "Motivo do cancelamento:",
                         value=motivo_atual,
                         key=f"motivo_cal_{cliente['_id']}",
                         placeholder="Ex: Cliente desistiu"
@@ -612,7 +673,6 @@ def mostrar_calendario(clientes_collection):
 def mostrar_pool_embaixadores(clientes_collection):
     st.subheader("🌟 Indicações de Embaixadores")
     
-    # 🔁 Lógica de status — idêntica à usada em embaixador.py
     def determinar_status_embaixador(cliente):
         status_agendamento = cliente.get("status_agendamento")
 
@@ -631,17 +691,14 @@ def mostrar_pool_embaixadores(clientes_collection):
         else:
             return "Indicado"
 
-    # 💡 Botão de atualização explícito
     col_btn, col_space = st.columns([2, 8])
     with col_btn:
-        if st.button("🔄 Atualizar", help="Recarrega os dados do banco para refletir alterações recentes (ex: cancelamentos)"):
+        if st.button("🔄 Atualizar", help="Recarrega os dados do banco para refletir alterações recentes"):
             st.rerun()
 
-    # Busca todas as indicações de embaixadores
     todos_indicados = list(clientes_collection.find({"indicado_por.tipo": "embaixador"}))
 
-    # ✅ ADICIONE A CORREÇÃO AQUI - logo após buscar os dados
-    # Correção proativa: se status_agendamento é 'ativado'/'cancelado', garantir que em_tratamento = False
+    # Correção proativa de status
     updated_count = 0
     for c in todos_indicados:
         status_ag = c.get("status_agendamento")
@@ -654,23 +711,20 @@ def mostrar_pool_embaixadores(clientes_collection):
                     {"_id": _id},
                     {"$set": {"em_tratamento": False}}
                 )
-                c["em_tratamento"] = False  # Atualiza também na lista local
+                c["em_tratamento"] = False
                 updated_count += 1
             except Exception as e:
                 st.warning(f"⚠️ Não foi possível corrigir inconsistência para {c.get('nome_completo', '?')}: {e}")
 
-    # Se houve correções, mostra feedback
     if updated_count > 0:
         st.info(f"✅ Corrigidas {updated_count} inconsistências de status.")
 
-    # Continua com o resto do código...
     if not todos_indicados:
         st.info("✅ Nenhuma indicação de embaixador registrada ainda.")
         return
 
     hoje = datetime.now()
 
-    # Reagrupar após possível correção
     status_groups = defaultdict(list)
     atrasadas_ids = set()
 
@@ -678,7 +732,6 @@ def mostrar_pool_embaixadores(clientes_collection):
         status = determinar_status_embaixador(c)
         status_groups[status].append(c)
 
-        # Identifica atrasados (>7d sem tratamento E status ainda = "Indicado")
         if status == "Indicado":
             data_ind = c.get("data_indicacao")
             if data_ind:
@@ -694,7 +747,6 @@ def mostrar_pool_embaixadores(clientes_collection):
                 except Exception:
                     pass
 
-    # Ordem de exibição conforme sua solicitação
     aguardando = ["Indicado"]
     em_fluxo = ["Em tratamento", "Seguiu para ativação", "Agendado", "Reagendado"]
     concluidos = ["Ativado", "Cancelado"]
@@ -705,15 +757,14 @@ def mostrar_pool_embaixadores(clientes_collection):
     total_indicado = len(status_groups["Indicado"])
     atrasadas_count = len(atrasadas_ids)
 
-    # ✅ Dashboard atualizado com nova ordem
     st.markdown(f"""
-    📊 **Resumo Geral**  
-    **Total:** {total} |  
-    ⚪ **Aguardando início** (indicado): {total_indicado - atrasadas_count} |  
-    🟡 **Em fluxo** (em tratamento/agendado/etc.): {total_fluxo} |  
-    ✅ **Concluídos** (ativado/cancelado): {total_concluidos} |  
-    ⚠️ **Atrasadas** (>7d sem tratamento): {atrasadas_count}
-    """)
+📊 **Resumo Geral**  
+**Total:** {total} |  
+⚪ **Aguardando início** (indicado): {total_indicado - atrasadas_count} |  
+🟡 **Em fluxo** (em tratamento/agendado/etc.): {total_fluxo} |  
+✅ **Concluídos** (ativado/cancelado): {total_concluidos} |  
+⚠️ **Atrasadas** (>7d sem tratamento): {atrasadas_count}
+""")
 
     # --- ⚪ SEÇÃO 1: AGUARDANDO INÍCIO DO TRATAMENTO ---
     st.markdown("### ⚪ Aguardando Início do Tratamento")
@@ -727,7 +778,6 @@ def mostrar_pool_embaixadores(clientes_collection):
         else:
             aguardando_normal.append(cliente)
 
-    # Atrasadas
     if atrasadas:
         st.markdown("#### ⚠️ Atrasadas (+7 dias sem tratamento)")
         for cliente in sorted(atrasadas, key=lambda x: x.get("data_indicacao", ""), reverse=False):
@@ -743,7 +793,6 @@ def mostrar_pool_embaixadores(clientes_collection):
                 except:
                     pass
 
-            # Card individual para cliente atrasado
             st.markdown(f"""
             <div style="
                 border: 1px solid #e0e0e0;
@@ -758,18 +807,17 @@ def mostrar_pool_embaixadores(clientes_collection):
                     <span style="color: #666;">{dias_atraso} dias</span>
                 </div>
                 <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                   📞 {tel} | 🕒 Indicação: {data_ind[:16] if data_ind else '—'}
+                    📞 {tel} | 🕒 Indicação: {data_ind[:16] if data_ind else '—'}
                 </div>
                 <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                   👤 Embaixador: {emb}
+                    👤 Embaixador: {emb}
                 </div>
                 <div style="background-color: #fff3cd; padding: 8px; border-radius: 6px; font-size: 0.9em;">
-                   ⚠️ Esta indicação está há <strong>{dias_atraso} dias</strong> sem tratamento.
+                    ⚠️ Esta indicação está há <strong>{dias_atraso} dias</strong> sem tratamento.
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-            # Botão — agora SEM exibir False
             clicked = st.button("✅ Iniciar Tratamento", key=f"start_atrasado_{cliente['_id']}", use_container_width=True)
             if clicked:
                 try:
@@ -784,7 +832,6 @@ def mostrar_pool_embaixadores(clientes_collection):
                 except Exception as e:
                     st.error(f"❌ Erro: {e}")
 
-    # Normais
     if aguardando_normal:
         st.markdown("#### 🟡 Novas indicações (últimos 7 dias)")
         for cliente in sorted(aguardando_normal, key=lambda x: x.get("data_indicacao", ""), reverse=True):
@@ -793,7 +840,6 @@ def mostrar_pool_embaixadores(clientes_collection):
             emb = cliente["indicado_por"].get("nome_embaixador", "—")
             data_ind = cliente.get("data_indicacao", "—")[:16]
 
-            # Card individual para cliente normal
             st.markdown(f"""
             <div style="
                 border: 1px solid #e0e0e0;
@@ -808,15 +854,14 @@ def mostrar_pool_embaixadores(clientes_collection):
                     <span style="color: #666;">{data_ind.split(' ')[0]}</span>
                 </div>
                 <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                   📞 {tel} | 🕒 Indicação: {data_ind}
+                    📞 {tel} | 🕒 Indicação: {data_ind}
                 </div>
                 <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                   👤 Embaixador: {emb}
+                    👤 Embaixador: {emb}
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-            # Botão — agora SEM exibir False
             clicked = st.button("✅ Iniciar Tratamento", key=f"start_normal_{cliente['_id']}", use_container_width=True)
             if clicked:
                 try:
@@ -834,9 +879,9 @@ def mostrar_pool_embaixadores(clientes_collection):
     if not aguardando_normal and not atrasadas:
         st.info("✅ Todos os indicados já entraram em tratamento ou foram concluídos.")
 
-    st.markdown("</div>", unsafe_allow_html=True)  # Fecha a borda da seção
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- 🟡 SEÇÃO 2: EM FLUXO (PENDENTES DE CONCLUSÃO) ---
+    # --- 🟡 SEÇÃO 2: EM FLUXO ---
     st.markdown("### 🟡 Em Fluxo (Pendentes de conclusão)")
     st.markdown("<div style='border: 2px solid #ddd; border-radius: 8px; padding: 16px; background-color: #fafafa; margin-top: 20px;'>", unsafe_allow_html=True)
 
@@ -853,7 +898,6 @@ def mostrar_pool_embaixadores(clientes_collection):
                     data_ind = cliente.get("data_indicacao", "—")[:16]
                     status_cliente = determinar_status_embaixador(cliente)
 
-                    # Conteúdo dinâmico baseado no status
                     info_extra = ""
                     if status_cliente == "Em tratamento":
                         data_inicio = cliente.get("data_inicio_tratamento")
@@ -874,7 +918,6 @@ def mostrar_pool_embaixadores(clientes_collection):
                     elif status_cliente == "Seguiu para ativação":
                         info_extra = "<div style='background-color: #fff3cd; padding: 6px; border-radius: 4px; margin-top: 6px;'>➡️ Aguardando agendamento ou início de tratamento</div>"
 
-                    # Card individual
                     st.markdown(f"""
                     <div style="
                         border: 1px solid #e0e0e0;
@@ -889,16 +932,15 @@ def mostrar_pool_embaixadores(clientes_collection):
                             <span style="color: #666;">{data_ind.split(' ')[0]}</span>
                         </div>
                         <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                           📞 {tel} | 🕒 Indicação: {data_ind}
+                            📞 {tel} | 🕒 Indicação: {data_ind}
                         </div>
                         <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                           👤 Embaixador: {emb}
+                            👤 Embaixador: {emb}
                         </div>
                         {info_extra}
                     </div>
                     """, unsafe_allow_html=True)
 
-                    # Botões — agora SEM exibir False
                     if status_cliente == "Seguiu para ativação" and not cliente.get("em_tratamento", False):
                         clicked = st.button("✅ Iniciar Tratamento", key=f"start_{cliente['_id']}", use_container_width=True)
                         if clicked:
@@ -919,7 +961,7 @@ def mostrar_pool_embaixadores(clientes_collection):
     if not has_fluxo:
         st.info("✅ Nenhuma indicação em fluxo no momento.")
 
-    st.markdown("</div>", unsafe_allow_html=True)  # Fecha a borda da seção
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # --- ✅ SEÇÃO 3: CONCLUÍDOS ---
     st.markdown("### ✅ Concluídos (Tratamento finalizado)")
@@ -948,12 +990,10 @@ def mostrar_pool_embaixadores(clientes_collection):
                     else:
                         data_fim_str = "—"
 
-                    # Status visual
                     status_text = "✅ Ativado" if status == "Ativado" else "❌ Cancelado"
                     status_color = "#d4edda" if status == "Ativado" else "#f8d7da"
                     motivo = cliente.get("motivo_cancelamento", "Não informado") if status == "Cancelado" else ""
 
-                    # Card individual
                     st.markdown(f"""
                     <div style="
                         border: 1px solid #e0e0e0;
@@ -968,25 +1008,24 @@ def mostrar_pool_embaixadores(clientes_collection):
                             <span style="color: #666;">{data_ind.split(' ')[0]}</span>
                         </div>
                         <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                           📞 {tel} | 🕒 Indicação: {data_ind}
+                            📞 {tel} | 🕒 Indicação: {data_ind}
                         </div>
                         <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                           👤 Embaixador: {emb}
+                            👤 Embaixador: {emb}
                         </div>
                         <div style="background-color: {status_color}; padding: 6px; border-radius: 4px; margin-top: 6px;">
-                           {status_text} em {data_fim_str}
-                           {f' | Motivo: {motivo}' if status == 'Cancelado' else ''}
+                            {status_text} em {data_fim_str}
+                            {f' | Motivo: {motivo}' if status == 'Cancelado' else ''}
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                    # Botão desativado — SEM exibir False
                     st.button("✔️ Concluído", key=f"done_{cliente['_id']}", disabled=True, use_container_width=True)
 
     if not has_concluidos:
         st.info("🟡 Nenhuma indicação concluída ainda.")
 
-    st.markdown("</div>", unsafe_allow_html=True)  # Fecha a borda da seção
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================================
 # ✅ NOVA FUNÇÃO — Pool de Indicações de Revendas (similar ao embaixador)
@@ -995,7 +1034,6 @@ def mostrar_pool_embaixadores(clientes_collection):
 def mostrar_pool_revendas(clientes_collection):
     st.subheader("🏪 Indicações de Revendas")
     
-    # 🔁 Lógica de status — idêntica à usada em revenda.py
     def determinar_status_revenda(cliente):
         status_agendamento = cliente.get("status_agendamento")
 
@@ -1014,16 +1052,13 @@ def mostrar_pool_revendas(clientes_collection):
         else:
             return "Indicado"
 
-    # 💡 Botão de atualização explícito
     col_btn, col_space = st.columns([2, 8])
     with col_btn:
         if st.button("🔄 Atualizar Revendas", help="Recarrega os dados do banco", key="atualizar_revendas"):
             st.rerun()
 
-    # Busca todas as indicações de revendas
     todos_indicados = list(clientes_collection.find({"indicado_por.tipo": "revenda"}))
 
-    # Correção proativa: se status_agendamento é 'ativado'/'cancelado', garantir que em_tratamento = False
     updated_count = 0
     for c in todos_indicados:
         status_ag = c.get("status_agendamento")
@@ -1050,7 +1085,6 @@ def mostrar_pool_revendas(clientes_collection):
 
     hoje = datetime.now()
 
-    # Reagrupar após possível correção
     status_groups = defaultdict(list)
     atrasadas_ids = set()
 
@@ -1058,9 +1092,8 @@ def mostrar_pool_revendas(clientes_collection):
         status = determinar_status_revenda(c)
         status_groups[status].append(c)
 
-        # Identifica atrasados (>7d sem tratamento E status ainda = "Indicado")
         if status == "Indicado":
-            data_ind = c.get("data_cadastro")  # Revendas usam data_cadastro (não data_indicacao)
+            data_ind = c.get("data_cadastro")
             if data_ind:
                 try:
                     if isinstance(data_ind, str):
@@ -1074,7 +1107,6 @@ def mostrar_pool_revendas(clientes_collection):
                 except Exception:
                     pass
 
-    # Ordem de exibição
     aguardando = ["Indicado"]
     em_fluxo = ["Em tratamento", "Seguiu para ativação", "Agendado", "Reagendado"]
     concluidos = ["Ativado", "Cancelado"]
@@ -1085,15 +1117,14 @@ def mostrar_pool_revendas(clientes_collection):
     total_indicado = len(status_groups["Indicado"])
     atrasadas_count = len(atrasadas_ids)
 
-    # ✅ Dashboard resumido
     st.markdown(f"""
-    📊 **Resumo Geral**  
-    **Total:** {total} |  
-    ⚪ **Aguardando início** (indicado): {total_indicado - atrasadas_count} |  
-    🟡 **Em fluxo** (em tratamento/agendado/etc.): {total_fluxo} |  
-    ✅ **Concluídos** (ativado/cancelado): {total_concluidos} |  
-    ⚠️ **Atrasadas** (>7d sem tratamento): {atrasadas_count}
-    """)
+📊 **Resumo Geral**  
+**Total:** {total} |  
+⚪ **Aguardando início** (indicado): {total_indicado - atrasadas_count} |  
+🟡 **Em fluxo** (em tratamento/agendado/etc.): {total_fluxo} |  
+✅ **Concluídos** (ativado/cancelado): {total_concluidos} |  
+⚠️ **Atrasadas** (>7d sem tratamento): {atrasadas_count}
+""")
 
     # --- ⚪ SEÇÃO 1: AGUARDANDO INÍCIO DO TRATAMENTO ---
     st.markdown("### ⚪ Aguardando Início do Tratamento")
@@ -1107,7 +1138,6 @@ def mostrar_pool_revendas(clientes_collection):
         else:
             aguardando_normal.append(cliente)
 
-    # Atrasadas
     if atrasadas:
         st.markdown("#### ⚠️ Atrasadas (+7 dias sem tratamento)")
         for cliente in sorted(atrasadas, key=lambda x: x.get("data_cadastro", ""), reverse=False):
@@ -1140,13 +1170,13 @@ def mostrar_pool_revendas(clientes_collection):
                     <span style="color: #666;">{dias_atraso} dias</span>
                 </div>
                 <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                   📞 {tel} | 🕒 Cadastro: {str(data_ind)[:16] if data_ind else '—'}
+                    📞 {tel} | 🕒 Cadastro: {str(data_ind)[:16] if data_ind else '—'}
                 </div>
                 <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                   🏪 Revenda: {rev}
+                    🏪 Revenda: {rev}
                 </div>
                 <div style="background-color: #fff3cd; padding: 8px; border-radius: 6px; font-size: 0.9em;">
-                   ⚠️ Esta indicação está há <strong>{dias_atraso} dias</strong> sem tratamento.
+                    ⚠️ Esta indicação está há <strong>{dias_atraso} dias</strong> sem tratamento.
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1165,7 +1195,6 @@ def mostrar_pool_revendas(clientes_collection):
                 except Exception as e:
                     st.error(f"❌ Erro: {e}")
 
-    # Normais
     if aguardando_normal:
         st.markdown("#### 🟡 Novas indicações (últimos 7 dias)")
         for cliente in sorted(aguardando_normal, key=lambda x: x.get("data_cadastro", ""), reverse=True):
@@ -1188,10 +1217,10 @@ def mostrar_pool_revendas(clientes_collection):
                     <span style="color: #666;">{data_ind.split(' ')[0]}</span>
                 </div>
                 <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                   📞 {tel} | 🕒 Cadastro: {data_ind}
+                    📞 {tel} | 🕒 Cadastro: {data_ind}
                 </div>
                 <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                   🏪 Revenda: {rev}
+                    🏪 Revenda: {rev}
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1266,10 +1295,10 @@ def mostrar_pool_revendas(clientes_collection):
                             <span style="color: #666;">{data_ind.split(' ')[0]}</span>
                         </div>
                         <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                           📞 {tel} | 🕒 Cadastro: {data_ind}
+                            📞 {tel} | 🕒 Cadastro: {data_ind}
                         </div>
                         <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                           🏪 Revenda: {rev}
+                            🏪 Revenda: {rev}
                         </div>
                         {info_extra}
                     </div>
@@ -1342,14 +1371,14 @@ def mostrar_pool_revendas(clientes_collection):
                             <span style="color: #666;">{data_ind.split(' ')[0]}</span>
                         </div>
                         <div style="font-size: 0.9em; color: #555; margin-bottom: 8px;">
-                           📞 {tel} | 🕒 Cadastro: {data_ind}
+                            📞 {tel} | 🕒 Cadastro: {data_ind}
                         </div>
                         <div style="font-size: 0.85em; color: #777; margin-bottom: 8px;">
-                           🏪 Revenda: {rev}
+                            🏪 Revenda: {rev}
                         </div>
                         <div style="background-color: {status_color}; padding: 6px; border-radius: 4px; margin-top: 6px;">
-                           {status_text} em {data_fim_str}
-                           {f' | Motivo: {motivo}' if status == 'Cancelado' else ''}
+                            {status_text} em {data_fim_str}
+                            {f' | Motivo: {motivo}' if status == 'Cancelado' else ''}
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
