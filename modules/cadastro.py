@@ -11,10 +11,10 @@ from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEA
 from pymongo.errors import DuplicateKeyError
 import copy
 
-# --- Configuração do WhatsApp da loja ---
+# Configuração do WhatsApp da loja
 WHATSAPP_LOJA = "5524992035540"  # +55 24 99203-5540 → 5524992035540
 
-# --- Motivos de Recusa de Ativação ---
+# Motivos de Recusa de Ativação
 MOTIVOS_RECUSA_ATIVACAO = [
     "Selecione...",
     "Restritivos (SPC/Serasa)",
@@ -33,10 +33,10 @@ def copiar_para_area_de_transferencia(texto, botao_key):
         f"""
         <script>
         function copyToClipboard_{botao_key}() {{
-            navigator.clipboard.writeText(&quot;{texto}&quot;);
+            navigator.clipboard.writeText("{texto}");
         }}
         </script>
-        <button onclick="copyToClipboard_{botao_key}()">📋 Copiar</button>
+        <button onclick="copyToClipboard_{botao_key}()" style="padding: 4px 8px; cursor: pointer;">📋 Copiar</button>
         """,
         height=40,
     )
@@ -54,28 +54,43 @@ def gerar_link_whatsapp_solicitacao(nome, celular, cpf=None):
     mensagem_codificada = quote(mensagem)
     return f"https://wa.me/{WHATSAPP_LOJA}?text={mensagem_codificada}"
 
+def carregar_condominios():
+    """Carrega lista de condomínios do MongoDB."""
+    try:
+        # Tenta acessar a collection condominios na mesma database
+        if "condominios_collection" not in st.session_state:
+            db = st.session_state["clientes_collection"].database
+            st.session_state["condominios_collection"] = db["condominios"]
+        
+        condominios = st.session_state["condominios_collection"].find({}, {"_id": 0}).sort("Condomínio", 1)
+        return list(condominios)
+    except Exception as e:
+        # st.warning(f"⚠️ Não foi possível carregar a lista de condomínios: {e}")
+        return []
+
 def verificar_duplicidade():
     """Verifica duplicidade de CPF/Celular em tempo real. Retorna (cliente, campo_duplicado)"""
     cpf_raw = st.session_state.get(f"campo_cpf_{st.session_state['form_key']}", "").strip()
     celular_bruto = st.session_state.get(f"campo_celular_principal_{st.session_state['form_key']}", "").strip()
+    
     cpf = re.sub(r'\D', '', cpf_raw)
     celular_normalizado = normalize_phone(celular_bruto)
     
     if cpf == st.session_state.get("ultimo_cpf", "") and celular_normalizado == st.session_state.get("ultimo_celular", ""):
         return None, None
-
+    
     st.session_state["ultimo_cpf"] = cpf
     st.session_state["ultimo_celular"] = celular_normalizado
-
+    
     if not cpf and not celular_normalizado:
         return None, None
-
+    
     query = {}
     if cpf:
         query["cpf"] = cpf
     if celular_normalizado:
         query["celular"] = celular_normalizado
-
+    
     if query:
         cliente = st.session_state["clientes_collection"].find_one(query)
         if cliente:
@@ -83,7 +98,7 @@ def verificar_duplicidade():
                 return cliente, "cpf"
             elif celular_normalizado and cliente.get("celular") == celular_normalizado:
                 return cliente, "celular"
-
+    
     return None, None
 
 def render_campos_restritivos(key_suffix, valor_restritivo, cliente=None):
@@ -167,7 +182,7 @@ def montar_endereco_completo(endereco, numero, complemento=""):
     return res
 
 # ============================================================================
-# ✅ EXPANDER PARA VISUALIZAR/EDITAR CADASTRO COMPLETO - CORRIGIDO
+# EXPANDER PARA VISUALIZAR/EDITAR CADASTRO COMPLETO - ATUALIZADO COM CONDOMÍNIOS
 # ============================================================================
 def expander_visualizar_editar(cliente, clientes_collection):
     if not cliente or not isinstance(cliente, dict):
@@ -231,10 +246,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 f'</div>',
                 unsafe_allow_html=True
             )
-
+        
         if st.button("🔒 Bloquear Este Endereço", key="bloquear_endereco_visualizar"):
             st.session_state["mostrar_form_bloqueio_visualizar"] = True
-
+        
         if st.session_state.get("mostrar_form_bloqueio_visualizar", False):
             st.markdown("#### 📝 Observações de Bloqueio de Endereço:")
             observacoes_bloqueio = st.text_area(
@@ -253,9 +268,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         complemento_atual = cliente.get("complemento", "").strip()
                         if complemento_atual:
                             query["complemento"] = complemento_atual
-
+                        
                         endereco_completo_bloq = montar_endereco_completo(endereco_atual, numero_atual, complemento_atual)
-
+                        
                         update_data = {
                             "$set": {
                                 "endereco_bloqueado": True,
@@ -317,9 +332,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
             st.markdown("### 📅 Follow-up")
             retorno_agendado_atual = cliente.get("retorno_agendado", "")
             
-            # ✅ VERIFICA SE JÁ EXISTE AGENDAMENTO VÁLIDO
+            # VERIFICA SE JÁ EXISTE AGENDAMENTO VÁLIDO
             cliente_ja_tem_agendamento = False
-            if retorno_agendado_atual and len(retorno_agendado_atual) == 10:
+            if retorno_agendado_atual and len(retorno_agendado_atual) == 10: 
                 try:
                     datetime.strptime(retorno_agendado_atual, "%Y-%m-%d")
                     cliente_ja_tem_agendamento = True
@@ -355,7 +370,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 followup_opcao = st.selectbox("Follow-up em:", followup_opcoes, index=index_followup, key=f"followup_opcao_{key_suffix}")
 
                 if followup_opcao == "Personalizado (mês/ano)":
-                    dia_default = st.session_state.get(f"dia_{key_suffix}", datetime.now().day)
+                    dia_default = st.session_state.get(f"dias_{key_suffix}", datetime.now().day)
                     mes_default = st.session_state.get(f"mes_{key_suffix}", datetime.now().month)
                     ano_default = st.session_state.get(f"ano_{key_suffix}", datetime.now().year)
                     col_dia, col_mes, col_ano = st.columns(3)
@@ -447,11 +462,22 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 )
 
             nome_completo = st.text_input("Nome completo *", max_chars=80, value=cliente["nome_completo"], key="nome_completo_editar")
-            col1, col2 = st.columns(2)
-            with col1:
-                cpf = st.text_input("CPF *", max_chars=14, placeholder="000.000.000-00", value=cliente.get("cpf", ""), key="cpf_editar")
-            with col2:
+            
+            # --- INÍCIO MODIFICAÇÃO CONDOMÍNIO ---
+            col_cpf_cond, col_rg_cond = st.columns([3, 2])
+            with col_cpf_cond:
+                # Checkbox e CPF na mesma linha visualmente (usando columns)
+                col_cpf, col_check = st.columns([4, 1])
+                with col_cpf:
+                    cpf = st.text_input("CPF *", max_chars=14, placeholder="000.000.000-00", value=cliente.get("cpf", ""), key="cpf_editar")
+                with col_check:
+                    # Checkbox já marcado por padrão se for condomínio ou se não tiver dado
+                    eh_condominio_default = cliente.get("eh_condominio", False)
+                    eh_condominio = st.checkbox("É COND.", value=eh_condominio_default, key=f"eh_condominio_{key_suffix}", help="Marque se o endereço for um Condomínio")
+            
+            with col_rg_cond:
                 rg = st.text_input("RG *", max_chars=15, placeholder="12.345.678-9", value=cliente.get("rg", ""), key="rg_editar")
+            # --- FIM MODIFICAÇÃO CONDOMÍNIO ---
 
             data_nascimento_str = cliente.get("data_nascimento")
             data_nascimento = None
@@ -463,21 +489,58 @@ def expander_visualizar_editar(cliente, clientes_collection):
             data_nascimento = st.date_input("Data de nascimento *", value=data_nascimento, format="DD/MM/YYYY", key="data_nascimento_editar", min_value=datetime(1900, 1, 1))
 
             email = st.text_input("Email *", max_chars=50, value=cliente.get("email", ""), key="email_editar")
+            
+            # --- SE FOR CONDOMÍNIO, MOSTRAR SELEÇÃO ---
+            if eh_condominio:
+                st.markdown("### 🏢 Seleção de Condomínio")
+                condominios_lista = carregar_condominios()
+                if condominios_lista:
+                    opcoes_condominios = ["Selecione..."] + [c.get("Condomínio", "") for c in condominios_lista]
+                    
+                    # Verifica se já tem condomínio selecionado
+                    condominio_nome_atual = cliente.get("condominio_nome", "")
+                    index_condominio = opcoes_condominios.index(condominio_nome_atual) if condominio_nome_atual in opcoes_condominios else 0
+                    
+                    condominio_selecionado = st.selectbox(
+                        "Selecione o Condomínio",
+                        opcoes_condominios,
+                        index=index_condominio,
+                        key=f"condominio_select_{key_suffix}"
+                    )
+                    
+                    # Auto-preencher quando selecionar
+                    if condominio_selecionado != "Selecione...":
+                        condo_data = next((c for c in condominios_lista if c.get("Condomínio") == condominio_selecionado), None)
+                        if condo_data:
+                            # Armazena no session_state para usar nos campos
+                            st.session_state[f"endereco_auto_{key_suffix}"] = condo_data.get("Endereço", "")
+                            st.session_state[f"numero_auto_{key_suffix}"] = str(condo_data.get("Número", ""))
+                            st.session_state[f"bairro_auto_{key_suffix}"] = condo_data.get("Bairro", "")
+                            st.session_state[f"cidade_auto_{key_suffix}"] = condo_data.get("Cidade", "Rio de Janeiro")
+                            st.session_state[f"cep_auto_{key_suffix}"] = condo_data.get("CEP", "")
+                else:
+                    st.warning("⚠️ Nenhum condomínio cadastrado no sistema.")
+            
             col1, col2 = st.columns([3, 1])
             with col1:
-                endereco = st.text_input("Endereço *", max_chars=100, value=cliente.get("endereco", ""), key="endereco_editar")
+                # Usa o valor do session_state se existir (auto-preenchido), senão usa o do banco
+                valor_endereco = st.session_state.get(f"endereco_auto_{key_suffix}", cliente.get("endereco", ""))
+                endereco = st.text_input("Endereço *", max_chars=100, value=valor_endereco, key=f"endereco_editar_{key_suffix}")
             with col2:
-                numero = st.text_input("Número *", max_chars=6, value=cliente.get("numero", ""), key="numero_editar")
+                valor_numero = st.session_state.get(f"numero_auto_{key_suffix}", cliente.get("numero", ""))
+                numero = st.text_input("Número *", max_chars=6, value=valor_numero, key=f"numero_editar_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
                 complemento = st.text_input("Complemento", max_chars=50, value=cliente.get("complemento", ""), key="complemento_editar")
             with col2:
-                cidade = st.text_input("Cidade *", max_chars=50, value=cliente.get("cidade", "Paraiba do Sul"), key="cidade_editar")
+                valor_cidade = st.session_state.get(f"cidade_auto_{key_suffix}", cliente.get("cidade", "Paraiba do Sul"))
+                cidade = st.text_input("Cidade *", max_chars=50, value=valor_cidade, key=f"cidade_editar_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
-                bairro = st.text_input("Bairro *", max_chars=50, value=cliente.get("bairro", ""), key="bairro_editar")
+                valor_bairro = st.session_state.get(f"bairro_auto_{key_suffix}", cliente.get("bairro", ""))
+                bairro = st.text_input("Bairro *", max_chars=50, value=valor_bairro, key=f"bairro_editar_{key_suffix}")
             with col2:
                 ponto_referencia = st.text_input("Ponto de referência", max_chars=100, value=cliente.get("ponto_referencia", ""), key="ponto_referencia_editar")
 
@@ -503,7 +566,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     key=f"tempo_moradia_valor_{key_suffix}"
                 )
                 tempo_moradia_unidade = st.selectbox(
-                    " ",
+                    "",
                     ["Anos", "Meses"],
                     index=0 if tempo_unidade_atual == "Anos" else 1,
                     key=f"tempo_moradia_unidade_{key_suffix}"
@@ -647,7 +710,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             codigo_indicacao = gerar_codigo_indicacao()
                         cpf_limpo = limpar_cpf(cpf)
                         
-                        # ✅ CORREÇÃO PRINCIPAL: Preservar campos de agendamento existentes
+                        # CORREÇÃO PRINCIPAL: Preservar campos de agendamento existentes
                         update_data = {
                             "nome_completo": nome_completo,
                             "celular": normalize_phone(celular),
@@ -683,7 +746,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "detalhes_recusa_ativacao": detalhes_recusa.strip() if detalhes_recusa and detalhes_recusa.strip() else None,
                             "ja_possui_internet": ja_possui_internet if ja_possui_internet != "Selecione..." else "",
                             
-                            # ✅ PRESERVAR CAMPOS DE AGENDAMENTO (NÃO SOBRESCREVER)
+                            # PRESERVAR CAMPOS DE AGENDAMENTO (NÃO SOBRESCREVER)
                             "retorno_agendado": cliente.get("retorno_agendado", retorno_agendado),
                             "periodo": cliente.get("periodo", None),
                             "observacoes_agendamento": cliente.get("observacoes_agendamento", None),
@@ -694,6 +757,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "reagendado_para": cliente.get("reagendado_para", None),
                             "motivo_cancelamento": cliente.get("motivo_cancelamento", None),
                             "data_cancelamento": cliente.get("data_cancelamento", None),
+                            
+                            # CAMPOS DE CONDOMÍNIO
+                            "eh_condominio": eh_condominio,
+                            "condominio_nome": condominio_selecionado if eh_condominio and condominio_selecionado != "Selecione..." else None,
                             
                             "observacoes": observacoes if observacoes else "",
                             "observacoes_followup": obs_followup.strip(),
@@ -734,13 +801,12 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     st.rerun()
 
 # ============================================================================
-# ✅ EXPANDER PARA COMPLETAR CADASTRO - CORRIGIDO
+# EXPANDER PARA COMPLETAR CADASTRO - ATUALIZADO COM CONDOMÍNIOS
 # ============================================================================
 def expander_completar_cadastro(cliente, clientes_collection):
     if not cliente or not isinstance(cliente, dict):
         st.error("❌ Cliente não encontrado.")
         return
-    
     with st.expander("✏️ Completar Cadastro do Cliente", expanded=True):
         st.success(f"Completando cadastro de: {cliente['nome_completo']}")
         
@@ -819,9 +885,9 @@ def expander_completar_cadastro(cliente, clientes_collection):
             st.markdown("### 📅 Follow-up")
             retorno_agendado_atual = cliente.get("retorno_agendado", "")
             
-            # ✅ VERIFICA SE JÁ EXISTE AGENDAMENTO VÁLIDO
+            # VERIFICA SE JÁ EXISTE AGENDAMENTO VÁLIDO
             cliente_ja_tem_agendamento = False
-            if retorno_agendado_atual and len(retorno_agendado_atual) == 10:
+            if retorno_agendado_atual and len(retorno_agendado_atual) == 10: 
                 try:
                     datetime.strptime(retorno_agendado_atual, "%Y-%m-%d")
                     cliente_ja_tem_agendamento = True
@@ -947,11 +1013,20 @@ def expander_completar_cadastro(cliente, clientes_collection):
                 )
 
             nome_completo = st.text_input("Nome completo *", max_chars=80, value=cliente["nome_completo"], key="nome_completo_completar")
-            col1, col2 = st.columns(2)
-            with col1:
-                cpf = st.text_input("CPF *", max_chars=14, placeholder="000.000.000-00", value=cliente.get("cpf", ""), key="cpf_completar")
-            with col2:
+            
+            # --- INÍCIO MODIFICAÇÃO CONDOMÍNIO ---
+            col_cpf_cond, col_rg_cond = st.columns([3, 2])
+            with col_cpf_cond:
+                col_cpf, col_check = st.columns([4, 1])
+                with col_cpf:
+                    cpf = st.text_input("CPF *", max_chars=14, placeholder="000.000.000-00", value=cliente.get("cpf", ""), key="cpf_completar")
+                with col_check:
+                    eh_condominio_default = cliente.get("eh_condominio", False)
+                    eh_condominio = st.checkbox("É COND.", value=eh_condominio_default, key=f"eh_condominio_{key_suffix}")
+            
+            with col_rg_cond:
                 rg = st.text_input("RG *", max_chars=15, placeholder="12.345.678-9", value=cliente.get("rg", ""), key="rg_completar")
+            # --- FIM MODIFICAÇÃO CONDOMÍNIO ---
 
             data_nascimento_str = cliente.get("data_nascimento")
             data_nascimento = None
@@ -963,21 +1038,53 @@ def expander_completar_cadastro(cliente, clientes_collection):
             data_nascimento = st.date_input("Data de nascimento *", value=data_nascimento, format="DD/MM/YYYY", key="data_nascimento_completar", min_value=datetime(1900, 1, 1))
 
             email = st.text_input("Email *", max_chars=50, value=cliente.get("email", ""), key="email_completar")
+            
+            # --- SE FOR CONDOMÍNIO, MOSTRAR SELEÇÃO ---
+            if eh_condominio:
+                st.markdown("### 🏢 Seleção de Condomínio")
+                condominios_lista = carregar_condominios()
+                if condominios_lista:
+                    opcoes_condominios = ["Selecione..."] + [c.get("Condomínio", "") for c in condominios_lista]
+                    condominio_nome_atual = cliente.get("condominio_nome", "")
+                    index_condominio = opcoes_condominios.index(condominio_nome_atual) if condominio_nome_atual in opcoes_condominios else 0
+                    
+                    condominio_selecionado = st.selectbox(
+                        "Selecione o Condomínio",
+                        opcoes_condominios,
+                        index=index_condominio,
+                        key=f"condominio_select_{key_suffix}"
+                    )
+                    
+                    if condominio_selecionado != "Selecione...":
+                        condo_data = next((c for c in condominios_lista if c.get("Condomínio") == condominio_selecionado), None)
+                        if condo_data:
+                            st.session_state[f"endereco_auto_{key_suffix}"] = condo_data.get("Endereço", "")
+                            st.session_state[f"numero_auto_{key_suffix}"] = str(condo_data.get("Número", ""))
+                            st.session_state[f"bairro_auto_{key_suffix}"] = condo_data.get("Bairro", "")
+                            st.session_state[f"cidade_auto_{key_suffix}"] = condo_data.get("Cidade", "Rio de Janeiro")
+                            st.session_state[f"cep_auto_{key_suffix}"] = condo_data.get("CEP", "")
+                else:
+                    st.warning("⚠️ Nenhum condomínio cadastrado no sistema.")
+
             col1, col2 = st.columns([3, 1])
             with col1:
-                endereco = st.text_input("Endereço *", max_chars=100, value=cliente.get("endereco", ""), key="endereco_completar")
+                valor_endereco = st.session_state.get(f"endereco_auto_{key_suffix}", cliente.get("endereco", ""))
+                endereco = st.text_input("Endereço *", max_chars=100, value=valor_endereco, key=f"endereco_completar_{key_suffix}")
             with col2:
-                numero = st.text_input("Número *", max_chars=6, value=cliente.get("numero", ""), key="numero_completar")
+                valor_numero = st.session_state.get(f"numero_auto_{key_suffix}", cliente.get("numero", ""))
+                numero = st.text_input("Número *", max_chars=6, value=valor_numero, key=f"numero_completar_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
                 complemento = st.text_input("Complemento", max_chars=50, value=cliente.get("complemento", ""), key="complemento_completar")
             with col2:
-                cidade = st.text_input("Cidade *", max_chars=50, value=cliente.get("cidade", "Paraiba do Sul"), key="cidade_completar")
+                valor_cidade = st.session_state.get(f"cidade_auto_{key_suffix}", cliente.get("cidade", "Paraiba do Sul"))
+                cidade = st.text_input("Cidade *", max_chars=50, value=valor_cidade, key=f"cidade_completar_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
-                bairro = st.text_input("Bairro *", max_chars=50, value=cliente.get("bairro", ""), key="bairro_completar")
+                valor_bairro = st.session_state.get(f"bairro_auto_{key_suffix}", cliente.get("bairro", ""))
+                bairro = st.text_input("Bairro *", max_chars=50, value=valor_bairro, key=f"bairro_completar_{key_suffix}")
             with col2:
                 ponto_referencia = st.text_input("Ponto de referência", max_chars=100, value=cliente.get("ponto_referencia", ""), key="ponto_referencia_completar")
 
@@ -1003,7 +1110,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                     key=f"tempo_moradia_valor_{key_suffix}"
                 )
                 tempo_moradia_unidade = st.selectbox(
-                    " ",
+                    "  ",
                     ["Anos", "Meses"],
                     index=0 if tempo_unidade_atual == "Anos" else 1,
                     key=f"tempo_moradia_unidade_{key_suffix}"
@@ -1146,7 +1253,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                             codigo_indicacao = gerar_codigo_indicacao()
                         cpf_limpo = limpar_cpf(cpf)
                         
-                        # ✅ CORREÇÃO PRINCIPAL: Preservar campos de agendamento existentes
+                        # CORREÇÃO PRINCIPAL: Preservar campos de agendamento existentes
                         update_data = {
                             "celular": celular_normalizado,
                             "celular_contato_1": normalize_phone(celular_contato_1) if celular_contato_1 and celular_contato_1.strip() else None,
@@ -1184,7 +1291,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                             "detalhes_recusa_ativacao": detalhes_recusa.strip() if detalhes_recusa and detalhes_recusa.strip() else None,
                             "ja_possui_internet": ja_possui_internet if ja_possui_internet != "Selecione..." else "",
                             
-                            # ✅ PRESERVAR CAMPOS DE AGENDAMENTO (NÃO SOBRESCREVER)
+                            # PRESERVAR CAMPOS DE AGENDAMENTO (NÃO SOBRESCREVER)
                             "retorno_agendado": cliente.get("retorno_agendado", retorno_agendado),
                             "periodo": cliente.get("periodo", None),
                             "observacoes_agendamento": cliente.get("observacoes_agendamento", None),
@@ -1195,6 +1302,10 @@ def expander_completar_cadastro(cliente, clientes_collection):
                             "reagendado_para": cliente.get("reagendado_para", None),
                             "motivo_cancelamento": cliente.get("motivo_cancelamento", None),
                             "data_cancelamento": cliente.get("data_cancelamento", None),
+                            
+                            # CAMPOS DE CONDOMÍNIO
+                            "eh_condominio": eh_condominio,
+                            "condominio_nome": condominio_selecionado if eh_condominio and condominio_selecionado != "Selecione..." else None,
                             
                             "observacoes": observacoes if observacoes else "",
                             "observacoes_followup": obs_followup.strip(),
@@ -1265,7 +1376,6 @@ def render_cadastro(clientes_collection):
         st.session_state["ignorar_bloqueio"] = False
     if "endereco_bloqueado_confirmado" not in st.session_state:
         st.session_state["endereco_bloqueado_confirmado"] = {}
-    
     st.markdown("### 🔍 Buscar cliente por nome, CPF ou Celular")
     busca_global = st.text_input(
         "Digite o nome, CPF ou celular do cliente",
@@ -1276,16 +1386,16 @@ def render_cadastro(clientes_collection):
     if busca_global.strip():
         busca_normalizada = normalize_phone(busca_global)
         cpf_puro = re.sub(r'\D', '', busca_global)
-        query = {"$or": []}
-        query["$or"].append({"nome_completo": {"$regex": busca_global, "$options": "i"}})
+        query = { "$or": []}
+        query["$or"].append({ "nome_completo": { "$regex": busca_global, "$options": "i"}})
         if busca_normalizada:
-            query["$or"].append({"celular": busca_normalizada})
-            query["$or"].append({"celular_contato_1": busca_normalizada})
-            query["$or"].append({"celular_contato_2": busca_normalizada})
+            query["$or"].append({ "celular": busca_normalizada})
+            query["$or"].append({ "celular_contato_1": busca_normalizada})
+            query["$or"].append({ "celular_contato_2": busca_normalizada})
         if len(cpf_puro) == 11 and cpf_puro[0] != '9':
-            query["$or"].append({"cpf": cpf_puro})
-        query["$or"].append({"descricao_contato_1": {"$regex": busca_global, "$options": "i"}})
-        query["$or"].append({"descricao_contato_2": {"$regex": busca_global, "$options": "i"}})
+            query["$or"].append({ "cpf": cpf_puro})
+        query["$or"].append({ "descricao_contato_1": { "$regex": busca_global, "$options": "i"}})
+        query["$or"].append({ "descricao_contato_2": { "$regex": busca_global, "$options": "i"}})
 
         if query["$or"]:
             clientes_encontrados = clientes_collection.find(query)
@@ -1396,7 +1506,7 @@ def render_cadastro(clientes_collection):
                                 st.write("🟢 Cadastro já completo")
             else:
                 st.warning("⚠️ Nenhum cliente encontrado.")
-    
+
     if st.button("➕ Iniciar Novo Cadastro", key="novo_cadastro_via_busca"):
         st.session_state["acao_selecionada"] = "Novo Cadastro"
         st.session_state["busca_pre_preenchida"] = ""
@@ -1483,14 +1593,36 @@ def render_cadastro(clientes_collection):
                 st.session_state["busca_pre_preenchida"] = cliente_existente["celular"]
                 st.rerun()
 
-        cpf = st.text_input(
-            "CPF *",
-            max_chars=14,
-            placeholder="000.000.000-00",
-            value=get_valor_inicial("cpf", ""),
-            key=f"campo_cpf_{st.session_state['form_key']}",
-            on_change=verificar_duplicidade
-        ) if tipo_cadastro == "Cadastro CRM" else ""
+        # --- INÍCIO MODIFICAÇÃO CONDOMÍNIO (NOVO CADASTRO) ---
+        if tipo_cadastro == "Cadastro CRM":
+            col_cpf_cond, col_rg_cond = st.columns([3, 2])
+            with col_cpf_cond:
+                col_cpf, col_check = st.columns([4, 1])
+                with col_cpf:
+                    cpf = st.text_input(
+                        "CPF *",
+                        max_chars=14,
+                        placeholder="000.000.000-00",
+                        value=get_valor_inicial("cpf", ""),
+                        key=f"campo_cpf_{st.session_state['form_key']}",
+                        on_change=verificar_duplicidade
+                    )
+                with col_check:
+                    eh_condominio = st.checkbox("É COND.", value=False, key=f"eh_condominio_novo_{st.session_state['form_key']}")
+            
+            with col_rg_cond:
+                rg = st.text_input(
+                    "RG *",
+                    max_chars=15,
+                    placeholder="12.345.678-9",
+                    value=get_valor_inicial("rg", ""),
+                    key=f"rg_{st.session_state['form_key']}"
+                )
+        else:
+            cpf = ""
+            rg = ""
+            eh_condominio = False
+        # --- FIM MODIFICAÇÃO CONDOMÍNIO ---
 
         restritivo = ""
         qtd_registros = ano_recente = servico_internet = None
@@ -1626,6 +1758,30 @@ def render_cadastro(clientes_collection):
             observacoes = ""
             ja_possui_internet = ""
 
+        # --- SE FOR CONDOMÍNIO, MOSTRAR SELEÇÃO (NOVO CADASTRO) ---
+        if tipo_cadastro == "Cadastro CRM" and eh_condominio:
+            st.markdown("### 🏢 Seleção de Condomínio")
+            condominios_lista = carregar_condominios()
+            if condominios_lista:
+                opcoes_condominios = ["Selecione..."] + [c.get("Condomínio", "") for c in condominios_lista]
+                condominio_selecionado = st.selectbox(
+                    "Selecione o Condomínio",
+                    opcoes_condominios,
+                    index=0,
+                    key=f"condominio_select_novo_{st.session_state['form_key']}"
+                )
+                
+                if condominio_selecionado != "Selecione...":
+                    condo_data = next((c for c in condominios_lista if c.get("Condomínio") == condominio_selecionado), None)
+                    if condo_data:
+                        st.session_state[f"endereco_auto_novo_{st.session_state['form_key']}"] = condo_data.get("Endereço", "")
+                        st.session_state[f"numero_auto_novo_{st.session_state['form_key']}"] = str(condo_data.get("Número", ""))
+                        st.session_state[f"bairro_auto_novo_{st.session_state['form_key']}"] = condo_data.get("Bairro", "")
+                        st.session_state[f"cidade_auto_novo_{st.session_state['form_key']}"] = condo_data.get("Cidade", "Rio de Janeiro")
+                        st.session_state[f"cep_auto_novo_{st.session_state['form_key']}"] = condo_data.get("CEP", "")
+            else:
+                st.warning("⚠️ Nenhum condomínio cadastrado no sistema.")
+
         endereco_para_salvar = get_valor_inicial("endereco", "").strip() if tipo_cadastro == "Cadastro CRM" else ""
         numero_para_salvar = get_valor_inicial("numero", "").strip()
         cliente_bloqueado = None
@@ -1641,7 +1797,7 @@ def render_cadastro(clientes_collection):
             endereco_completo = montar_endereco_completo(endereco_para_salvar, numero_para_salvar, get_valor_inicial("complemento", ""))
             st.markdown(
                 f'<div style="background-color:#ffe6e6; padding:8px; border-radius:6px; margin-bottom:12px; font-weight:bold; font-size:1em;">'
-                f'🚨 <strong>Endereço bloqueado:</strong> <br> <small>{endereco_completo}</small>'
+                f'🚨 <strong>Endereço bloqueado:</strong> <br><small>{endereco_completo}</small>'
                 f'</div>',
                 unsafe_allow_html=True
             )
@@ -1677,8 +1833,8 @@ def render_cadastro(clientes_collection):
                     badge_tipo = "🔵 Simples" if tipo == "simples" else "🟢 Completo"
                     badge_status = "🟡 Novo" if status == "novo" else "🟠 Em análise" if status == "analise" else "🟢 Convertido" if status == "convertido" else status
                     st.markdown(
-                        f"- **{nome}** • `{celular}`{cpf_display}{data_str} <br> "
-                        f"<span style='font-size:0.85em; background-color:#e0e0e0; padding:2px 6px; border-radius:4px;'>{badge_tipo}</span> "
+                        f"- **{nome}** • `{celular}`{cpf_display}{data_str}<br>"
+                        f"<span style='font-size:0.85em; background-color:#e0e0e0; padding:2px 6px; border-radius:4px;'>{badge_tipo}</span>"
                         f"<span style='font-size:0.85em; background-color:#d0e0ff; padding:2px 6px; border-radius:4px;'>{badge_status}</span>",
                         unsafe_allow_html=True
                     )
@@ -1709,24 +1865,8 @@ def render_cadastro(clientes_collection):
 
         with st.form(f"novo_cadastro_{st.session_state['form_key']}"):
             if tipo_cadastro == "Cadastro CRM":
-                col1, col2 = st.columns(2)
-                with col1:
-                    rg = st.text_input(
-                        "RG *",
-                        max_chars=15,
-                        placeholder="12.345.678-9",
-                        value=get_valor_inicial("rg", ""),
-                        key=f"rg_{st.session_state['form_key']}"
-                    )
-                with col2:
-                    data_nascimento = st.date_input(
-                        "Data de nascimento *",
-                        value=get_valor_inicial("data_nascimento", datetime.today()),
-                        format="DD/MM/YYYY",
-                        key=f"data_nascimento_{st.session_state['form_key']}",
-                        min_value=datetime(1900, 1, 1)
-                    )
-
+                # RG e Data Nascimento já foram definidos acima nas columns
+                
                 email = st.text_input(
                     "Email *",
                     value=get_valor_inicial("email", ""),
@@ -1735,16 +1875,19 @@ def render_cadastro(clientes_collection):
 
                 col1, col2 = st.columns([3, 1])
                 with col1:
+                    # Usa o valor do session_state se existir (auto-preenchido), senão usa o inicial
+                    valor_endereco = st.session_state.get(f"endereco_auto_novo_{st.session_state['form_key']}", get_valor_inicial("endereco", ""))
                     endereco = st.text_input(
                         "Endereço *",
-                        value=get_valor_inicial("endereco", ""),
+                        value=valor_endereco,
                         key=f"endereco_{st.session_state['form_key']}"
                     )
                 with col2:
+                    valor_numero = st.session_state.get(f"numero_auto_novo_{st.session_state['form_key']}", get_valor_inicial("numero", ""))
                     numero = st.text_input(
                         "Número *",
                         max_chars=6,
-                        value=get_valor_inicial("numero", ""),
+                        value=valor_numero,
                         key=f"numero_{st.session_state['form_key']}"
                     )
 
@@ -1756,17 +1899,19 @@ def render_cadastro(clientes_collection):
                         key=f"complemento_{st.session_state['form_key']}"
                     )
                 with col2:
+                    valor_cidade = st.session_state.get(f"cidade_auto_novo_{st.session_state['form_key']}", get_valor_inicial("cidade", "Paraiba do Sul"))
                     cidade = st.text_input(
                         "Cidade *",
-                        value=get_valor_inicial("cidade", "Paraiba do Sul"),
+                        value=valor_cidade,
                         key=f"cidade_{st.session_state['form_key']}"
                     )
 
                 col1, col2 = st.columns(2)
                 with col1:
+                    valor_bairro = st.session_state.get(f"bairro_auto_novo_{st.session_state['form_key']}", get_valor_inicial("bairro", ""))
                     bairro = st.text_input(
                         "Bairro *",
-                        value=get_valor_inicial("bairro", ""),
+                        value=valor_bairro,
                         key=f"bairro_{st.session_state['form_key']}"
                     )
                 with col2:
@@ -1792,7 +1937,7 @@ def render_cadastro(clientes_collection):
                         key=f"tempo_moradia_valor_{st.session_state['form_key']}"
                     )
                     tempo_moradia_unidade = st.selectbox(
-                        " ",
+                        "",
                         ["Anos", "Meses"],
                         index=0,
                         key=f"tempo_moradia_unidade_{st.session_state['form_key']}"
@@ -2022,6 +2167,13 @@ def render_cadastro(clientes_collection):
                     cadastrado_por = nome_atendente
                     cpf_limpo = limpar_cpf(cpf)
 
+                    # Recupera o nome do condomínio selecionado se houver
+                    condominio_nome_salvo = None
+                    if tipo_cadastro == "Cadastro CRM" and eh_condominio:
+                        condominio_selecionado_novo = st.session_state.get(f"condominio_select_novo_{st.session_state['form_key']}", "Selecione...")
+                        if condominio_selecionado_novo != "Selecione...":
+                            condominio_nome_salvo = condominio_selecionado_novo
+
                     cliente_data = {
                         "nome_completo": nome_completo,
                         "celular": celular_normalizado,
@@ -2069,6 +2221,9 @@ def render_cadastro(clientes_collection):
                         "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                         "endereco_bloqueado": False,
                         "observacoes_bloqueio_endereco": None,
+                        # CAMPOS DE CONDOMÍNIO
+                        "eh_condominio": eh_condominio if tipo_cadastro == "Cadastro CRM" else False,
+                        "condominio_nome": condominio_nome_salvo,
                     }
 
                     try:
