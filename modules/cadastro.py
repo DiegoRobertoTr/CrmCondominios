@@ -1647,8 +1647,8 @@ def render_cadastro(clientes_collection):
                 with col_seg:
                     seguiu_ativacao = st.selectbox(
                         "Seguiu para Ativação? ",
-                        ["Selecione... ", "Sim", "Não"],
-                        index=["Selecione... ", "Sim", "Não"].index(get_valor_inicial("seguiu_ativacao", "Selecione...")),
+                        ["Selecione...", "Sim", "Não"],
+                        index=["Selecione...", "Sim", "Não"].index(get_valor_inicial("seguiu_ativacao", "Selecione...")),
                         key=f"seguiu_ativacao_novo_{st.session_state['form_key']}"
                     )
                 with col_int:
