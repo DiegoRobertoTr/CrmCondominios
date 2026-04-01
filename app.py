@@ -1,4 +1,4 @@
-# app.py
+#app.py
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos
 from pymongo import MongoClient
@@ -7,16 +7,99 @@ from datetime import datetime
 import streamlit.components.v1 as components
 from streamlit_js_eval import streamlit_js_eval
 from urllib.parse import urlencode
+import base64
 
-# --- ⭐ Configuração da página ---
+# ============================================================================
+# 🏢 CONFIGURAÇÃO DE IMAGEM DE FUNDO COM OVERLAY
+# ============================================================================
+
+def get_base64_image(image_path):
+    """Converte imagem local para base64 para usar como background."""
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível carregar a imagem de fundo: {e}")
+        return None
+
+# Carrega a imagem de fundo (ajuste o caminho conforme necessário)
+img_base64 = get_base64_image("assets/condominio.jpg")
+
+# CSS personalizado com imagem de fundo e overlay
+if img_base64:
+    st.markdown(f"""
+    <style>
+        /* Imagem de fundo com overlay semi-transparente */
+        .main {{
+            background-image: url("data:image/jpeg;base64,{img_base64}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            position: relative;
+        }}
+        
+        /* Overlay branco semi-transparente para melhorar legibilidade */
+        .main::before {{
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.88);
+            z-index: -1;
+        }}
+        
+        /* Sidebar com leve transparência */
+        [data-testid="stSidebar"] {{
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }}
+        
+        /* Melhorar contraste dos elementos principais */
+        .stTextInput, .stSelectbox, .stNumberInput, .stTextArea {{
+            background-color: rgba(255, 255, 255, 0.95);
+            border-radius: 8px;
+        }}
+        
+        /* Cards e containers com fundo mais sólido */
+        .stExpander, .stContainer {{
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 10px;
+        }}
+        
+        /* Títulos com mais destaque */
+        h1, h2, h3 {{
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
+        }}
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    # Fallback sem imagem
+    st.markdown("""
+    <style>
+        .main {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+        [data-testid="stSidebar"] {
+            background: rgba(255, 255, 255, 0.95);
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ============================================================================
+# ⭐ Configuração da página
+# ============================================================================
 st.set_page_config(
     page_title="Condominios Tracecom",
-    page_icon="favicon.ico",
+    page_icon="🏢",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# ============================================================================
 # 🔹 🔹 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO 🔹 🔹 🔹
+# ============================================================================
 query_params = st.query_params.to_dict()
 
 # ✅ Rota para pesquisa de satisfação
@@ -36,8 +119,8 @@ if query_params.get("page") == ["satisfacao"]:
     if params:
         redirect_url += "&" + urlencode(params)
     st.markdown(f'''
-        <meta http-equiv="refresh" content="0;url={redirect_url}">
-        <p>Redirecionando para pesquisa de satisfação...</p>
+    <meta http-equiv="refresh" content="0;url={redirect_url}">
+    Redirecionando para pesquisa de satisfação...
     ''', unsafe_allow_html=True)
     st.stop()
 
@@ -60,7 +143,9 @@ if query_params.get("page") == ["hotspots/confirmar"]:
         st.error(f"Erro na confirmação: {e}")
     st.stop()
 
+# ============================================================================
 # --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
+# ============================================================================
 
 # Função auxiliar: coleção de usuários
 def get_usuarios_collection():
@@ -90,7 +175,9 @@ try:
 except Exception:
     pass  # Índices já podem existir
 
+# ============================================================================
 # --- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
+# ============================================================================
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
 
@@ -133,13 +220,17 @@ if not st.session_state["logado"]:
             st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
 
+# ============================================================================
 # --- 🚪 Redireciona para login se não autenticado ---
+# ============================================================================
 if not st.session_state["logado"]:
     st.title("🔐 Condomínios Tracecom - Login")
     auth.login()
     st.stop()
 
+# ============================================================================
 # --- ✅ Interface principal ---
+# ============================================================================
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
 
 if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
@@ -153,7 +244,9 @@ if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
 st.sidebar.divider()
 st.sidebar.header("📋 Módulos")
 
+# ============================================================================
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
+# ============================================================================
 perfil = st.session_state["perfil"]
 
 # ✅ Importa permissões centralizadas
@@ -209,7 +302,9 @@ if perfil == "admin":
 
 modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
+# ============================================================================
 # --- 🔒 Logout ---
+# ============================================================================
 if st.sidebar.button("🚪 Logout"):
     auth.remove_local_storage_token()
     for k in list(st.session_state.keys()):
@@ -218,14 +313,18 @@ if st.sidebar.button("🚪 Logout"):
     st.session_state["logado"] = False
     st.rerun()
 
+# ============================================================================
 # --- 🏢 Cabeçalho ---
+# ============================================================================
 col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=80)
 with col2:
-    st.title("📋 Condomínios Tracecom")
+    st.title("🏢 Condomínios Tracecom")
 
+# ============================================================================
 # --- 📦 Carregamento de módulos ---
+# ============================================================================
 try:
     if modulo == "Cadastro":
         cadastro.render_cadastro(clientes_collection)
