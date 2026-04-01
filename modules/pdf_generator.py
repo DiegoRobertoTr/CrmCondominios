@@ -48,13 +48,15 @@ def gerar_pdf_contrato(dados):
     """Gera PDF do contrato e retorna bytes"""
     if not CONTRATO_TEMPLATE:
         return None
-        
     try:
-        # Garante que todos os campos de endereço estejam presentes (mesmo que vazios)
+        # Garante que todos os campos estejam presentes (mesmo que vazios)
         dados.setdefault("endereco_contratante", "")
         dados.setdefault("numero_contratante", "")
         dados.setdefault("bairro", "")
         dados.setdefault("cidade", "")
+        dados.setdefault("condominio_nome", "")  # 🏢 NOVO
+        dados.setdefault("bloco", "")  # 🏢 NOVO
+        dados.setdefault("apartamento", "")  # 🏢 NOVO
 
         template = Template(CONTRATO_TEMPLATE)
         contrato_preenchido = template.render(dados)
@@ -79,13 +81,15 @@ def gerar_pdf_comodato(dados):
     """Gera PDF do termo de comodato e retorna bytes"""
     if not TERMO_COMODATO_TEMPLATE:
         return None
-        
     try:
-        # Garante que todos os campos de endereço estejam presentes (mesmo que vazios)
+        # Garante que todos os campos estejam presentes (mesmo que vazios)
         dados.setdefault("endereco_contratante", "")
         dados.setdefault("numero_contratante", "")
         dados.setdefault("bairro", "")
         dados.setdefault("cidade", "")
+        dados.setdefault("condominio_nome", "")  # 🏢 NOVO
+        dados.setdefault("bloco", "")  # 🏢 NOVO
+        dados.setdefault("apartamento", "")  # 🏢 NOVO
 
         template = Template(TERMO_COMODATO_TEMPLATE)
         termo_preenchido = template.render(dados)
