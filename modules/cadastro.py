@@ -15,7 +15,7 @@ import copy
 try:
     from .condominios import get_condominio_options, get_condominio_by_id
 except ImportError:
-    from condominios import get_condominio_options, get_condominio_by_id
+    from .condominios import get_condominio_options, get_condominio_by_id
 
 # --- Configuração do WhatsApp da loja ---
 WHATSAPP_LOJA = "5524992035540"  # +55 24 99203-5540 → 5524992035540
