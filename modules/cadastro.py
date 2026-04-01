@@ -1638,7 +1638,7 @@ def render_cadastro(clientes_collection):
                 restritivo = st.selectbox(
                     "Restritivo? ",
                     ["Selecione... ", "Sim", "Não"],
-                    index=["Selecione... ", "Sim", "Não"].index(get_valor_inicial("restritivo", "Selecione...")),
+                    index=["Selecione...", "Sim", "Não"].index(get_valor_inicial("restritivo", "Selecione...")),
                     key=f"restritivo_novo_{st.session_state['form_key']}"
                 )
                 qtd_registros, ano_recente, servico_internet = render_campos_restritivos("novo", restritivo)
