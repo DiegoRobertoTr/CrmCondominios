@@ -11,7 +11,7 @@ from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEA
 from pymongo.errors import DuplicateKeyError
 import copy
 
-# 🏢 CONDOMÍNIO - Importar funções do módulo condominios
+# 🏢 CONDOMÍNIO - Import Correto
 try:
     from .condominios import get_condominio_options, get_condominio_by_id
 except ImportError:
