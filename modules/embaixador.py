@@ -25,12 +25,13 @@ def determinar_status_embaixador(cliente):
         return "Seguiu para ativação"
     else:
         return "Indicado"
+
 def render_embaixador(usuarios_collection, clientes_collection):
     # 🔍 Busca dados completos do embaixador logado (para obter nome da loja)
     codigo_embaixador = st.session_state.get("codigo_embaixador")
     nome_embaixador = st.session_state.get("nome_usuario", "Embaixador")
     loja_parceira = "—"
-
+    
     if codigo_embaixador:
         emb_data = usuarios_collection.find_one(
             {"codigo_embaixador": codigo_embaixador, "perfil": "embaixador"}
@@ -60,6 +61,8 @@ def render_embaixador(usuarios_collection, clientes_collection):
 
     # --- Formulário de indicação ---
     with st.expander("➕ Indicar Novo Cliente"):
+        st.info("ℹ️ Este formulário é para registro inicial de indicação. Os dados completos serão preenchidos pela equipe durante o atendimento.")
+        
         nome = st.text_input("Nome completo do cliente", key="ind_nome")
         celular = st.text_input("Telefone (com DDD, ex: 11999999999)", key="ind_cel")
         cpf = st.text_input("CPF (opcional)", key="ind_cpf")
@@ -109,11 +112,46 @@ def render_embaixador(usuarios_collection, clientes_collection):
     )
 
     if minhas_indicacoes:
+        # 📊 Resumo das indicações
+        total = len(minhas_indicacoes)
+        ativados = sum(1 for c in minhas_indicacoes if c.get("status_agendamento") == "ativado")
+        em_andamento = sum(1 for c in minhas_indicacoes if c.get("status_agendamento") in ["agendado", "em_tratamento"])
+        indicados = sum(1 for c in minhas_indicacoes if determinar_status_embaixador(c) == "Indicado")
+        
+        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+        with col_res1:
+            st.metric("Total", total)
+        with col_res2:
+            st.metric("✅ Ativados", ativados)
+        with col_res3:
+            st.metric("🔄 Em Andamento", em_andamento)
+        with col_res4:
+            st.metric("⏳ Aguardando", indicados)
+        
+        st.divider()
+
         for cli in minhas_indicacoes:
             nome = cli["nome_completo"]
             tel = cli["celular"]
             data = cli.get("data_indicacao", "")[:16] if cli.get("data_indicacao") else "—"
             status_legivel = determinar_status_embaixador(cli)
+
+            # 🏢 NOVO: Informações de condomínio (se existir)
+            condominio_nome = cli.get("condominio_nome")
+            bloco = cli.get("bloco")
+            apartamento = cli.get("apartamento")
+            
+            condominio_info = ""
+            if condominio_nome:
+                condominio_info = f"🏢 {condominio_nome}"
+                if bloco or apartamento:
+                    unidade_parts = []
+                    if bloco:
+                        unidade_parts.append(f"Bloco {bloco}")
+                    if apartamento:
+                        unidade_parts.append(f"Apto {apartamento}")
+                    if unidade_parts:
+                        condominio_info += f" ({' / '.join(unidade_parts)})"
 
             col1, col2 = st.columns([4, 1])
             with col1:
@@ -121,7 +159,26 @@ def render_embaixador(usuarios_collection, clientes_collection):
                 if cli.get("status_agendamento") == "ativado" and not cli.get("notificacao_embaixador_lida", False):
                     st.markdown("🎉 **NOVO CLIENTE ATIVADO!**")
                 
-                st.write(f"**{nome}** | 📞 {tel} | 🕒 {data} | 📌 Status: `{status_legivel}`")
+                # Linha principal com nome e telefone
+                st.write(f"**{nome}** | 📞 {tel} | 🕒 {data}")
+                
+                # 🏢 NOVO: Exibir condomínio se existir
+                if condominio_info:
+                    st.caption(condominio_info)
+                
+                # Status com badge colorido
+                status_badge = {
+                    "Ativado": "✅",
+                    "Cancelado": "❌",
+                    "Agendado": "📅",
+                    "Reagendado": "🔄",
+                    "Em tratamento": "🔧",
+                    "Seguiu para ativação": "➡️",
+                    "Indicado": "⏳"
+                }.get(status_legivel, "📍")
+                
+                st.write(f"📌 Status: `{status_badge} {status_legivel}`")
+                
             with col2:
                 # ✅ Botão para marcar notificação como lida
                 if cli.get("status_agendamento") == "ativado" and not cli.get("notificacao_embaixador_lida", False):
@@ -143,5 +200,35 @@ def render_embaixador(usuarios_collection, clientes_collection):
                         )
                         st.success("🎉 Bônus confirmado!")
                         st.rerun()
+                else:
+                    st.caption("Ações disponíveis em breve")
     else:
         st.info("Nenhuma indicação registrada ainda.")
+
+    # --- 📊 Estatísticas do Embaixador ---
+    st.divider()
+    st.subheader("📊 Suas Estatísticas")
+    
+    if minhas_indicacoes:
+        # Taxa de conversão
+        taxa_conversao = (ativados / total * 100) if total > 0 else 0
+        
+        col_est1, col_est2 = st.columns(2)
+        with col_est1:
+            st.metric("Taxa de Conversão", f"{taxa_conversao:.1f}%")
+        with col_est2:
+            st.metric("Bônus Confirmados", sum(1 for c in minhas_indicacoes if c.get("bonus_confirmado")))
+        
+        # 🏢 NOVO: Estatísticas por condomínio (se houver dados)
+        condominios_com_ativacoes = {}
+        for cli in minhas_indicacoes:
+            if cli.get("status_agendamento") == "ativado" and cli.get("condominio_nome"):
+                cond_nome = cli.get("condominio_nome")
+                condominios_com_ativacoes[cond_nome] = condominios_com_ativacoes.get(cond_nome, 0) + 1
+        
+        if condominios_com_ativacoes:
+            st.markdown("##### 🏢 Ativações por Condomínio")
+            for cond, qtd in sorted(condominios_com_ativacoes.items(), key=lambda x: x[1], reverse=True)[:5]:
+                st.caption(f"• {cond}: {qtd} ativação(ões)")
+    else:
+        st.info("📊 Estatísticas disponíveis após primeiras indicações.")
