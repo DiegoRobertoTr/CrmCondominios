@@ -5,8 +5,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import urllib.parse
 
-
 def enviar_email_tecnico_a_caminho(cliente, tecnico_nome="Técnico Tracecom"):
+    """Envia e-mail informando que o técnico está a caminho."""
     try:
         # Carrega configurações do secrets
         smtp_user = st.secrets["smtp"]["smtp_user"]
@@ -14,12 +14,29 @@ def enviar_email_tecnico_a_caminho(cliente, tecnico_nome="Técnico Tracecom"):
         smtp_server = st.secrets["smtp"]["smtp_server"]
         smtp_port = int(st.secrets["smtp"]["smtp_port"])
         smtp_use_tls = st.secrets["smtp"].get("smtp_use_tls", False)
-
+        
         # Validação de e-mail do cliente
         email_cliente = cliente.get("email", "").strip()
         if not email_cliente or "@" not in email_cliente or "." not in email_cliente.split("@")[-1]:
             st.warning("📧 Cliente sem e-mail válido cadastrado — e-mail não enviado.")
             return False
+
+        # 🏢 CONDOMÍNIO - Montar informações de condomínio
+        condominio_nome = cliente.get("condominio_nome", "")
+        bloco = cliente.get("bloco", "")
+        apartamento = cliente.get("apartamento", "")
+        
+        condominio_info = ""
+        if condominio_nome:
+            condominio_info = f"<p style='margin: 4px 0;'>🏢 <strong>Condomínio:</strong> {condominio_nome}</p>"
+            if bloco or apartamento:
+                unidade_parts = []
+                if bloco:
+                    unidade_parts.append(f"Bloco {bloco}")
+                if apartamento:
+                    unidade_parts.append(f"Apto {apartamento}")
+                if unidade_parts:
+                    condominio_info += f"<p style='margin: 4px 0;'>📍 <strong>Unidade:</strong> {' / '.join(unidade_parts)}</p>"
 
         # Prepara mensagem
         msg = MIMEMultipart("alternative")
@@ -37,6 +54,7 @@ def enviar_email_tecnico_a_caminho(cliente, tecnico_nome="Técnico Tracecom"):
             <div style="background: #f5f9ff; padding: 16px; border-left: 4px solid #1e88e5; margin: 20px 0;">
                 <p style="margin: 0;"><strong>📍 Endereço:</strong> {cliente.get('endereco', '—')}, {cliente.get('numero', '')}</p>
                 {f"<p style='margin: 4px 0;'>{cliente.get('complemento', '')}</p>" if cliente.get('complemento') else ""}
+                {condominio_info}
                 <p style="margin: 0;">{cliente.get('bairro', '—')} – {cliente.get('cidade', '—')}</p>
             </div>
             <p>Em caso de dúvidas, entre em contato conosco.</p>
@@ -78,6 +96,7 @@ def enviar_email_tecnico_a_caminho(cliente, tecnico_nome="Técnico Tracecom"):
 
 
 def enviar_email_os_finalizada(cliente, tecnico_nome="Técnico Tracecom"):
+    """Envia e-mail informando que a instalação foi concluída."""
     try:
         # Carrega configurações do secrets
         smtp_user = st.secrets["smtp"]["smtp_user"]
@@ -85,12 +104,29 @@ def enviar_email_os_finalizada(cliente, tecnico_nome="Técnico Tracecom"):
         smtp_server = st.secrets["smtp"]["smtp_server"]
         smtp_port = int(st.secrets["smtp"]["smtp_port"])
         smtp_use_tls = st.secrets["smtp"].get("smtp_use_tls", False)
-
+        
         # Validação de e-mail do cliente
         email_cliente = cliente.get("email", "").strip()
         if not email_cliente or "@" not in email_cliente or "." not in email_cliente.split("@")[-1]:
             st.warning("📧 Cliente sem e-mail válido cadastrado — e-mail de encerramento não enviado.")
             return False
+
+        # 🏢 CONDOMÍNIO - Montar informações de condomínio
+        condominio_nome = cliente.get("condominio_nome", "")
+        bloco = cliente.get("bloco", "")
+        apartamento = cliente.get("apartamento", "")
+        
+        condominio_info = ""
+        if condominio_nome:
+            condominio_info = f"<p style='margin: 4px 0 0 16px;'>🏢 <strong>Condomínio:</strong> {condominio_nome}</p>"
+            if bloco or apartamento:
+                unidade_parts = []
+                if bloco:
+                    unidade_parts.append(f"Bloco {bloco}")
+                if apartamento:
+                    unidade_parts.append(f"Apto {apartamento}")
+                if unidade_parts:
+                    condominio_info += f"<p style='margin: 4px 0 0 16px;'>📍 <strong>Unidade:</strong> {' / '.join(unidade_parts)}</p>"
 
         # E-mail atualizado conforme sua solicitação
         msg = MIMEMultipart("alternative")
@@ -101,9 +137,9 @@ def enviar_email_os_finalizada(cliente, tecnico_nome="Técnico Tracecom"):
 
         corpo_html = f"""
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    max-width: 600px; margin: 0 auto; padding: 20px; 
-                    border: 1px solid #e3f2fd; border-radius: 10px; 
-                    background-color: #fafcff;">
+                   max-width: 600px; margin: 0 auto; padding: 20px; 
+                   border: 1px solid #e3f2fd; border-radius: 10px; 
+                   background-color: #fafcff;">
             <h2 style="color: #1565c0; margin-top: 0; font-weight: 600;">
                 Olá, {cliente.get('nome_completo', 'cliente')}!
             </h2>
@@ -113,11 +149,12 @@ def enviar_email_os_finalizada(cliente, tecnico_nome="Técnico Tracecom"):
             </p>
 
             <div style="background: #f8fdff; padding: 16px; 
-                        border-left: 4px solid #2196f3; 
-                        margin: 20px 0; border-radius: 0 6px 6px 0;">
+                       border-left: 4px solid #2196f3; 
+                       margin: 20px 0; border-radius: 0 6px 6px 0;">
                 <p style="margin: 0; font-weight: 600; color: #0d47a1;">▸ Local:</p>
                 <p style="margin: 4px 0 0 16px;">{cliente.get('endereco', '—')}, {cliente.get('numero', '')}</p>
                 {f"<p style='margin: 2px 0 0 16px;'>{cliente.get('complemento', '')}</p>" if cliente.get('complemento') else ""}
+                {condominio_info}
                 <p style="margin: 4px 0 8px 16px;">{cliente.get('bairro', '—')} – {cliente.get('cidade', '—')}</p>
                 
                 <p style="margin: 12px 0 0 0; font-weight: 600; color: #0d47a1;">▸ Plano contratado:</p>
@@ -125,7 +162,7 @@ def enviar_email_os_finalizada(cliente, tecnico_nome="Técnico Tracecom"):
             </div>
 
             <p style="font-size: 15px; line-height: 1.6; background-color: #fff8e1; 
-                      padding: 14px; border-radius: 8px; border-left: 3px solid #ff9800;">
+                     padding: 14px; border-radius: 8px; border-left: 3px solid #ff9800;">
                 <strong>💡 Em caso de necessidade de suporte, registre este número:</strong><br>
                 <span style="font-size: 18px; font-weight: bold; color: #e65100;">(21) 3500-0188, opção 6</span><br><br>
                 Lembre-se! Toda a tratativa de suporte é realizada por este canal, 
@@ -172,11 +209,11 @@ def enviar_email_os_finalizada(cliente, tecnico_nome="Técnico Tracecom"):
 
 
 def render_tecnico(clientes_collection, login_tecnico):
+    """Renderiza o painel do técnico com agendamentos do dia."""
     st.header("🔧 Painel do Técnico")
-    st.caption(f"Técnico logado: **{login_tecnico}**")
-
+    st.caption(f"Técnico logado: {login_tecnico}")
     hoje = date.today().isoformat()
-    
+
     # Busca agendamentos do dia (seguiu_ativacao == "Sim" + retorno_agendado == hoje)
     agendamentos_do_dia = list(
         clientes_collection.find({
@@ -190,7 +227,7 @@ def render_tecnico(clientes_collection, login_tecnico):
         return
 
     st.subheader(f"📅 Agendamentos de Hoje ({hoje})")
-    
+
     # Separa meus agendamentos e os disponíveis
     meus_agendamentos = [a for a in agendamentos_do_dia if a.get("atribuido_a") == login_tecnico]
     outros_agendamentos = [a for a in agendamentos_do_dia if a.get("atribuido_a") != login_tecnico or a.get("atribuido_a") is None]
@@ -213,8 +250,43 @@ def render_tecnico(clientes_collection, login_tecnico):
             }
             status_texto, _ = status_config.get(status_os, ("⚠️ Desconhecido", "vermelho"))
 
-            with st.expander(f"[{ordem}] {nome} - {tel} | {status_texto}", expanded=False):
-                st.write(f"**Endereço:** {cliente.get('endereco', '—')}, {cliente.get('numero', '')}")
+            # 🏢 CONDOMÍNIO - Montar informações de condomínio para exibição
+            condominio_nome = cliente.get("condominio_nome", "")
+            bloco = cliente.get("bloco", "")
+            apartamento = cliente.get("apartamento", "")
+            
+            condominio_display = ""
+            if condominio_nome:
+                condominio_display = f" | 🏢 {condominio_nome}"
+                if bloco or apartamento:
+                    unidade_parts = []
+                    if bloco:
+                        unidade_parts.append(f"Bloco {bloco}")
+                    if apartamento:
+                        unidade_parts.append(f"Apto {apartamento}")
+                    if unidade_parts:
+                        condominio_display += f" ({' / '.join(unidade_parts)})"
+
+            with st.expander(f"[{ordem}] {nome} - {tel}{condominio_display} | {status_texto}", expanded=False):
+                # 🏢 CONDOMÍNIO - Endereço completo com condomínio
+                endereco_completo = f"{cliente.get('endereco', '—')}, {cliente.get('numero', '')}"
+                if cliente.get('complemento'):
+                    endereco_completo += f" - {cliente.get('complemento')}"
+                
+                st.write(f"**Endereço:** {endereco_completo}")
+                
+                # 🏢 CONDOMÍNIO - Exibir condomínio separadamente se existir
+                if condominio_nome:
+                    st.info(f"🏢 **Condomínio:** {condominio_nome}")
+                    if bloco or apartamento:
+                        unidade_parts = []
+                        if bloco:
+                            unidade_parts.append(f"Bloco {bloco}")
+                        if apartamento:
+                            unidade_parts.append(f"Apto {apartamento}")
+                        if unidade_parts:
+                            st.info(f"📍 **Unidade:** {' / '.join(unidade_parts)}")
+                
                 st.write(f"**Plano:** {cliente.get('plano_escolhido', '—')}")
                 st.write(f"**Período:** {cliente.get('periodo', '—')}")
                 
@@ -310,13 +382,48 @@ def render_tecnico(clientes_collection, login_tecnico):
             tel = cliente["celular"]
             atribuido_a = cliente.get("atribuido_a")
 
+            # 🏢 CONDOMÍNIO - Montar informações de condomínio para exibição
+            condominio_nome = cliente.get("condominio_nome", "")
+            bloco = cliente.get("bloco", "")
+            apartamento = cliente.get("apartamento", "")
+            
+            condominio_display = ""
+            if condominio_nome:
+                condominio_display = f" | 🏢 {condominio_nome}"
+                if bloco or apartamento:
+                    unidade_parts = []
+                    if bloco:
+                        unidade_parts.append(f"Bloco {bloco}")
+                    if apartamento:
+                        unidade_parts.append(f"Apto {apartamento}")
+                    if unidade_parts:
+                        condominio_display += f" ({' / '.join(unidade_parts)})"
+
             # ✅ Lógica de disponibilidade: só permite atribuição se NÃO estiver atribuído a outro técnico
             disponivel_para_atribuir = (atribuido_a is None) or (atribuido_a == login_tecnico)
 
             status_rotulo = "🟢 Disponível" if disponivel_para_atribuir else f"🔒 Atribuído a: {atribuido_a}"
             
-            with st.expander(f"📞 {nome} - {tel} | {status_rotulo}", expanded=False):
-                st.write(f"**Endereço:** {cliente.get('endereco', '—')}, {cliente.get('numero', '')}")
+            with st.expander(f"📞 {nome} - {tel}{condominio_display} | {status_rotulo}", expanded=False):
+                # 🏢 CONDOMÍNIO - Endereço completo com condomínio
+                endereco_completo = f"{cliente.get('endereco', '—')}, {cliente.get('numero', '')}"
+                if cliente.get('complemento'):
+                    endereco_completo += f" - {cliente.get('complemento')}"
+                
+                st.write(f"**Endereço:** {endereco_completo}")
+                
+                # 🏢 CONDOMÍNIO - Exibir condomínio separadamente se existir
+                if condominio_nome:
+                    st.info(f"🏢 **Condomínio:** {condominio_nome}")
+                    if bloco or apartamento:
+                        unidade_parts = []
+                        if bloco:
+                            unidade_parts.append(f"Bloco {bloco}")
+                        if apartamento:
+                            unidade_parts.append(f"Apto {apartamento}")
+                        if unidade_parts:
+                            st.info(f"📍 **Unidade:** {' / '.join(unidade_parts)}")
+                
                 st.write(f"**Plano:** {cliente.get('plano_escolhido', '—')}")
                 
                 if disponivel_para_atribuir:
