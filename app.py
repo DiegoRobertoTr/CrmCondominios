@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 # --- ⭐ Configuração da página ---
 st.set_page_config(
-    page_title="CRM Tracecom",
+    page_title="Condominios Tracecom",
     page_icon="favicon.ico",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -135,7 +135,7 @@ if not st.session_state["logado"]:
 
 # --- 🚪 Redireciona para login se não autenticado ---
 if not st.session_state["logado"]:
-    st.title("🔐 CRM Tracecom - Login")
+    st.title("🔐 Condomínios Tracecom - Login")
     auth.login()
     st.stop()
 
@@ -223,7 +223,7 @@ col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=80)
 with col2:
-    st.title("📋 CRM Tracecom")
+    st.title("📋 Condomínios Tracecom")
 
 # --- 📦 Carregamento de módulos ---
 try:
