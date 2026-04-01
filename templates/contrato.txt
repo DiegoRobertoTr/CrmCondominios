@@ -1,12 +1,12 @@
 CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE INTERNET E SOLUÇÕES
+
 CONTRATADA: Tracecom Soluções em Ti Infraestrutura e Telecomunicações Ltda., inscrita no CNPJ sob nº 09.637.271/0001-27, com sede na cidade de Miguel Pereira - RJ.
-CONTRATANTE: {{ nome_contratante }}, inscrito no CPF/CNPJ sob nº {{ cpf_cnpj_contratante }}, residente/domiciliado à {{ endereco_contratante }}{% if numero_contratante %}, {{ numero_contratante }}{% endif %}{% if bairro %} - {{ bairro }}{% endif %}{% if cidade %} - {{ cidade }}{% endif %}, telefone {{ telefone_contratante }}.
+
+CONTRATANTE: {{ nome_contratante }}, inscrito no CPF/CNPJ sob nº {{ cpf_cnpj_contratante }}, residente/domiciliado à {{ endereco_contratante }}{% if numero_contratante %}, {{ numero_contratante }}{% endif %}{% if condominio_nome %} - Condomínio {{ condominio_nome }}{% endif %}{% if bloco %}, Bloco {{ bloco }}{% endif %}{% if apartamento %}, Apto {{ apartamento }}{% endif %}{% if bairro %} - {{ bairro }}{% endif %}{% if cidade %} - {{ cidade }}{% endif %}, telefone {{ telefone_contratante }}.
 As partes acima identificadas celebram o presente contrato, que será regido pelas cláusulas e condições abaixo:
 ________________________________________
-
 1. OBJETO
 O presente contrato tem como objeto a prestação, pela CONTRATADA, de serviços de conexão à rede mundial de computadores (Internet), conforme plano contratado {{ plano_contratado }} em modalidade {{ modalidade }}.
-
 1.1. Compatibilidade Técnica
 A CONTRATADA informa que os serviços digitais agregados (como Tracecanais, Globoplay, Max,
 Disney, Telemedicina, Telefonia Voip, entre outros) requerem dispositivos compatíveis e conexão
@@ -14,13 +14,10 @@ estável com a internet. A CONTRATADA não se responsabiliza por eventuais incom
 decorrentes de dispositivos desatualizados, sistemas operacionais não suportados, configurações de rede interna ou limitações técnicas do equipamento do CONTRATANTE.
 O CONTRATANTE declara ciência de que é sua responsabilidade verificar previamente a
 compatibilidade técnica dos dispositivos utilizados com os serviços digitais ofertados.
-
 1.2. A ativação dos serviços contratados está condicionada à prévia verificação de viabilidade técnica no endereço informado pelo CONTRATANTE.
 Caso seja constatada inviabilidade técnica para instalação, o presente contrato será automaticamente rescindido, sem qualquer ônus ou penalidade para as partes, não havendo início de cobrança, fidelidade ou obrigação financeira.
 
 ________________________________________
-
-
 
 2. DISPONIBILIDADE DO SERVIÇO
 2.1. O serviço estará disponível 24 (vinte e quatro) horas por dia, 7 (sete) dias por semana, ressalvadas interrupções por:
@@ -62,7 +59,6 @@ ________________________________________
 6.2. A redução de velocidade não caracteriza suspensão total do serviço, e garantirá ao CONTRATANTE acesso a funcionalidades básicas como canais de atendimento, visualização de boletos, aplicativos de mensagem e sites governamentais.
 6.3. A normalização da velocidade ocorrerá em até 24 (vinte e quatro) horas após a efetiva compensação do pagamento da(s) fatura(s) em atraso.
 6.4. A CONTRATADA se compromete a manter canais de comunicação acessíveis para suporte, renegociação ou emissão de segunda via de fatura, mesmo durante o período de redução de velocidade.
-
 7. DA INSCRIÇÃO EM ÓRGÃOS DE PROTEÇÃO AO CRÉDITO
 Em caso de inadimplemento por prazo superior a 30 (trinta) dias contados do vencimento da fatura, a CONTRATADA poderá, mediante notificação prévia enviada ao CONTRATANTE com no mínimo 10 (dez) dias de antecedência, proceder à inscrição do nome do CONTRATANTE nos cadastros de inadimplentes, como SPC, Serasa, entre outros, conforme permitido pela legislação vigente.
 
@@ -104,7 +100,6 @@ ________________________________________
 ________________________________________
 
 13. DA VALIDAÇÃO DE IDENTIDADE E PREVENÇÃO A FRAUDES
-
 13.1. A CONTRATADA poderá, a seu exclusivo critério e com a finalidade de garantir a segurança contratual, prevenção a fraudes e proteção de dados, exigir a validação presencial da identidade do CONTRATANTE, mediante comparecimento à sede da empresa com apresentação de documento oficial original com foto.
 13.2. A exigência de validação presencial não configura recusa injustificada de contratação, tratando-se de procedimento interno de segurança e conformidade cadastral.
 13.3. A CONTRATADA poderá ainda solicitar documentos complementares ou realizar verificações adicionais sempre que identificar inconsistências cadastrais, divergências de informação ou necessidade de confirmação de identidade.
@@ -123,7 +118,6 @@ ________________________________________
 15.2. A formalização da assinatura estabelece a relação contratual entre as partes, ficando a contagem do prazo de fidelidade e início da cobrança condicionados à efetiva instalação e ativação do serviço no endereço do CONTRATANTE, conforme disposto na cláusula 4.2.
 
 
-
-Paraíba do Sul - RJ, _____ de ______________ de ___________
+Rio de Janeiro - RJ, _____ de ______________ de ___________
 CONTRATANTE: _____________________________
 CONTRATADA: _____________________________
