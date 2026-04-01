@@ -1,4 +1,4 @@
-# modules/revenda.py
+#modules/revenda.py
 import streamlit as st
 from datetime import datetime
 import re
@@ -6,6 +6,15 @@ import base64
 from .utils import normalize_phone, limpar_cpf as limpar_cpf_util
 from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEADORES, PLANOS
 from urllib.parse import quote
+
+# 🏢 CONDOMÍNIO - Import para opções de condomínio
+try:
+    from .condominios import get_condominio_options, get_condominio_by_id
+except ImportError:
+    def get_condominio_options():
+        return {}
+    def get_condominio_by_id(cond_id):
+        return None
 
 WHATSAPP_LOJA = "5524992035540"
 
@@ -36,7 +45,6 @@ def gerar_link_whatsapp_solicitacao(nome, celular, cpf=None):
 def determinar_status_revenda(cliente):
     """Determina status visual da indicação para revenda (igual embaixador)."""
     status_agendamento = cliente.get("status_agendamento")
-    
     if status_agendamento == "ativado":
         return "Ativado"
     elif status_agendamento == "cancelado":
@@ -52,12 +60,25 @@ def determinar_status_revenda(cliente):
     else:
         return "Indicado"
 
+# 🏢 CONDOMÍNIO - Função auxiliar para atualizar endereço quando condomínio é selecionado
+def atualizar_endereco_por_condominio(condominio_nome, condominio_options):
+    """Atualiza o session_state com dados do condomínio selecionado."""
+    cond_id = condominio_options.get(condominio_nome)
+    if cond_id:
+        cond_data = get_condominio_by_id(cond_id)
+        if cond_data:
+            st.session_state["endereco_rev"] = cond_data.get("endereco", "")
+            st.session_state["numero_rev"] = cond_data.get("numero", "")
+            st.session_state["cidade_rev"] = cond_data.get("cidade", "")
+            st.session_state["condominio_id_rev"] = cond_id
+            st.session_state["condominio_nome_rev"] = condominio_nome
+            st.rerun()
+
 def render_revenda(usuarios_collection, clientes_collection):
     # Busca dados da revenda logada
     codigo_revenda = st.session_state.get("codigo_revenda")
     nome_revenda = st.session_state.get("nome_usuario", "Revenda")
     nome_loja = "—"
-
     if codigo_revenda:
         rev_data = usuarios_collection.find_one(
             {"codigo_revenda": codigo_revenda, "perfil": "revenda"}
@@ -120,10 +141,23 @@ def render_revenda(usuarios_collection, clientes_collection):
                 unsafe_allow_html=True
             )
 
+            # 🏢 CONDOMÍNIO - Exibir informações do condomínio se existir
+            if dados.get("condominio_nome"):
+                st.info(f"🏢 **Condomínio:** {dados.get('condominio_nome')}")
+                if dados.get("bloco") or dados.get("apartamento"):
+                    unidade_parts = []
+                    if dados.get("bloco"):
+                        unidade_parts.append(f"Bloco {dados.get('bloco')}")
+                    if dados.get("apartamento"):
+                        unidade_parts.append(f"Apto {dados.get('apartamento')}")
+                    if unidade_parts:
+                        st.info(f"📍 **Unidade:** {' / '.join(unidade_parts)}")
+
             if st.button("➕ Novo Cadastro", type="secondary", key="novo_cadastro_rev"):
                 keys_to_clear = [
                     "ultimo_cadastro_rev", "dados_temp_rev", "gerando_contrato_rev",
-                    "contrato_pronto_rev", "gerando_comodato_rev", "comodato_pronto_rev"
+                    "contrato_pronto_rev", "gerando_comodato_rev", "comodato_pronto_rev",
+                    "condominio_id_rev", "condominio_nome_rev"
                 ]
                 for k in keys_to_clear:
                     st.session_state.pop(k, None)
@@ -254,23 +288,70 @@ def render_revenda(usuarios_collection, clientes_collection):
 
         email = st.text_input("Email *", value=get_valor_inicial("email", ""), key=f"email_rev_{st.session_state['form_key_rev']}")
 
+        # 🏢 CONDOMÍNIO - Seção de Localização com Condomínio
+        st.markdown("### 🏢 Localização")
+        
+        # Selectbox de Condomínio
+        condominio_options = {"Nenhum / Não se aplica": None}
+        condominio_options.update(get_condominio_options())
+        
+        cond_nome_salvo = st.session_state.get("condominio_nome_rev", "")
+        index_cond = 0
+        if cond_nome_salvo and cond_nome_salvo in condominio_options:
+            index_cond = list(condominio_options.keys()).index(cond_nome_salvo)
+        
+        condominio_select = st.selectbox(
+            "Condomínio (Opcional)",
+            options=list(condominio_options.keys()),
+            index=index_cond,
+            key=f"condominio_select_rev_{st.session_state['form_key_rev']}"
+        )
+        
+        if condominio_select and condominio_select != "Nenhum / Não se aplica":
+            if condominio_select != cond_nome_salvo:
+                atualizar_endereco_por_condominio(condominio_select, condominio_options)
+        
         col1, col2 = st.columns([3, 1])
         with col1:
-            endereco = st.text_input("Endereço *", value=get_valor_inicial("endereco", ""), key=f"end_rev_{st.session_state['form_key_rev']}")
+            endereco = st.text_input(
+                "Endereço *",
+                value=st.session_state.get("endereco_rev", get_valor_inicial("endereco", "")),
+                key=f"end_rev_{st.session_state['form_key_rev']}"
+            )
         with col2:
-            numero = st.text_input("Número *", max_chars=6, value=get_valor_inicial("numero", ""), key=f"num_rev_{st.session_state['form_key_rev']}")
+            numero = st.text_input(
+                "Número *",
+                max_chars=6,
+                value=st.session_state.get("numero_rev", get_valor_inicial("numero", "")),
+                key=f"num_rev_{st.session_state['form_key_rev']}"
+            )
 
         col1, col2 = st.columns(2)
         with col1:
             complemento = st.text_input("Complemento", value=get_valor_inicial("complemento", ""), key=f"comp_rev_{st.session_state['form_key_rev']}")
         with col2:
-            cidade = st.text_input("Cidade *", value=get_valor_inicial("cidade", "Paraiba do Sul"), key=f"cid_rev_{st.session_state['form_key_rev']}")
+            cidade = st.text_input("Cidade *", value=st.session_state.get("cidade_rev", get_valor_inicial("cidade", "Paraiba do Sul")), key=f"cid_rev_{st.session_state['form_key_rev']}")
 
         col1, col2 = st.columns(2)
         with col1:
             bairro = st.text_input("Bairro *", value=get_valor_inicial("bairro", ""), key=f"bairro_rev_{st.session_state['form_key_rev']}")
         with col2:
             ponto_referencia = st.text_input("Ponto de referência", value=get_valor_inicial("ponto_ref", ""), key=f"ref_rev_{st.session_state['form_key_rev']}")
+
+        # 🏢 CONDOMÍNIO - Campos Bloco e Apartamento (SEMPRE VISÍVEIS)
+        col_bloco, col_apto = st.columns(2)
+        with col_bloco:
+            bloco = st.text_input(
+                "Bloco",
+                value="",
+                key=f"bloco_rev_{st.session_state['form_key_rev']}"
+            )
+        with col_apto:
+            apartamento = st.text_input(
+                "Apartamento",
+                value="",
+                key=f"apartamento_rev_{st.session_state['form_key_rev']}"
+            )
 
         plano_atual = get_valor_inicial("plano_escolhido", "")
         index_plano = (PLANOS.index(plano_atual) + 1) if plano_atual in PLANOS else 0
@@ -331,15 +412,15 @@ def render_revenda(usuarios_collection, clientes_collection):
                     "status": "novo",
                     "cadastrado_por": st.session_state.get("nome_usuario", "Revenda"),
                     "origem": "Revenda",
-                    "restritivo": restritivo if restritivo != "Selecione..." else " ",
+                    "restritivo": restritivo if restritivo != "Selecione..." else "  ",
                     "restritivo_qtd_registros": qtd_registros if restritivo == "Sim" else None,
                     "restritivo_ano_recente": ano_recente if restritivo == "Sim" else None,
                     "restritivo_servico_internet": servico_internet if restritivo == "Sim" else None,
-                    "seguiu_ativacao": seguiu_ativacao if seguiu_ativacao != "Selecione..." else " ",
-                    "ja_possui_internet": ja_possui_internet if ja_possui_internet != "Selecione..." else " ",
-                    "retorno_agendado": " ",
-                    "observacoes": observacoes if observacoes else " ",
-                    "observacoes_followup": "",
+                    "seguiu_ativacao": seguiu_ativacao if seguiu_ativacao != "Selecione..." else "  ",
+                    "ja_possui_internet": ja_possui_internet if ja_possui_internet != "Selecione..." else "  ",
+                    "retorno_agendado": "  ",
+                    "observacoes": observacoes if observacoes else "  ",
+                    "observacoes_followup": " ",
                     "codigo_indicacao": codigo_indicacao,
                     "indicado_por": {
                         "tipo": "revenda",
@@ -349,7 +430,12 @@ def render_revenda(usuarios_collection, clientes_collection):
                     "endereco_bloqueado": False,
                     "observacoes_bloqueio_endereco": None,
                     "bonus_enviado": False,
-                    "bonus_confirmado": False
+                    "bonus_confirmado": False,
+                    # 🏢 CONDOMÍNIO - Novos campos
+                    "condominio_id": st.session_state.get("condominio_id_rev"),
+                    "condominio_nome": st.session_state.get("condominio_nome_rev"),
+                    "bloco": bloco if bloco else None,
+                    "apartamento": apartamento if apartamento else None,
                 }
 
                 try:
@@ -360,23 +446,21 @@ def render_revenda(usuarios_collection, clientes_collection):
                     st.session_state["ultimo_cadastro_rev"] = {
                         "nome": nome_completo,
                         "celular": normalize_phone(celular_principal),
-                        "cpf": cpf_valido
+                        "cpf": cpf_valido,
+                        # 🏢 CONDOMÍNIO - Incluir dados de condomínio
+                        "condominio_nome": st.session_state.get("condominio_nome_rev"),
+                        "bloco": bloco if bloco else None,
+                        "apartamento": apartamento if apartamento else None,
                     }
 
                     keys_to_clear = ["dados_temp_rev", "gerando_contrato_rev", "contrato_pronto_rev",
-                                   "gerando_comodato_rev", "comodato_pronto_rev"]
+                                    "gerando_comodato_rev", "comodato_pronto_rev"]
                     for k in keys_to_clear:
                         st.session_state.pop(k, None)
                     st.session_state["form_key_rev"] += 1
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Erro ao salvar: {e}")
-
-        # Lógica de geração assíncrona REMOVIDA (não necessária sem os botões)
-        # if st.session_state.get("gerando_contrato_rev") and "dados_contrato_rev" in st.session_state:
-        #     ...
-        # if st.session_state.get("gerando_comodato_rev") and "dados_comodato_rev" in st.session_state:
-        #     ...
 
     # ==================== ABA 2: MINHAS INDICAÇÕES ====================
     with tab_indicacoes:
@@ -428,7 +512,24 @@ def render_revenda(usuarios_collection, clientes_collection):
                     "Indicado": "⚫"
                 }.get(status, "⚫")
 
-                with st.expander(f"{cor_status} {nome} — {tel} ({status})", expanded=False):
+                # 🏢 CONDOMÍNIO - Informações de condomínio
+                condominio_nome = cli.get("condominio_nome")
+                bloco = cli.get("bloco")
+                apartamento = cli.get("apartamento")
+                
+                condominio_info = ""
+                if condominio_nome:
+                    condominio_info = f"🏢 {condominio_nome}"
+                    if bloco or apartamento:
+                        unidade_parts = []
+                        if bloco:
+                            unidade_parts.append(f"Bloco {bloco}")
+                        if apartamento:
+                            unidade_parts.append(f"Apto {apartamento}")
+                        if unidade_parts:
+                            condominio_info += f" ({' / '.join(unidade_parts)})"
+
+                with st.expander(f"{cor_status} {nome} — {tel} ({status}){f' | {condominio_info}' if condominio_info else ''}", expanded=False):
                     col1, col2 = st.columns([3, 1])
                     
                     with col1:
@@ -437,7 +538,11 @@ def render_revenda(usuarios_collection, clientes_collection):
                         st.write(f"**Plano:** {cli.get('plano_escolhido', 'N/A')}")
                         st.write(f"**Status atual:** `{status}`")
                         
-                        if cli.get("retorno_agendado") and cli.get("retorno_agendado") != " ":
+                        # 🏢 CONDOMÍNIO - Exibir condomínio separadamente
+                        if condominio_info:
+                            st.caption(condominio_info)
+                        
+                        if cli.get("retorno_agendado") and cli.get("retorno_agendado") != "  ":
                             st.write(f"**Agendado para:** {cli['retorno_agendado']}")
                         
                         if cli.get("reagendado_para"):
