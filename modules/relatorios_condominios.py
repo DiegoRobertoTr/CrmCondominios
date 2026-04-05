@@ -33,10 +33,8 @@ def init_mongo():
         
         client = MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
         client.admin.command('ping')
-        
         database_name = st.secrets.get("mongo", {}).get("MONGO_DATABASE", "tracecom_crm")
         return client[database_name]
-        
     except (ServerSelectionTimeoutError, ConnectionFailure) as e:
         st.error(f"❌ Falha ao conectar ao MongoDB:\n`{type(e).__name__}: {e}`")
         st.stop()
@@ -48,30 +46,20 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """Salva dados com timestamp para versionamento"""
     collection = db["condominios_relatorios"]
     docs = []
-    
     for _, row in df_clientes.iterrows():
         doc = row.to_dict()
-        
-        # ✅ CORREÇÃO: Tratamento seguro de datas e NaT
         for key, value in doc.items():
             if isinstance(value, pd.Timestamp):
-                if pd.isna(value):
-                    doc[key] = None
-                else:
-                    try:
-                        doc[key] = value.to_pydatetime()
-                    except (ValueError, OSError):
-                        doc[key] = None
+                doc[key] = None if pd.isna(value) else value.to_pydatetime()
             elif pd.isna(value):
                 doc[key] = None
-        
         doc["_import_timestamp"] = metadata["timestamp"]
         doc["_import_batch"] = metadata["batch_id"]
         docs.append(doc)
 
     if docs:
         collection.insert_many(docs)
-
+        
     db["condominios_meta"].insert_one({
         "batch_id": metadata["batch_id"],
         "timestamp": metadata["timestamp"],
@@ -86,17 +74,16 @@ def load_latest_data(db):
     meta = db["condominios_meta"].find_one(sort=[("timestamp", -1)])
     if not meta:
         return None, None, None
-        
+    
     collection = db["condominios_relatorios"]
     df_clientes = pd.DataFrame(list(collection.find({"_import_batch": meta["batch_id"]})))
-
     if "_id" in df_clientes.columns:
         df_clientes = df_clientes.drop(columns=["_id"])
 
     for col in df_clientes.select_dtypes(include=['object']).columns:
         if 'data' in col.lower() or 'date' in col.lower():
             df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
-        
+            
     df_condominios = pd.DataFrame(meta.get("condominios", []))
     return df_clientes, df_condominios, meta
 
@@ -114,28 +101,22 @@ def clear_condominio_data(db, batch_id=None):
 # ==================== NOVA FUNÇÃO: DASHBOARD PRINCIPAL ====================
 def gerar_dashboard_principal(df_clientes, df_condominios):
     """Gera dashboard principal com visão consolidada por condomínio"""
-    
-    # ✅ CORREÇÃO: Verifica se as colunas existem
     if "CONDOMANIO" not in df_clientes.columns:
         st.error("❌ Coluna 'CONDOMANIO' não encontrada na tabela de clientes")
         return pd.DataFrame()
-    
     if "ID" not in df_condominios.columns:
         st.error("❌ Coluna 'ID' não encontrada na tabela de condomínios")
         return pd.DataFrame()
-    
-    # Mapeia CONDOMANIO (clientes) com ID (condominios)
+
     df_merged = df_clientes.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Data cadastro"]],
         left_on="CONDOMANIO",
         right_on="ID",
         how="left"
     )
-    
-    # Classifica status dos clientes
+
     def classificar_status(status):
-        if pd.isna(status):
-            return "Outros"
+        if pd.isna(status): return "Outros"
         status_lower = str(status).lower().strip()
         if "ativo" in status_lower and "atraso" not in status_lower and "bloqueio" not in status_lower:
             return "Ativo"
@@ -145,12 +126,10 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
             return "Bloqueio Automático"
         elif "desativado" in status_lower or "cancelado" in status_lower:
             return "Desativado"
-        else:
-            return "Outros"
-    
+        return "Outros"
+
     df_merged["status_classificacao"] = df_merged["STATUS ACESSO"].apply(classificar_status)
-    
-    # ✅ CORREÇÃO: Agrupa por CONDOMANIO ao invés de ID
+
     dashboard = df_merged.groupby(["CONDOMANIO", "Condomínio", "Região", "Apartamentos", "Data cadastro"]).agg(
         total_clientes=("CONDOMANIO", "count"),
         ativos=("status_classificacao", lambda x: (x == "Ativo").sum()),
@@ -159,54 +138,38 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
         desativados=("status_classificacao", lambda x: (x == "Desativado").sum()),
         outros=("status_classificacao", lambda x: (x == "Outros").sum())
     ).reset_index()
+
+    # ✅ CORREÇÃO CRÍTICA: Garantir que 'Apartamentos' seja numérico
+    dashboard["Apartamentos"] = pd.to_numeric(dashboard["Apartamentos"], errors="coerce").fillna(0)
     
-    # Calcula métricas
+    # Substitui 0 por NaN apenas para a divisão, evitando divisão por zero e warnings
+    apt_safe = dashboard["Apartamentos"].replace(0, np.nan)
+
     dashboard["total_ocupados"] = dashboard["ativos"] + dashboard["em_atraso"] + dashboard["bloqueio_automatico"]
-    dashboard["percentual_ativos"] = (dashboard["ativos"] / dashboard["Apartamentos"] * 100).round(2)
+    dashboard["percentual_ativos"] = (dashboard["ativos"] / apt_safe * 100).round(2)
     dashboard["total_atrasos"] = dashboard["em_atraso"] + dashboard["bloqueio_automatico"]
-    dashboard["percentual_atraso"] = (dashboard["total_atrasos"] / dashboard["Apartamentos"] * 100).round(2)
-    
-    # Capacidade de exploração: apartamentos disponíveis / total
-    dashboard["capacidade_exploracao"] = ((dashboard["Apartamentos"] - dashboard["total_ocupados"]) / dashboard["Apartamentos"] * 100).round(2)
-    
-    # Seleciona e renomeia colunas para o formato final
+    dashboard["percentual_atraso"] = (dashboard["total_atrasos"] / apt_safe * 100).round(2)
+    dashboard["capacidade_exploracao"] = ((apt_safe - dashboard["total_ocupados"]) / apt_safe * 100).round(2)
+
+    dashboard["Apartamentos"] = dashboard["Apartamentos"].fillna(0).astype(int)
+
     dashboard_final = dashboard[[
-        "Região",
-        "Condomínio",
-        "Data cadastro",
-        "ativos",
-        "percentual_ativos",
-        "total_atrasos",
-        "percentual_atraso",
-        "capacidade_exploracao",
-        "Apartamentos",
-        "desativados",
-        "total_ocupados"
+        "Região", "Condomínio", "Data cadastro", "ativos", "percentual_ativos",
+        "total_atrasos", "percentual_atraso", "capacidade_exploracao",
+        "Apartamentos", "desativados", "total_ocupados"
     ]].copy()
-    
+
     dashboard_final.columns = [
-        "Região",
-        "Condomínio",
-        "Data de Implantação",
-        "Qtd Ativos",
-        "% Ativos (Penetração)",
-        "Total Atrasos",
-        "% Atraso",
-        "% Capacidade de Exploração",
-        "Total Apartamentos",
-        "Desativados",
-        "Total Ocupados"
+        "Região", "Condomínio", "Data de Implantação", "Qtd Ativos",
+        "% Ativos (Penetração)", "Total Atrasos", "% Atraso",
+        "% Capacidade de Exploração", "Total Apartamentos", "Desativados", "Total Ocupados"
     ]
-    
-    # Ordena por região e condomínio
-    dashboard_final = dashboard_final.sort_values(["Região", "Condomínio"]).reset_index(drop=True)
-    
-    return dashboard_final
+
+    return dashboard_final.sort_values(["Região", "Condomínio"]).reset_index(drop=True)
 
 def exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios):
     """Exporta dashboard para Excel com múltiplas abas"""
     output = io.BytesIO()
-    
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         dashboard_df.to_excel(writer, sheet_name='Dashboard Principal', index=False)
         df_clientes.to_excel(writer, sheet_name='Dados Clientes', index=False)
@@ -214,15 +177,9 @@ def exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios):
         
         workbook = writer.book
         worksheet = writer.sheets['Dashboard Principal']
-        
-        column_widths = {
-            'A': 15, 'B': 40, 'C': 20, 'D': 12, 'E': 18,
-            'F': 14, 'G': 12, 'H': 22, 'I': 18, 'J': 12, 'K': 15
-        }
-        
+        column_widths = {'A': 15, 'B': 40, 'C': 20, 'D': 12, 'E': 18, 'F': 14, 'G': 12, 'H': 22, 'I': 18, 'J': 12, 'K': 15}
         for col, width in column_widths.items():
             worksheet.column_dimensions[col].width = width
-    
     output.seek(0)
     return output
 
@@ -230,26 +187,22 @@ def exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios):
 def calcular_penetracao(df_clientes, df_condominios):
     """Calcula taxa de penetração por condomínio"""
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
-    
-    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
-    
+
     df_merged = clientes_por_cond.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Principal Concorrente"]],
-        left_on="CONDOMANIO",
-        right_on="ID",
-        how="left"
+        left_on="CONDOMANIO", right_on="ID", how="left"
     )
-
-    df_merged["taxa_penetracao"] = (
-        df_merged["clientes_ativos"] / df_merged["Apartamentos"] * 100
-    ).round(2)
+    
+    df_merged["Apartamentos"] = pd.to_numeric(df_merged["Apartamentos"], errors="coerce").fillna(0)
+    df_merged["taxa_penetracao"] = (df_merged["clientes_ativos"] / df_merged["Apartamentos"].replace(0, np.nan) * 100).round(2)
+    df_merged["Apartamentos"] = df_merged["Apartamentos"].fillna(0).astype(int)
 
     def classificar_penetracao(taxa):
         if pd.isna(taxa): return "🔴 Baixa Presença"
         if taxa >= 50: return "🟢 Dominado"
         elif taxa >= 25: return "🟡 Em Crescimento"
-        else: return "🔴 Baixa Presença"
+        return "🔴 Baixa Presença"
         
     df_merged["classificacao"] = df_merged["taxa_penetracao"].apply(classificar_penetracao)
     return df_merged.sort_values("taxa_penetracao", ascending=False)
@@ -257,39 +210,27 @@ def calcular_penetracao(df_clientes, df_condominios):
 def analisar_inadimplencia(df_clientes, df_condominios):
     """Análise de inadimplência por condomínio"""
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
-        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan", "nat"] else "Em Dia"
+        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", " ", "0", "nan", "nat"] else "Em Dia"
     )
-    
-    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
-    
+
     if "Em Atraso" in inadimplencia.columns and "Em Dia" in inadimplencia.columns:
-        inadimplencia["taxa_inadimplencia"] = (
-            inadimplencia["Em Atraso"] / (inadimplencia["Em Atraso"] + inadimplencia["Em Dia"]) * 100
-        ).round(2)
+        inadimplencia["taxa_inadimplencia"] = (inadimplencia["Em Atraso"] / (inadimplencia["Em Atraso"] + inadimplencia["Em Dia"]) * 100).round(2)
         
     result = inadimplencia.reset_index().merge(
-        df_condominios[["ID", "Condomínio", "Região"]],
-        left_on="CONDOMANIO",
-        right_on="ID",
-        how="left"
+        df_condominios[["ID", "Condomínio", "Região"]], left_on="CONDOMANIO", right_on="ID", how="left"
     )
     return result.sort_values("taxa_inadimplencia", ascending=False)
 
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn/cancelamentos por condomínio"""
-    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
-    
     if "Ativo" in status_count.columns and "Desativado" in status_count.columns:
         total = status_count["Ativo"] + status_count["Desativado"]
         status_count["churn_rate"] = (status_count["Desativado"] / total * 100).round(2)
         
     result = status_count.reset_index().merge(
-        df_condominios[["ID", "Condomínio", "Região", "Principal Concorrente"]],
-        left_on="CONDOMANIO",
-        right_on="ID",
-        how="left"
+        df_condominios[["ID", "Condomínio", "Região", "Principal Concorrente"]], left_on="CONDOMANIO", right_on="ID", how="left"
     )
     return result.sort_values("churn_rate", ascending=False)
 
@@ -303,9 +244,7 @@ def correlacao_concorrencia(df_penetracao, df_condominios):
         }).round(2)
         conc_stats.columns = ["_".join(col).strip() for col in conc_stats.columns.values]
         conc_stats = conc_stats.reset_index()
-        conc_stats["penetracao_ponderada"] = (
-            conc_stats["clientes_ativos_sum"] / conc_stats["Apartamentos_sum"] * 100
-        ).round(2)
+        conc_stats["penetracao_ponderada"] = (conc_stats["clientes_ativos_sum"] / conc_stats["Apartamentos_sum"].replace(0, np.nan) * 100).round(2)
         return conc_stats.sort_values("penetracao_ponderada", ascending=False)
     return pd.DataFrame()
 
@@ -313,46 +252,35 @@ def calcular_receita_potencial(df_penetracao, ticket_medio=89.99):
     """Calcula receita atual vs. potencial por condomínio"""
     df = df_penetracao.copy()
     df["receita_atual"] = df["clientes_ativos"] * ticket_medio
-    df["potencial_clientes"] = df["Apartamentos"] - df["clientes_ativos"]
+    df["potencial_clientes"] = (df["Apartamentos"].replace(0, np.nan) - df["clientes_ativos"]).fillna(0)
     df["receita_potencial"] = df["potencial_clientes"] * ticket_medio
     df["receita_maxima"] = df["Apartamentos"] * ticket_medio
-    df["gap_receita"] = (df["receita_potencial"] / df["receita_atual"]).replace([np.inf, -np.inf], 0) * 100
+    df["gap_receita"] = (df["receita_potencial"] / df["receita_atual"].replace(0, np.nan)).replace([np.inf, -np.inf], 0) * 100
     return df.sort_values("receita_potencial", ascending=False)
 
 def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     """Formata datetime com tratamento seguro para NaT/None"""
-    if pd.isna(value) or value is None:
-        return ""
+    if pd.isna(value) or value is None: return ""
     if isinstance(value, (pd.Timestamp, datetime)):
-        try:
-            return value.strftime(fmt)
-        except (ValueError, OSError):
-            return ""
+        try: return value.strftime(fmt)
+        except (ValueError, OSError): return ""
     return str(value)
 
 # ==================== INTERFACE STREAMLIT ====================
 def render_relatorios_condominios():
     st.title("🏢 Relatórios Estratégicos - Condomínios")
     st.markdown("Análise de penetração, churn, inadimplência e oportunidades de mercado")
-    
     db = init_mongo()
 
     st.markdown("---")
     st.subheader("⚙️ Gerenciamento de Dados")
-
     col1, col2 = st.columns([3, 1])
 
     with col1:
-        uploaded_file = st.file_uploader(
-            "📤 Importar Planilha",
-            type=["xlsx", "xls"],
-            help="Planilha com 2 abas: 'Dados' (clientes) e 'Condominios'"
-        )
-
+        uploaded_file = st.file_uploader("📤 Importar Planilha", type=["xlsx", "xls"], help="Planilha com 2 abas: 'Dados' (clientes) e 'Condominios'")
     with col2:
         if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
             st.session_state["reload_data"] = True
-        
         if st.button("🗑️ Limpar Dados", type="secondary", use_container_width=True):
             if st.session_state.get("confirm_delete"):
                 deleted = clear_condominio_data(db)
@@ -377,7 +305,6 @@ def render_relatorios_condominios():
         st.warning("⚠️ Nenhum dado importado ainda")
 
     st.markdown("---")
-
     df_clientes, df_condominios, meta = None, None, None
 
     if uploaded_file:
@@ -385,17 +312,15 @@ def render_relatorios_condominios():
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
-            # ✅ CORREÇÃO: Tratar colunas de data com errors='coerce'
+            # ✅ CORREÇÃO PREVENTIVA: Converter Apartamentos para numérico imediatamente
+            if "Apartamentos" in df_condominios.columns:
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
+
             for col in df_clientes.select_dtypes(include=['object']).columns:
                 if 'data' in col.lower() or 'date' in col.lower():
                     df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
             
-            metadata = {
-                "timestamp": datetime.now(),
-                "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "filename": uploaded_file.name
-            }
-            
+            metadata = {"timestamp": datetime.now(), "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}", "filename": uploaded_file.name}
             if save_condominio_data(db, df_clientes, df_condominios, metadata):
                 st.success(f"✅ Dados importados! {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
                 st.rerun()
@@ -406,6 +331,10 @@ def render_relatorios_condominios():
         result = load_latest_data(db)
         if result[0] is not None:
             df_clientes, df_condominios, meta = result
+            # Garantir tipo numérico ao carregar do cache
+            if "Apartamentos" in df_condominios.columns:
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
+                
             st.session_state["df_clientes_cached"] = df_clientes
             st.session_state["df_condominios_cached"] = df_condominios
             st.session_state["meta_cached"] = meta
@@ -421,13 +350,11 @@ def render_relatorios_condominios():
     if "reload_data" in st.session_state:
         del st.session_state["reload_data"]
 
-    # ==================== NOVA ABA: DASHBOARD PRINCIPAL ====================
+    # ==================== DASHBOARD PRINCIPAL ====================
     st.subheader("📊 Dashboard Principal")
-    
     dashboard_df = gerar_dashboard_principal(df_clientes, df_condominios)
-    
+
     if not dashboard_df.empty:
-        # KPIs gerais do dashboard
         col1, col2, col3, col4 = st.columns(4)
         total_ativos = dashboard_df["Qtd Ativos"].sum()
         total_atrasos = dashboard_df["Total Atrasos"].sum()
@@ -439,36 +366,17 @@ def render_relatorios_condominios():
         col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}")
         col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
         
-        # Exibe o dashboard
-        st.dataframe(
-            dashboard_df,
-            use_container_width=True,
-            column_config={
-                "Data de Implantação": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                "% Ativos (Penetração)": st.column_config.ProgressColumn(
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=100
-                ),
-                "% Capacidade de Exploração": st.column_config.ProgressColumn(
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=100
-                )
-            }
-        )
+        st.dataframe(dashboard_df, use_container_width=True, column_config={
+            "Data de Implantação": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "% Ativos (Penetração)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+            "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)
+        })
         
-        # Botão de exportação Excel
         excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
-        
-        st.download_button(
-            label="📥 Exportar Dashboard Completo (Excel)",
-            data=excel_buffer,
-            file_name=f"dashboard_condominios_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    
+        st.download_button(label="📥 Exportar Dashboard Completo (Excel)", data=excel_buffer,
+                           file_name=f"dashboard_condominios_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
     st.markdown("---")
 
     # ==================== ABAS DE ANÁLISE ====================
@@ -477,7 +385,6 @@ def render_relatorios_condominios():
     with tab1:
         st.header("🎯 Taxa de Penetração por Condomínio")
         df_penetracao = calcular_penetracao(df_clientes, df_condominios)
-        
         col1, col2, col3 = st.columns(3)
         with col1:
             regioes = df_condominios["Região"].dropna().unique()
@@ -488,25 +395,12 @@ def render_relatorios_condominios():
             min_penetracao = st.slider("Penetração Mínima (%)", 0, 100, 0)
             
         df_filtered = df_penetracao.copy()
-        if regiao_filter:
-            df_filtered = df_filtered[df_filtered["Região"].isin(regiao_filter)]
-        if classific_filter:
-            df_filtered = df_filtered[df_filtered["classificacao"].isin(classific_filter)]
+        if regiao_filter: df_filtered = df_filtered[df_filtered["Região"].isin(regiao_filter)]
+        if classific_filter: df_filtered = df_filtered[df_filtered["classificacao"].isin(classific_filter)]
         df_filtered = df_filtered[df_filtered["taxa_penetracao"] >= min_penetracao]
         
-        fig = px.bar(
-            df_filtered.head(20),
-            x="taxa_penetracao",
-            y="Condomínio",
-            color="classificacao",
-            orientation="h",
-            title="Top 20 Condomínios por Penetração",
-            color_discrete_map={
-                "🟢 Dominado": "#2ecc71",
-                "🟡 Em Crescimento": "#f39c12", 
-                "🔴 Baixa Presença": "#e74c3c"
-            }
-        )
+        fig = px.bar(df_filtered.head(20), x="taxa_penetracao", y="Condomínio", color="classificacao", orientation="h",
+                     title="Top 20 Condomínios por Penetração", color_discrete_map={"🟢 Dominado": "#2ecc71", "🟡 Em Crescimento": "#f39c12", "🔴 Baixa Presença": "#e74c3c"})
         fig.update_layout(height=600, yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig, use_container_width=True)
         
@@ -516,7 +410,6 @@ def render_relatorios_condominios():
         st.markdown("### 💡 Insights Automáticos")
         baixas = df_penetracao[df_penetracao["taxa_penetracao"] < 20]
         altas = df_penetracao[df_penetracao["taxa_penetracao"] > 60]
-        
         c1, c2 = st.columns(2)
         with c1:
             if not baixas.empty:
@@ -531,12 +424,10 @@ def render_relatorios_condominios():
         ticket = st.number_input("🎯 Ticket Médio Estimado (R$)", value=89.99, min_value=10.0, max_value=500.0, step=5.0)
         df_receita = calcular_receita_potencial(df_penetracao, ticket_medio=ticket)
         
-        fig = go.Figure(go.Waterfall(
-            name="Receita", orientation="v", measure=["relative"] * len(df_receita.head(15)),
-            x=df_receita.head(15)["Condomínio"], y=df_receita.head(15)["receita_potencial"],
-            textposition="outside", text=[f"R$ {v:,.2f}" for v in df_receita.head(15)["receita_potencial"]],
-            connector={"line": {"color": "rgb(63, 63, 63)"}}
-        ))
+        fig = go.Figure(go.Waterfall(name="Receita", orientation="v", measure=["relative"] * len(df_receita.head(15)),
+                                     x=df_receita.head(15)["Condomínio"], y=df_receita.head(15)["receita_potencial"],
+                                     textposition="outside", text=[f"R$ {v:,.2f}" for v in df_receita.head(15)["receita_potencial"]],
+                                     connector={"line": {"color": "rgb(63, 63, 63)"}}))
         fig.update_layout(title="💰 Receita Potencial Não Explorada (Top 15)", showlegend=False, height=500)
         st.plotly_chart(fig, use_container_width=True)
         
@@ -589,16 +480,15 @@ def render_relatorios_condominios():
                 melhor = df_concorrencia.loc[df_concorrencia["penetracao_ponderada"].idxmax()]
                 pior = df_concorrencia.loc[df_concorrencia["penetracao_ponderada"].idxmin()]
                 c1, c2 = st.columns(2)
-                with c1:
-                    st.success(f"**✅ Melhor desempenho:** vs {melhor['Principal Concorrente']}\n- Penetração média: {melhor['penetracao_ponderada']:.1f}%")
-                with c2:
-                    st.error(f"**⚠️ Desafio:** vs {pior['Principal Concorrente']}\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
+                with c1: st.success(f"**✅ Melhor desempenho:** vs {melhor['Principal Concorrente']}\n- Penetração média: {melhor['penetracao_ponderada']:.1f}%")
+                with c2: st.error(f"**⚠️ Desafio:** vs {pior['Principal Concorrente']}\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
         else:
             st.info("ℹ️ Dados de concorrentes não disponíveis na planilha importada")
 
     st.markdown("---")
     st.subheader("🗺️ Mapa Estratégico de Condomínios")
-    fig_mapa = px.scatter(df_penetracao, x="Apartamentos", y="taxa_penetracao", size="clientes_ativos", color="classificacao", hover_name="Condomínio", hover_data=["Região", "Principal Concorrente"], title="Matriz: Tamanho do Condomínio vs Penetração")
+    fig_mapa = px.scatter(df_penetracao, x="Apartamentos", y="taxa_penetracao", size="clientes_ativos", color="classificacao", 
+                          hover_name="Condomínio", hover_data=["Região", "Principal Concorrente"], title="Matriz: Tamanho do Condomínio vs Penetração")
     fig_mapa.add_hline(y=25, line_dash="dash", line_color="orange", annotation_text="Limite Crescimento")
     fig_mapa.add_hline(y=50, line_dash="dash", line_color="green", annotation_text="Limite Dominado")
     fig_mapa.add_vline(x=df_penetracao["Apartamentos"].median(), line_dash="dot", annotation_text="Tamanho Médio")
