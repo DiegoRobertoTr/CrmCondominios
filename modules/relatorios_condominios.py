@@ -7,6 +7,7 @@ from datetime import datetime
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 import io
+from urllib.parse import quote_plus
 
 # ==================== CONFIGURAÇÃO MONGODB ====================
 @st.cache_resource
@@ -34,8 +35,7 @@ MONGO_CLUSTER_URL = "..."
                 """)
                 st.stop()
             
-            # Monta URI no formato MongoDB Atlas
-            from urllib.parse import quote_plus
+            # Monta URI no formato MongoDB Atlas com URL encoding na senha
             uri = f"mongodb+srv://{username}:{quote_plus(password)}@{cluster}/{database}?retryWrites=true&w=majority"
         
         # Conecta com timeout reduzido para falhar rápido (5s em vez de 30s)
@@ -60,6 +60,12 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     docs = []
     for _, row in df_clientes.iterrows():
         doc = row.to_dict()
+        # Converte datetime para formato BSON seguro
+        for key, value in doc.items():
+            if isinstance(value, pd.Timestamp):
+                doc[key] = value.to_pydatetime()
+            elif pd.isna(value):
+                doc[key] = None
         doc["_import_timestamp"] = metadata["timestamp"]
         doc["_import_batch"] = metadata["batch_id"]
         docs.append(doc)
@@ -87,6 +93,11 @@ def load_latest_data(db):
     
     if "_id" in df_clientes.columns:
         df_clientes = df_clientes.drop(columns=["_id"])
+    
+    # Converte strings de data para datetime com tratamento de NaT
+    for col in df_clientes.select_dtypes(include=['object']).columns:
+        if 'data' in col.lower() or 'date' in col.lower():
+            df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
         
     df_condominios = pd.DataFrame(meta.get("condominios", []))
     return df_clientes, df_condominios, meta
@@ -119,6 +130,8 @@ def calcular_penetracao(df_clientes, df_condominios):
     ).round(2)
     
     def classificar_penetracao(taxa):
+        if pd.isna(taxa):
+            return "🔴 Baixa Presença"
         if taxa >= 50: return "🟢 Dominado"
         elif taxa >= 25: return "🟡 Em Crescimento"
         else: return "🔴 Baixa Presença"
@@ -129,7 +142,7 @@ def calcular_penetracao(df_clientes, df_condominios):
 def analisar_inadimplencia(df_clientes, df_condominios):
     """Análise de inadimplência por condomínio"""
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
-        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan"] else "Em Dia"
+        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan", "nat"] else "Em Dia"
     )
     inadimplencia = df_clientes.groupby(["ID", "atraso_bin"]).size().unstack(fill_value=0)
     
@@ -186,6 +199,15 @@ def calcular_receita_potencial(df_penetracao, ticket_medio=89.99):
     df["gap_receita"] = (df["receita_potencial"] / df["receita_atual"]).replace([np.inf, -np.inf], 0) * 100
     return df.sort_values("receita_potencial", ascending=False)
 
+# ==================== FUNÇÃO AUXILIAR PARA FORMATAR DATAS COM SEGURANÇA ====================
+def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
+    """Formata datetime com tratamento seguro para NaT/None"""
+    if pd.isna(value) or value is None:
+        return ""
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.strftime(fmt)
+    return str(value)
+
 # ==================== INTERFACE STREAMLIT ====================
 def render_relatorios_condominios():
     st.set_page_config(page_title="🏢 Relatórios Condomínios", layout="wide")
@@ -221,9 +243,11 @@ def render_relatorios_condominios():
         st.markdown("---")
         meta = db["condominios_meta"].find_one(sort=[("timestamp", -1)])
         if meta:
+            ts = meta.get('timestamp')
+            ts_str = safe_strftime(ts, "%d/%m/%Y %H:%M") if ts else "Data não disponível"
             st.info(f"""
             **Última Importação:**
-            - 📅 {meta['timestamp'].strftime('%d/%m/%Y %H:%M')}
+            - 📅 {ts_str}
             - 👥 {meta['total_clientes']} clientes
             - 🏢 {meta['total_condominios']} condomínios
             """)
@@ -298,7 +322,8 @@ def render_relatorios_condominios():
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            regiao_filter = st.multiselect("Região", df_condominios["Região"].dropna().unique())
+            regioes = df_condominios["Região"].dropna().unique()
+            regiao_filter = st.multiselect("Região", regioes if len(regioes) > 0 else [])
         with col2:
             classific_filter = st.multiselect("Classificação", ["🟢 Dominado", "🟡 Em Crescimento", "🔴 Baixa Presença"])
         with col3:
@@ -339,7 +364,8 @@ def render_relatorios_condominios():
         c1, c2 = st.columns(2)
         with c1:
             if not baixas.empty:
-                st.warning(f"**🔴 Oportunidades de Expansão:**\n- {len(baixas)} condomínios com <20% de penetração\n- Top 3: {', '.join(baixas.nlargest(3, 'Apartamentos')['Condomínio'].tolist())}\n- **Ação sugerida:** Campanhas direcionadas + abordagem com síndicos")
+                top3 = baixas.nlargest(3, 'Apartamentos')['Condomínio'].tolist()
+                st.warning(f"**🔴 Oportunidades de Expansão:**\n- {len(baixas)} condomínios com <20% de penetração\n- Top 3: {', '.join(top3) if top3 else 'N/A'}\n- **Ação sugerida:** Campanhas direcionadas + abordagem com síndicos")
         with c2:
             if not altas.empty:
                 st.success(f"**🟢 Condomínios Saturados:**\n- {len(altas)} condomínios com >60% de penetração\n- **Ação sugerida:** Foco em retenção, upsell e indicações")
@@ -368,7 +394,8 @@ def render_relatorios_condominios():
         df_inadimplencia = analisar_inadimplencia(df_clientes, df_condominios)
         df_merge = df_penetracao.merge(df_inadimplencia[["ID", "taxa_inadimplencia"]], on="ID", how="left")
         
-        fig = px.scatter(df_merge, x="taxa_penetracao", y="taxa_inadimplencia", size="Apartamentos", color="Região", hover_name="Condomínio", title="Penetração vs Inadimplência", trendline="ols")
+        # ✅ CORREÇÃO: Removido trendline="ols" para evitar dependência de statsmodels
+        fig = px.scatter(df_merge, x="taxa_penetracao", y="taxa_inadimplencia", size="Apartamentos", color="Região", hover_name="Condomínio", title="Penetração vs Inadimplência")
         fig.update_layout(height=500)
         st.plotly_chart(fig, use_container_width=True)
         
@@ -376,7 +403,9 @@ def render_relatorios_condominios():
         altos = df_inadimplencia[df_inadimplencia["taxa_inadimplencia"] > 30]
         if not altos.empty:
             for _, row in altos.head(5).iterrows():
-                st.warning(f"**{row['Condomínio']}**: {row['taxa_inadimplencia']}% inadimplência ({row['Em Atraso']} de {row['Em Atraso']+row['Em Dia']} clientes)")
+                em_atraso = row.get('Em Atraso', 0)
+                em_dia = row.get('Em Dia', 0)
+                st.warning(f"**{row['Condomínio']}**: {row['taxa_inadimplencia']}% inadimplência ({em_atraso} de {em_atraso+em_dia} clientes)")
 
     with tab4:
         st.header("📉 Análise de Churn por Condomínio")
@@ -401,13 +430,14 @@ def render_relatorios_condominios():
             st.plotly_chart(fig, use_container_width=True)
             
             st.markdown("### 💡 Insights Competitivos")
-            melhor = df_concorrencia.loc[df_concorrencia["penetracao_ponderada"].idxmax()]
-            pior = df_concorrencia.loc[df_concorrencia["penetracao_ponderada"].idxmin()]
-            c1, c2 = st.columns(2)
-            with c1:
-                st.success(f"**✅ Melhor desempenho:** vs {melhor['Principal Concorrente']}\n- Penetração média: {melhor['penetracao_ponderada']:.1f}%")
-            with c2:
-                st.error(f"**⚠️ Desafio:** vs {pior['Principal Concorrente']}\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
+            if "penetracao_ponderada" in df_concorrencia.columns and not df_concorrencia["penetracao_ponderada"].empty:
+                melhor = df_concorrencia.loc[df_concorrencia["penetracao_ponderada"].idxmax()]
+                pior = df_concorrencia.loc[df_concorrencia["penetracao_ponderada"].idxmin()]
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.success(f"**✅ Melhor desempenho:** vs {melhor['Principal Concorrente']}\n- Penetração média: {melhor['penetracao_ponderada']:.1f}%")
+                with c2:
+                    st.error(f"**⚠️ Desafio:** vs {pior['Principal Concorrente']}\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
         else:
             st.info("ℹ️ Dados de concorrentes não disponíveis na planilha importada")
 
