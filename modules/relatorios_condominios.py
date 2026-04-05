@@ -265,6 +265,44 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
 
     return dashboard_final.sort_values(["Região", "Condomínio"]).reset_index(drop=True)
 
+# ==================== NOVA FUNÇÃO: ANÁLISE POR ZONA/REGIÃO ====================
+def analisar_por_zona(df_dashboard):
+    """
+    Análise consolidada por Zona/Região
+    Retorna métricas agregadas: total apt, ativos, % ativos, etc.
+    """
+    if df_dashboard.empty or "Região" not in df_dashboard.columns:
+        return pd.DataFrame()
+    
+    # Agrupar por Região
+    zona_stats = df_dashboard.groupby("Região").agg(
+        total_condominios=("Condomínio", "count"),
+        total_apartamentos=("Total Apartamentos", "sum"),
+        total_ativos=("Qtd Ativos", "sum"),
+        total_em_atraso=("Total Atrasos", "sum"),
+        total_desativados=("Desativados", "sum"),
+        total_ocupados=("Total Ocupados", "sum"),
+        media_penetracao=("% Ativos (Penetração)", "mean"),
+        media_atraso=("% Atraso", "mean"),
+        media_capacidade_exploracao=("% Capacidade de Exploração", "mean")
+    ).reset_index()
+    
+    # Calcular percentuais
+    zona_stats["percentual_ativos"] = (zona_stats["total_ativos"] / zona_stats["total_apartamentos"] * 100).round(2)
+    zona_stats["percentual_ocupacao"] = (zona_stats["total_ocupados"] / zona_stats["total_apartamentos"] * 100).round(2)
+    zona_stats["percentual_atraso"] = (zona_stats["total_em_atraso"] / zona_stats["total_apartamentos"] * 100).round(2)
+    zona_stats["percentual_desativados"] = (zona_stats["total_desativados"] / zona_stats["total_apartamentos"] * 100).round(2)
+    
+    # Arredondar médias
+    zona_stats["media_penetracao"] = zona_stats["media_penetracao"].round(2)
+    zona_stats["media_atraso"] = zona_stats["media_atraso"].round(2)
+    zona_stats["media_capacidade_exploracao"] = zona_stats["media_capacidade_exploracao"].round(2)
+    
+    # Ordenar por total de apartamentos (maior para menor)
+    zona_stats = zona_stats.sort_values("total_apartamentos", ascending=False).reset_index(drop=True)
+    
+    return zona_stats
+
 def exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios):
     """Exporta dashboard para Excel com múltiplas abas"""
     output = io.BytesIO()
@@ -520,7 +558,15 @@ def render_relatorios_condominios():
     st.markdown("---")
 
     # ==================== ABAS DE ANÁLISE ====================
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", "📉 Churn", "⚔️ Concorrência"])
+    # ✅ NOVA ABA: Análise por Zona
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🎯 Penetração", 
+        "💰 Receita Potencial", 
+        "⚠️ Inadimplência", 
+        "📉 Churn", 
+        "⚔️ Concorrência",
+        "🗺️ Análise por Zona"  # NOVA ABA
+    ])
 
     with tab1:
         st.header("🎯 Taxa de Penetração por Condomínio")
@@ -699,23 +745,235 @@ def render_relatorios_condominios():
         else:
             st.info("ℹ️ Dados de concorrentes não disponíveis na planilha importada")
 
+    # ✅ NOVA ABA: ANÁLISE POR ZONA
+    with tab6:
+        st.header("🗺️ Análise Consolidada por Zona/Região")
+        
+        if not dashboard_df.empty and "Região" in dashboard_df.columns:
+            # Calcular estatísticas por zona
+            zona_stats = analisar_por_zona(dashboard_df)
+            
+            if not zona_stats.empty:
+                # Filtro de regiões
+                regioes_disponiveis = zona_stats["Região"].tolist()
+                regioes_selecionadas = st.multiselect(
+                    "📍 Filtrar Regiões/Zonas",
+                    options=regioes_disponiveis,
+                    default=regioes_disponiveis,
+                    help="Selecione quais regiões deseja visualizar"
+                )
+                
+                if regioes_selecionadas:
+                    zona_filtered = zona_stats[zona_stats["Região"].isin(regioes_selecionadas)]
+                    
+                    # Métricas Cards
+                    st.markdown("### 📊 Métricas Consolidadas por Zona")
+                    
+                    # Criar cards em grid
+                    cols = st.columns(min(len(zona_filtered), 4))
+                    for idx, (_, row) in enumerate(zona_filtered.iterrows()):
+                        with cols[idx % 4]:
+                            st.metric(
+                                label=f"🏙️ {row['Região']}",
+                                value=f"{row['total_apartamentos']:,} aptos",
+                                delta=f"{row['percentual_ativos']:.1f}% ativos"
+                            )
+                    
+                    # Tabela detalhada
+                    st.markdown("### 📋 Tabela Detalhada por Zona")
+                    
+                    # Preparar dados para exibição
+                    zona_display = zona_filtered[[
+                        "Região",
+                        "total_condominios",
+                        "total_apartamentos", 
+                        "total_ativos",
+                        "percentual_ativos",
+                        "total_em_atraso",
+                        "percentual_atraso",
+                        "total_desativados",
+                        "percentual_desativados",
+                        "total_ocupados",
+                        "percentual_ocupacao",
+                        "media_capacidade_exploracao"
+                    ]].copy()
+                    
+                    zona_display.columns = [
+                        "Região/Zona",
+                        "Condomínios",
+                        "Total Aptos", 
+                        "Ativos",
+                        "% Ativos",
+                        "Em Atraso",
+                        "% Atraso",
+                        "Desativados",
+                        "% Desativados",
+                        "Ocupados",
+                        "% Ocupação",
+                        "% Cap. Exploração"
+                    ]
+                    
+                    st.dataframe(
+                        zona_display,
+                        use_container_width=True,
+                        column_config={
+                            "% Ativos": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                            "% Atraso": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                            "% Ocupação": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                            "% Cap. Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                            "Total Aptos": st.column_config.NumberColumn(format="%d"),
+                            "Ativos": st.column_config.NumberColumn(format="%d"),
+                            "Em Atraso": st.column_config.NumberColumn(format="%d"),
+                            "Desativados": st.column_config.NumberColumn(format="%d"),
+                            "Ocupados": st.column_config.NumberColumn(format="%d"),
+                        }
+                    )
+                    
+                    # Gráficos comparativos
+                    st.markdown("### 📈 Visualizações Comparativas")
+                    
+                    col_chart1, col_chart2 = st.columns(2)
+                    
+                    with col_chart1:
+                        # Gráfico de barras: Apartamentos vs Ativos por Zona
+                        fig_comp = go.Figure()
+                        
+                        fig_comp.add_trace(go.Bar(
+                            name='Total Apartamentos',
+                            x=zona_filtered["Região"],
+                            y=zona_filtered["total_apartamentos"],
+                            marker_color='lightblue'
+                        ))
+                        
+                        fig_comp.add_trace(go.Bar(
+                            name='Clientes Ativos',
+                            x=zona_filtered["Região"],
+                            y=zona_filtered["total_ativos"],
+                            marker_color='green'
+                        ))
+                        
+                        fig_comp.add_trace(go.Bar(
+                            name='Em Atraso',
+                            x=zona_filtered["Região"],
+                            y=zona_filtered["total_em_atraso"],
+                            marker_color='orange'
+                        ))
+                        
+                        fig_comp.update_layout(
+                            title="Composição por Zona",
+                            barmode='group',
+                            height=400,
+                            xaxis_title="Região",
+                            yaxis_title="Quantidade"
+                        )
+                        
+                        st.plotly_chart(fig_comp, use_container_width=True)
+                    
+                    with col_chart2:
+                        # Gráfico de pizza: Distribuição de apartamentos
+                        fig_pie = px.pie(
+                            zona_filtered,
+                            values="total_apartamentos",
+                            names="Região",
+                            title="Distribuição de Apartamentos por Zona",
+                            hole=0.4
+                        )
+                        fig_pie.update_layout(height=400)
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    
+                    # Gráfico de penetração
+                    st.markdown("### 🎯 Penetração por Zona")
+                    fig_pen = px.bar(
+                        zona_filtered,
+                        x="Região",
+                        y="percentual_ativos",
+                        color="percentual_ativos",
+                        color_continuous_scale="RdYlGn",
+                        text="percentual_ativos",
+                        title="Percentual de Ativos por Zona (Penetração)"
+                    )
+                    fig_pen.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+                    fig_pen.update_layout(height=400)
+                    st.plotly_chart(fig_pen, use_container_width=True)
+                    
+                    # Insights automáticos
+                    st.markdown("### 💡 Insights por Zona")
+                    
+                    # Melhor e pior zona
+                    melhor_zona = zona_filtered.loc[zona_filtered["percentual_ativos"].idxmax()]
+                    pior_zona = zona_filtered.loc[zona_filtered["percentual_ativos"].idxmin()]
+                    maior_potencial = zona_filtered.loc[zona_filtered["media_capacidade_exploracao"].idxmax()]
+                    
+                    col_ins1, col_ins2, col_ins3 = st.columns(3)
+                    
+                    with col_ins1:
+                        st.success(
+                            f"**🥇 Melhor Zona: {melhor_zona['Região']}**\n\n"
+                            f"• Penetração: **{melhor_zona['percentual_ativos']:.1f}%**\n"
+                            f"• {melhor_zona['total_ativos']:,} ativos de {melhor_zona['total_apartamentos']:,} aptos\n"
+                            f"• {melhor_zona['total_condominios']} condomínios"
+                        )
+                    
+                    with col_ins2:
+                        st.warning(
+                            f"**⚠️ Zona com Menor Penetração: {pior_zona['Região']}**\n\n"
+                            f"• Penetração: **{pior_zona['percentual_ativos']:.1f}%**\n"
+                            f"• {pior_zona['total_ativos']:,} ativos de {pior_zona['total_apartamentos']:,} aptos\n"
+                            f"• Oportunidade: {pior_zona['total_apartamentos'] - pior_zona['total_ativos']:,} aptos vazios"
+                        )
+                    
+                    with col_ins3:
+                        st.info(
+                            f"**🚀 Maior Potencial: {maior_potencial['Região']}**\n\n"
+                            f"• Capacidade de Exploração: **{maior_potencial['media_capacidade_exploracao']:.1f}%**\n"
+                            f"• {maior_potencial['total_condominios']} condomínios para expansão\n"
+                            f"• Foco estratégico recomendado"
+                        )
+                    
+                    # Exportar análise por zona
+                    st.markdown("### 📥 Exportar Análise")
+                    
+                    # Criar Excel com aba de zonas
+                    output_zona = io.BytesIO()
+                    with pd.ExcelWriter(output_zona, engine='openpyxl') as writer:
+                        zona_display.to_excel(writer, sheet_name='Análise por Zona', index=False)
+                        dashboard_df.to_excel(writer, sheet_name='Dashboard Principal', index=False)
+                    output_zona.seek(0)
+                    
+                    st.download_button(
+                        label="📊 Exportar Análise por Zona (Excel)",
+                        data=output_zona,
+                        file_name=f"analise_por_zona_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                else:
+                    st.info("👆 Selecione pelo menos uma região para visualizar os dados")
+            else:
+                st.warning("⚠️ Não foi possível gerar análise por zona. Verifique se a coluna 'Região' existe nos dados.")
+        else:
+            st.warning("⚠️ Dados insuficientes para análise por zona")
+
     st.markdown("---")
     st.subheader("🗺️ Mapa Estratégico de Condomínios")
-    fig_mapa = px.scatter(
-        df_penetracao, 
-        x="Apartamentos", 
-        y="taxa_penetracao", 
-        size="clientes_ativos", 
-        color="classificacao", 
-        hover_name="Condomínio", 
-        hover_data=["Região", "Principal Concorrente"], 
-        title="Matriz: Tamanho do Condomínio vs Penetração"
-    )
-    fig_mapa.add_hline(y=25, line_dash="dash", line_color="orange", annotation_text="Limite Crescimento")
-    fig_mapa.add_hline(y=50, line_dash="dash", line_color="green", annotation_text="Limite Dominado")
-    fig_mapa.add_vline(x=df_penetracao["Apartamentos"].median(), line_dash="dot", annotation_text="Tamanho Médio")
-    fig_mapa.update_layout(height=500, hovermode="closest")
-    st.plotly_chart(fig_mapa, use_container_width=True)
+    
+    # Usar df_penetracao que já foi calculado na tab1
+    if 'df_penetracao' in locals() and not df_penetracao.empty:
+        fig_mapa = px.scatter(
+            df_penetracao, 
+            x="Apartamentos", 
+            y="taxa_penetracao", 
+            size="clientes_ativos", 
+            color="classificacao", 
+            hover_name="Condomínio", 
+            hover_data=["Região", "Principal Concorrente"], 
+            title="Matriz: Tamanho do Condomínio vs Penetração"
+        )
+        fig_mapa.add_hline(y=25, line_dash="dash", line_color="orange", annotation_text="Limite Crescimento")
+        fig_mapa.add_hline(y=50, line_dash="dash", line_color="green", annotation_text="Limite Dominado")
+        fig_mapa.add_vline(x=df_penetracao["Apartamentos"].median(), line_dash="dot", annotation_text="Tamanho Médio")
+        fig_mapa.update_layout(height=500, hovermode="closest")
+        st.plotly_chart(fig_mapa, use_container_width=True)
 
     st.markdown("""
     #### 🎯 Como usar esta matriz:
