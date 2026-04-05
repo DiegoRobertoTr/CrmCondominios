@@ -52,12 +52,16 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     for _, row in df_clientes.iterrows():
         doc = row.to_dict()
         
+        # ✅ CORREÇÃO: Tratamento seguro de datas e NaT
         for key, value in doc.items():
             if isinstance(value, pd.Timestamp):
                 if pd.isna(value):
                     doc[key] = None
                 else:
-                    doc[key] = value.to_pydatetime()
+                    try:
+                        doc[key] = value.to_pydatetime()
+                    except (ValueError, OSError):
+                        doc[key] = None
             elif pd.isna(value):
                 doc[key] = None
         
@@ -111,6 +115,15 @@ def clear_condominio_data(db, batch_id=None):
 def gerar_dashboard_principal(df_clientes, df_condominios):
     """Gera dashboard principal com visão consolidada por condomínio"""
     
+    # ✅ CORREÇÃO: Verifica se as colunas existem
+    if "CONDOMANIO" not in df_clientes.columns:
+        st.error("❌ Coluna 'CONDOMANIO' não encontrada na tabela de clientes")
+        return pd.DataFrame()
+    
+    if "ID" not in df_condominios.columns:
+        st.error("❌ Coluna 'ID' não encontrada na tabela de condomínios")
+        return pd.DataFrame()
+    
     # Mapeia CONDOMANIO (clientes) com ID (condominios)
     df_merged = df_clientes.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Data cadastro"]],
@@ -137,9 +150,9 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
     
     df_merged["status_classificacao"] = df_merged["STATUS ACESSO"].apply(classificar_status)
     
-    # Agrega por condomínio
-    dashboard = df_merged.groupby(["ID", "Condomínio", "Região", "Apartamentos", "Data cadastro"]).agg(
-        total_clientes=("ID", "count"),
+    # ✅ CORREÇÃO: Agrupa por CONDOMANIO ao invés de ID
+    dashboard = df_merged.groupby(["CONDOMANIO", "Condomínio", "Região", "Apartamentos", "Data cadastro"]).agg(
+        total_clientes=("CONDOMANIO", "count"),
         ativos=("status_classificacao", lambda x: (x == "Ativo").sum()),
         em_atraso=("status_classificacao", lambda x: (x == "Em Atraso").sum()),
         bloqueio_automatico=("status_classificacao", lambda x: (x == "Bloqueio Automático").sum()),
@@ -154,7 +167,6 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
     dashboard["percentual_atraso"] = (dashboard["total_atrasos"] / dashboard["Apartamentos"] * 100).round(2)
     
     # Capacidade de exploração: apartamentos disponíveis / total
-    # Disponível = Total - (Ativos + Atrasos + Bloqueios)
     dashboard["capacidade_exploracao"] = ((dashboard["Apartamentos"] - dashboard["total_ocupados"]) / dashboard["Apartamentos"] * 100).round(2)
     
     # Seleciona e renomeia colunas para o formato final
@@ -196,32 +208,16 @@ def exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios):
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Aba 1: Dashboard Principal
         dashboard_df.to_excel(writer, sheet_name='Dashboard Principal', index=False)
-        
-        # Aba 2: Dados Completos
         df_clientes.to_excel(writer, sheet_name='Dados Clientes', index=False)
-        
-        # Aba 3: Condomínios
         df_condominios.to_excel(writer, sheet_name='Condomínios', index=False)
         
-        # Formata aba Dashboard
         workbook = writer.book
         worksheet = writer.sheets['Dashboard Principal']
         
-        # Ajusta largura das colunas
         column_widths = {
-            'A': 15,  # Região
-            'B': 40,  # Condomínio
-            'C': 20,  # Data Implantação
-            'D': 12,  # Qtd Ativos
-            'E': 18,  # % Ativos
-            'F': 14,  # Total Atrasos
-            'G': 12,  # % Atraso
-            'H': 22,  # % Capacidade
-            'I': 18,  # Total Apartamentos
-            'J': 12,  # Desativados
-            'K': 15   # Total Ocupados
+            'A': 15, 'B': 40, 'C': 20, 'D': 12, 'E': 18,
+            'F': 14, 'G': 12, 'H': 22, 'I': 18, 'J': 12, 'K': 15
         }
         
         for col, width in column_widths.items():
@@ -235,6 +231,7 @@ def calcular_penetracao(df_clientes, df_condominios):
     """Calcula taxa de penetração por condomínio"""
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
     
+    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
     
     df_merged = clientes_por_cond.merge(
@@ -263,6 +260,7 @@ def analisar_inadimplencia(df_clientes, df_condominios):
         lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan", "nat"] else "Em Dia"
     )
     
+    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
     
     if "Em Atraso" in inadimplencia.columns and "Em Dia" in inadimplencia.columns:
@@ -280,6 +278,7 @@ def analisar_inadimplencia(df_clientes, df_condominios):
 
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn/cancelamentos por condomínio"""
+    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
     
     if "Ativo" in status_count.columns and "Desativado" in status_count.columns:
@@ -325,7 +324,10 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     if pd.isna(value) or value is None:
         return ""
     if isinstance(value, (pd.Timestamp, datetime)):
-        return value.strftime(fmt)
+        try:
+            return value.strftime(fmt)
+        except (ValueError, OSError):
+            return ""
     return str(value)
 
 # ==================== INTERFACE STREAMLIT ====================
@@ -383,6 +385,7 @@ def render_relatorios_condominios():
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
+            # ✅ CORREÇÃO: Tratar colunas de data com errors='coerce'
             for col in df_clientes.select_dtypes(include=['object']).columns:
                 if 'data' in col.lower() or 'date' in col.lower():
                     df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
@@ -423,47 +426,48 @@ def render_relatorios_condominios():
     
     dashboard_df = gerar_dashboard_principal(df_clientes, df_condominios)
     
-    # KPIs gerais do dashboard
-    col1, col2, col3, col4 = st.columns(4)
-    total_ativos = dashboard_df["Qtd Ativos"].sum()
-    total_atrasos = dashboard_df["Total Atrasos"].sum()
-    total_apartamentos = dashboard_df["Total Apartamentos"].sum()
-    media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
-    
-    col1.metric("👥 Total de Ativos", f"{total_ativos:,}")
-    col2.metric("⚠️ Total em Atraso", f"{total_atrasos:,}")
-    col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}")
-    col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
-    
-    # Exibe o dashboard
-    st.dataframe(
-        dashboard_df,
-        use_container_width=True,
-        column_config={
-            "Data de Implantação": st.column_config.DateColumn(format="DD/MM/YYYY"),
-            "% Ativos (Penetração)": st.column_config.ProgressColumn(
-                format="%.1f%%",
-                min_value=0,
-                max_value=100
-            ),
-            "% Capacidade de Exploração": st.column_config.ProgressColumn(
-                format="%.1f%%",
-                min_value=0,
-                max_value=100
-            )
-        }
-    )
-    
-    # Botão de exportação Excel
-    excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
-    
-    st.download_button(
-        label="📥 Exportar Dashboard Completo (Excel)",
-        data=excel_buffer,
-        file_name=f"dashboard_condominios_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+    if not dashboard_df.empty:
+        # KPIs gerais do dashboard
+        col1, col2, col3, col4 = st.columns(4)
+        total_ativos = dashboard_df["Qtd Ativos"].sum()
+        total_atrasos = dashboard_df["Total Atrasos"].sum()
+        total_apartamentos = dashboard_df["Total Apartamentos"].sum()
+        media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
+        
+        col1.metric("👥 Total de Ativos", f"{total_ativos:,}")
+        col2.metric("⚠️ Total em Atraso", f"{total_atrasos:,}")
+        col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}")
+        col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
+        
+        # Exibe o dashboard
+        st.dataframe(
+            dashboard_df,
+            use_container_width=True,
+            column_config={
+                "Data de Implantação": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "% Ativos (Penetração)": st.column_config.ProgressColumn(
+                    format="%.1f%%",
+                    min_value=0,
+                    max_value=100
+                ),
+                "% Capacidade de Exploração": st.column_config.ProgressColumn(
+                    format="%.1f%%",
+                    min_value=0,
+                    max_value=100
+                )
+            }
+        )
+        
+        # Botão de exportação Excel
+        excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
+        
+        st.download_button(
+            label="📥 Exportar Dashboard Completo (Excel)",
+            data=excel_buffer,
+            file_name=f"dashboard_condominios_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
     
     st.markdown("---")
 
