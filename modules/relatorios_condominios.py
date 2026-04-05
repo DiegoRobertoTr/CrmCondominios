@@ -218,8 +218,15 @@ def clear_condominio_data(db, batch_id=None):
     return result.deleted_count
 
 # ==================== DASHBOARD PRINCIPAL CORRIGIDO ====================
-def gerar_dashboard_principal(df_clientes, df_condominios):
-    """Gera dashboard principal com visão consolidada por condomínio - CORRIGIDO"""
+def gerar_dashboard_principal(df_clientes, df_condominios, modo_ativos="somente_ativos"):
+    """
+    Gera dashboard principal com visão consolidada por condomínio.
+
+    Parâmetros:
+    - modo_ativos: "somente_ativos" (padrão) ou "todos_ativos"
+        * "somente_ativos": Conta apenas status "Ativo" puro
+        * "todos_ativos": Conta Ativo + Em Atraso + Bloqueio Automático como ativos
+    """
     if "CONDOMANIO" not in df_clientes.columns:
         st.error("❌ Coluna 'CONDOMANIO' não encontrada na tabela de clientes")
         return pd.DataFrame()
@@ -245,19 +252,32 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
             return "Desativado"
         return "Outros"
 
-    # ✅ CORREÇÃO CRÍTICA #2: Criar resumo de clientes por condomínio PRIMEIRO
+    # ✅ Criar resumo de clientes por condomínio PRIMEIRO
     df_clientes = df_clientes.copy()
     df_clientes["status_classificacao"] = df_clientes["STATUS ACESSO"].apply(classificar_status)
-    
+
     # Agrupa clientes por condomínio
     clientes_agg = df_clientes.groupby("CONDOMANIO").agg(
         total_clientes=("CONDOMANIO", "count"),
-        ativos=("status_classificacao", lambda x: (x == "Ativo").sum()),
+        ativos_puros=("status_classificacao", lambda x: (x == "Ativo").sum()),
         em_atraso=("status_classificacao", lambda x: (x == "Em Atraso").sum()),
         bloqueio_automatico=("status_classificacao", lambda x: (x == "Bloqueio Automático").sum()),
         desativados=("status_classificacao", lambda x: (x == "Desativado").sum()),
         outros=("status_classificacao", lambda x: (x == "Outros").sum())
     ).reset_index()
+
+    # ✅ CORREÇÃO: Definir o que conta como "Ativos" baseado no modo
+    if modo_ativos == "todos_ativos":
+        # Modo "todos ativos": Ativo puro + Em Atraso + Bloqueio Automático
+        clientes_agg["ativos"] = clientes_agg["ativos_puros"] + clientes_agg["em_atraso"] + clientes_agg["bloqueio_automatico"]
+        clientes_agg["label_ativos"] = "Ativos (inclui atraso/bloqueio)"
+    else:
+        # Modo padrão: apenas Ativo puro
+        clientes_agg["ativos"] = clientes_agg["ativos_puros"]
+        clientes_agg["label_ativos"] = "Ativos (somente ativos limpos)"
+
+    # ✅ CORREÇÃO CRÍTICA: Total ocupados = base para cálculo de atraso
+    clientes_agg["total_ocupados"] = clientes_agg["ativos_puros"] + clientes_agg["em_atraso"] + clientes_agg["bloqueio_automatico"]
 
     # ✅ CORREÇÃO CRÍTICA #3: Fazer merge começando pelos condomínios (RIGHT JOIN logic)
     df_merged = df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Data cadastro"]].merge(
@@ -268,37 +288,47 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
     )
 
     # ✅ CORREÇÃO CRÍTICA #4: Preencher NaN com 0 para condomínios sem clientes
-    df_merged["total_clientes"] = df_merged["total_clientes"].fillna(0).astype(int)
     df_merged["ativos"] = df_merged["ativos"].fillna(0).astype(int)
+    df_merged["ativos_puros"] = df_merged["ativos_puros"].fillna(0).astype(int)
     df_merged["em_atraso"] = df_merged["em_atraso"].fillna(0).astype(int)
     df_merged["bloqueio_automatico"] = df_merged["bloqueio_automatico"].fillna(0).astype(int)
     df_merged["desativados"] = df_merged["desativados"].fillna(0).astype(int)
     df_merged["outros"] = df_merged["outros"].fillna(0).astype(int)
+    df_merged["total_ocupados"] = df_merged["total_ocupados"].fillna(0).astype(int)
 
     # Cálculos
     apt_safe = df_merged["Apartamentos"].replace(0, np.nan)
-    
-    df_merged["total_ocupados"] = df_merged["ativos"] + df_merged["em_atraso"] + df_merged["bloqueio_automatico"]
+
+    # ✅ Penetração: Ativos / Total Apartamentos
     df_merged["percentual_ativos"] = (df_merged["ativos"] / apt_safe * 100).round(2)
+
+    # ✅ CORREÇÃO CRÍTICA DO CÁLCULO DE ATRASO:
+    # Total de atrasos = Em Atraso + Bloqueio Automático
     df_merged["total_atrasos"] = df_merged["em_atraso"] + df_merged["bloqueio_automatico"]
-    df_merged["percentual_atraso"] = (df_merged["total_atrasos"] / apt_safe * 100).round(2)
+
+    # ✅ Percentual de Atraso: Atrasos / Total Ocupados (não sobre total apartamentos!)
+    # Se não houver ocupados, fica 0%
+    ocupados_safe = df_merged["total_ocupados"].replace(0, np.nan)
+    df_merged["percentual_atraso"] = (df_merged["total_atrasos"] / ocupados_safe * 100).round(2).fillna(0)
+
+    # Capacidade de exploração: Apartamentos vazios / Total Apartamentos
     df_merged["capacidade_exploracao"] = ((apt_safe - df_merged["total_ocupados"]) / apt_safe * 100).round(2)
 
     # Seleciona e renomeia colunas
     dashboard_final = df_merged[[
         "Região", "Condomínio", "Data cadastro", "ativos", "percentual_ativos",
         "total_atrasos", "percentual_atraso", "capacidade_exploracao",
-        "Apartamentos", "desativados", "total_ocupados"
+        "Apartamentos", "desativados", "total_ocupados", "ativos_puros", "em_atraso", "bloqueio_automatico"
     ]].copy()
 
     dashboard_final.columns = [
         "Região", "Condomínio", "Data de Implantação", "Qtd Ativos",
         "% Ativos (Penetração)", "Total Atrasos", "% Atraso",
-        "% Capacidade de Exploração", "Total Apartamentos", "Desativados", "Total Ocupados"
+        "% Capacidade de Exploração", "Total Apartamentos", "Desativados", "Total Ocupados",
+        "Ativos Puros", "Em Atraso", "Bloqueio Automático"
     ]
 
     return dashboard_final.sort_values(["Região", "Condomínio"]).reset_index(drop=True)
-
 # ==================== NOVA FUNÇÃO: ANÁLISE POR ZONA/REGIÃO ====================
 def analisar_por_zona(df_dashboard):
     """
@@ -719,40 +749,110 @@ def render_relatorios_condominios():
     if "reload_data" in st.session_state:
         del st.session_state["reload_data"]
 
+    
     # ==================== DASHBOARD PRINCIPAL ====================
     st.subheader("📊 Dashboard Principal")
-    dashboard_df = gerar_dashboard_principal(df_clientes, df_condominios)
+
+    # ✅ AVISO IMPORTANTE E SELEÇÃO DE MODO
+    st.markdown("---")
+
+    # Caixa de informação sobre o cálculo de ativos
+    st.info("""
+    📋 **Como os "Ativos" são calculados:**
+
+    Por padrão, "Ativos" = apenas clientes com status "Ativo" (sem atraso, sem bloqueio).
+
+    Use o toggle abaixo para alterar o modo de cálculo.
+    """)
+
+    # Toggle para seleção de modo
+    col_modo1, col_modo2 = st.columns([1, 3])
+    with col_modo1:
+        modo_ativos = st.toggle(
+            "Considerar 'Financeiro em Atraso' e 'Bloqueio Automático' como Ativos",
+            value=False,  # Desligado por padrão (modo "somente ativos")
+            help="Quando ligado: Ativos incluem também clientes em atraso e bloqueados"
+        )
+
+    with col_modo2:
+        if modo_ativos:
+            st.success("✅ Modo atual: **Todos os Ocupados** = Ativos + Em Atraso + Bloqueio Automático")
+            modo_param = "todos_ativos"
+        else:
+            st.warning("⚠️ Modo atual: **Somente Ativos Limpos** = Apenas status 'Ativo' puro (exclui atraso/bloqueio)")
+            modo_param = "somente_ativos"
+
+    st.markdown("---")
+
+    # Gerar dashboard com o modo selecionado
+    dashboard_df = gerar_dashboard_principal(df_clientes, df_condominios, modo_ativos=modo_param)
 
     if not dashboard_df.empty:
         col1, col2, col3, col4 = st.columns(4)
         total_ativos = dashboard_df["Qtd Ativos"].sum()
         total_atrasos = dashboard_df["Total Atrasos"].sum()
-        total_apartamentos = dashboard_df["Total Apartamentos"].sum()  # ✅ AGORA CORRETO!
+        total_apartamentos = dashboard_df["Total Apartamentos"].sum()
+        total_ocupados = dashboard_df["Total Ocupados"].sum()
         media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
-        
-        # ✅ CORREÇÃO DE FORMATAÇÃO: Usar função formatar_numero_br
+
+        # ✅ Alerta se houver discrepância entre modos
+        ativos_puros_total = dashboard_df["Ativos Puros"].sum()
+        if modo_param == "somente_ativos" and total_ocupados > ativos_puros_total:
+            diferenca = total_ocupados - ativos_puros_total
+            st.info(f"💡 **Dica:** Existem {formatar_numero_br(diferenca)} clientes em 'Atraso' ou 'Bloqueio' que não estão sendo contados como Ativos. Ative o toggle acima para incluí-los.")
+
         col1.metric("👥 Total de Ativos", formatar_numero_br(total_ativos))
-        col2.metric("⚠️ Total em Atraso", formatar_numero_br(total_atrasos))
-        col3.metric("🏠 Total de Apartamentos", formatar_numero_br(total_apartamentos))  # ✅ AGORA MOSTRA 45.723 (com ponto)
+        col2.metric("⚠️ Total em Atraso", formatar_numero_br(total_atrasos), 
+                   help="Financeiro em Atraso + Bloqueio Automático")
+        col3.metric("🏠 Total de Apartamentos", formatar_numero_br(total_apartamentos))
         col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
-        
+
         # ✅ NOVO: Alerta sobre condomínios sem clientes
         condos_sem_clientes = len(dashboard_df[dashboard_df["Qtd Ativos"] == 0])
         if condos_sem_clientes > 0:
             st.info(f"📌 **{condos_sem_clientes} condomínios** sem clientes ativos (oportunidades de expansão)")
-        
+
         # ✅ CORREÇÃO DE FORMATAÇÃO: Configurar colunas do dataframe para formato brasileiro
         st.dataframe(dashboard_df, use_container_width=True, column_config={
             "Data de Implantação": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "% Ativos (Penetração)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
             "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+            # ✅ CORREÇÃO: % Atraso agora é calculado sobre ocupados, não sobre apartamentos
+            "% Atraso": st.column_config.ProgressColumn(
+                format="%.1f%%", 
+                min_value=0, 
+                max_value=100,
+                help="% de clientes em atraso/bloqueio sobre o total de ocupados (ativos + atraso + bloqueio)"
+            ),
             "Total Apartamentos": st.column_config.NumberColumn(format="%d", help="Total de apartamentos no condomínio"),
             "Qtd Ativos": st.column_config.NumberColumn(format="%d"),
             "Total Atrasos": st.column_config.NumberColumn(format="%d"),
             "Desativados": st.column_config.NumberColumn(format="%d"),
-            "Total Ocupados": st.column_config.NumberColumn(format="%d"),
+            "Total Ocupados": st.column_config.NumberColumn(format="%d", help="Ativos + Em Atraso + Bloqueio Automático"),
+            "Ativos Puros": st.column_config.NumberColumn(format="%d", help="Apenas status 'Ativo' sem restrições"),
+            "Em Atraso": st.column_config.NumberColumn(format="%d"),
+            "Bloqueio Automático": st.column_config.NumberColumn(format="%d"),
         })
-        
+
+        # Legenda explicativa dos cálculos
+        with st.expander("📖 Entenda os cálculos"):
+            st.markdown(f"""
+            ### Como são calculados os indicadores:
+
+            **Modo atual:** {'**Todos os Ocupados** (Ativos + Atraso + Bloqueio)' if modo_param == 'todos_ativos' else '**Somente Ativos Limpos** (apenas status "Ativo" puro)'}
+
+            | Métrica | Fórmula | Observação |
+            |---------|---------|------------|
+            | **Qtd Ativos** | { 'Ativos Puros + Em Atraso + Bloqueio' if modo_param == 'todos_ativos' else 'Apenas Ativos Puros (sem restrições)' } | {'Inclui clientes em atraso/bloqueio' if modo_param == 'todos_ativos' else 'EXCLUI clientes em atraso/bloqueio'} |
+            | **% Ativos (Penetração)** | Ativos / Total Apartamentos × 100 | Sobre total de unidades do condomínio |
+            | **Total Atrasos** | Em Atraso + Bloqueio Automático | Sempre inclui ambos os status |
+            | **% Atraso** | Total Atrasos / Total Ocupados × 100 | ✅ **Corrigido:** Sobre base de ocupados, não sobre apartamentos |
+            | **Total Ocupados** | Ativos Puros + Em Atraso + Bloqueio | Base para cálculo de % atraso |
+            | **% Capacidade de Exploração** | (Apartamentos - Ocupados) / Apartamentos × 100 | Oportunidade de crescimento |
+
+            **💡 Dica:** O % de Atraso agora é calculado corretamente sobre a base de clientes ocupados (que deveriam estar pagando), não sobre o total de apartamentos do condomínio.
+            """)
+
         excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
         st.download_button(
             label="📥 Exportar Dashboard Completo (Excel)", 
@@ -761,7 +861,6 @@ def render_relatorios_condominios():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
             use_container_width=True
         )
-
     st.markdown("---")
 
     # ==================== ABAS DE ANÁLISE ====================
