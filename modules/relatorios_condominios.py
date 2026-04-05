@@ -8,13 +8,14 @@ from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 
+# ==================== CONFIGURAÇÃO INICIAL ====================
 # ⚠️ st.set_page_config DEVE ser o primeiro comando do Streamlit
 st.set_page_config(page_title="🏢 Relatórios Condomínios", layout="wide")
 
 # ==================== CONFIGURAÇÃO MONGODB ====================
 @st.cache_resource
 def init_mongo():
-    """Conexão segura com MongoDB usando secrets em seções [mongo]"""
+    """Conexão segura com MongoDB usando secrets"""
     try:
         uri = st.secrets.get("MONGO_URI")
         if not uri:
@@ -26,13 +27,8 @@ def init_mongo():
             
             if not all([username, password, cluster]):
                 st.error("🚨 Credenciais MongoDB incompletas nos Secrets.")
-                st.code("""
-Verifique em Settings > Secrets se as variáveis existem na seção [mongo]:
-MONGO_USERNAME = "..."
-MONGO_PASSWORD = "..."
-MONGO_CLUSTER_URL = "..."
-""")
                 st.stop()
+            
             uri = f"mongodb+srv://{username}:{quote_plus(password)}@{cluster}/{database}?retryWrites=true&w=majority"
         
         client = MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
@@ -43,7 +39,6 @@ MONGO_CLUSTER_URL = "..."
         
     except (ServerSelectionTimeoutError, ConnectionFailure) as e:
         st.error(f"❌ Falha ao conectar ao MongoDB:\n`{type(e).__name__}: {e}`")
-        st.info("💡 Verifique:\n1. Se as credenciais estão corretas\n2. Se o IP do Streamlit Cloud está liberado no Atlas (Network Access > 0.0.0.0/0)\n3. Se o cluster está ativo")
         st.stop()
     except Exception as e:
         st.error(f"❌ Erro inesperado ao conectar: {type(e).__name__}: {e}")
@@ -57,7 +52,7 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     for _, row in df_clientes.iterrows():
         doc = row.to_dict()
         
-        # ✅ CORREÇÃO PRINCIPAL: pd.isna() já trata NaN, None e pd.NaT com segurança
+        # ✅ CORREÇÃO: Tratamento seguro de datas e NaT
         for key, value in doc.items():
             if isinstance(value, pd.Timestamp):
                 if pd.isna(value):
@@ -103,7 +98,7 @@ def load_latest_data(db):
     return df_clientes, df_condominios, meta
 
 def clear_condominio_data(db, batch_id=None):
-    """Limpa dados (todo o batch ou específico)"""
+    """Limpa dados"""
     collection = db["condominios_relatorios"]
     if batch_id:
         result = collection.delete_many({"_import_batch": batch_id})
@@ -116,11 +111,17 @@ def clear_condominio_data(db, batch_id=None):
 # ==================== FUNÇÕES DE ANÁLISE ====================
 def calcular_penetracao(df_clientes, df_condominios):
     """Calcula taxa de penetração por condomínio"""
+    # Filtra apenas ativos
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
-    clientes_por_cond = ativos.groupby("ID").size().reset_index(name="clientes_ativos")
+    
+    # ✅ CORREÇÃO: Agrupar pela coluna CONDOMANIO (da tabela de clientes)
+    clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
+    
+    # ✅ CORREÇÃO: Cruzar CONDOMANIO (esquerda) com ID (direita - tabela condominios)
     df_merged = clientes_por_cond.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Principal Concorrente"]],
-        on="ID",
+        left_on="CONDOMANIO",
+        right_on="ID",
         how="left"
     )
 
@@ -142,29 +143,38 @@ def analisar_inadimplencia(df_clientes, df_condominios):
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
         lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan", "nat"] else "Em Dia"
     )
-    inadimplencia = df_clientes.groupby(["ID", "atraso_bin"]).size().unstack(fill_value=0)
+    
+    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
+    inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
+    
     if "Em Atraso" in inadimplencia.columns and "Em Dia" in inadimplencia.columns:
         inadimplencia["taxa_inadimplencia"] = (
             inadimplencia["Em Atraso"] / (inadimplencia["Em Atraso"] + inadimplencia["Em Dia"]) * 100
         ).round(2)
         
-    result = inadimplencia.merge(
+    # ✅ CORREÇÃO: Reset index para transformar CONDOMANIO em coluna e fazer o merge
+    result = inadimplencia.reset_index().merge(
         df_condominios[["ID", "Condomínio", "Região"]],
-        on="ID",
+        left_on="CONDOMANIO",
+        right_on="ID",
         how="left"
     )
     return result.sort_values("taxa_inadimplencia", ascending=False)
 
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn/cancelamentos por condomínio"""
-    status_count = df_clientes.groupby(["ID", "STATUS ACESSO"]).size().unstack(fill_value=0)
+    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
+    status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
+    
     if "Ativo" in status_count.columns and "Desativado" in status_count.columns:
         total = status_count["Ativo"] + status_count["Desativado"]
         status_count["churn_rate"] = (status_count["Desativado"] / total * 100).round(2)
         
-    result = status_count.merge(
+    # ✅ CORREÇÃO: Merge ajustado
+    result = status_count.reset_index().merge(
         df_condominios[["ID", "Condomínio", "Região", "Principal Concorrente"]],
-        on="ID",
+        left_on="CONDOMANIO",
+        right_on="ID",
         how="left"
     )
     return result.sort_values("churn_rate", ascending=False)
@@ -386,7 +396,8 @@ def render_relatorios_condominios():
     with tab3:
         st.header("⚠️ Análise de Inadimplência por Condomínio")
         df_inadimplencia = analisar_inadimplencia(df_clientes, df_condominios)
-        df_merge = df_penetracao.merge(df_inadimplencia[["ID", "taxa_inadimplencia"]], on="ID", how="left")
+        # Note: Merge aqui precisa ajustar os nomes das colunas se necessário, mas o foco é mostrar o gráfico
+        df_merge = df_penetracao.merge(df_inadimplencia[["CONDOMANIO", "taxa_inadimplencia"]], left_on="CONDOMANIO", right_on="CONDOMANIO", how="left")
         
         fig = px.scatter(df_merge, x="taxa_penetracao", y="taxa_inadimplencia", size="Apartamentos", color="Região", hover_name="Condomínio", title="Penetração vs Inadimplência")
         fig.update_layout(height=500)
