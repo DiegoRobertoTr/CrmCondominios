@@ -881,9 +881,9 @@ def render_relatorios_condominios():
         col1, col2, col3 = st.columns(3)
         with col1:
             regioes = df_condominios["Região"].dropna().unique()
-            regiao_filter = st.multiselect("Região", list(regioes) if len(regioes) > 0 else [])
+            regiao_filter = st.multiselect("Região", list(regioes) if len(regioes) > 0 else [], key="penetracao_regiao")
         with col2:
-            classific_filter = st.multiselect("Classificação", ["🟢 Dominado", "🟡 Em Crescimento", "🔴 Baixa Presença"])
+            classific_filter = st.multiselect("Classificação", ["🟢 Dominado", "🟡 Em Crescimento", "🔴 Baixa Presença"], key="penetracao_classificacao")
         with col3:
             min_penetracao = st.slider("Penetração Mínima (%)", 0, 100, 0)
             
@@ -1080,7 +1080,8 @@ def render_relatorios_condominios():
                     "📍 Filtrar Regiões/Zonas",
                     options=regioes_disponiveis,
                     default=regioes_disponiveis,
-                    help="Selecione quais regiões deseja visualizar"
+                    help="Selecione quais regiões deseja visualizar",
+                    key="zona_regioes"
                 )
                 
                 if regioes_selecionadas:
@@ -1354,10 +1355,10 @@ def render_relatorios_condominios():
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
             classes_disp = sorted(df_maturidade["classificacao_maturidade"].unique())
-            classes_sel = st.multiselect("Classificação", classes_disp, default=[])
+            classes_sel = st.multiselect("Classificação", classes_disp, default=[], key="maturidade_classificacao")
         with col_f2:
             regioes_disp = [r for r in df_maturidade["Região"].dropna().unique() if r and r != "0"]
-            regioes_sel = st.multiselect("Região", regioes_disp, default=[])
+            regioes_sel = st.multiselect("Região", regioes_disp, default=[], key="maturidade_regiao")
         with col_f3:
             min_ativos_filtro = st.number_input("Mín. Ativos", 0, 1000, 0)
 
