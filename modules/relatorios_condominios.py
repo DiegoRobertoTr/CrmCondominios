@@ -60,10 +60,15 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     docs = []
     for _, row in df_clientes.iterrows():
         doc = row.to_dict()
-        # Converte datetime para formato BSON seguro
+        # ✅ CORREÇÃO: Converte datetime e trata NaT/None antes de salvar
         for key, value in doc.items():
             if isinstance(value, pd.Timestamp):
-                doc[key] = value.to_pydatetime()
+                if pd.isna(value):
+                    doc[key] = None
+                else:
+                    doc[key] = value.to_pydatetime()
+            elif isinstance(value, (pd.NaT, type(pd.NaT))):
+                doc[key] = None
             elif pd.isna(value):
                 doc[key] = None
         doc["_import_timestamp"] = metadata["timestamp"]
@@ -94,7 +99,7 @@ def load_latest_data(db):
     if "_id" in df_clientes.columns:
         df_clientes = df_clientes.drop(columns=["_id"])
     
-    # Converte strings de data para datetime com tratamento de NaT
+    # ✅ CORREÇÃO: Converte strings de data para datetime com tratamento de NaT
     for col in df_clientes.select_dtypes(include=['object']).columns:
         if 'data' in col.lower() or 'date' in col.lower():
             df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
@@ -217,42 +222,49 @@ def render_relatorios_condominios():
     # Inicializa MongoDB com tratamento de erro
     db = init_mongo()
 
-    with st.sidebar:
-        st.header("⚙️ Gerenciamento de Dados")
+    # ==================== GERENCIAMENTO DE DADOS (ÁREA PRINCIPAL) ====================
+    st.markdown("---")
+    st.subheader("⚙️ Gerenciamento de Dados")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
         uploaded_file = st.file_uploader(
             "📤 Importar Planilha",
             type=["xlsx", "xls"],
             help="Planilha com 2 abas: 'Dados' (clientes) e 'Condominios'"
         )
+    
+    with col2:
+        # Botões de ação
+        if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
+            st.session_state["reload_data"] = True
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Recarregar Últimos", type="primary"):
-                st.session_state["reload_data"] = True
-        with col2:
-            if st.button("🗑️ Limpar Dados", type="secondary"):
-                if st.session_state.get("confirm_delete"):
-                    deleted = clear_condominio_data(db)
-                    st.success(f"✅ {deleted} registros removidos!")
-                    st.session_state["confirm_delete"] = False
-                    st.rerun()
-                else:
-                    st.warning("⚠️ Clique novamente para confirmar exclusão")
-                    st.session_state["confirm_delete"] = True
-                    
-        st.markdown("---")
-        meta = db["condominios_meta"].find_one(sort=[("timestamp", -1)])
-        if meta:
-            ts = meta.get('timestamp')
-            ts_str = safe_strftime(ts, "%d/%m/%Y %H:%M") if ts else "Data não disponível"
-            st.info(f"""
-            **Última Importação:**
-            - 📅 {ts_str}
-            - 👥 {meta['total_clientes']} clientes
-            - 🏢 {meta['total_condominios']} condomínios
-            """)
-        else:
-            st.warning("⚠️ Nenhum dado importado ainda")
+        if st.button("🗑️ Limpar Dados", type="secondary", use_container_width=True):
+            if st.session_state.get("confirm_delete"):
+                deleted = clear_condominio_data(db)
+                st.success(f"✅ {deleted} registros removidos!")
+                st.session_state["confirm_delete"] = False
+                st.rerun()
+            else:
+                st.warning("⚠️ Clique novamente para confirmar")
+                st.session_state["confirm_delete"] = True
+    
+    # Status dos dados
+    meta = db["condominios_meta"].find_one(sort=[("timestamp", -1)])
+    if meta:
+        ts = meta.get('timestamp')
+        ts_str = safe_strftime(ts, "%d/%m/%Y %H:%M") if ts else "Data não disponível"
+        st.info(f"""
+        **Última Importação:**
+        - 📅 {ts_str}
+        - 👥 {meta['total_clientes']} clientes
+        - 🏢 {meta['total_condominios']} condomínios
+        """)
+    else:
+        st.warning("⚠️ Nenhum dado importado ainda")
+    
+    st.markdown("---")
 
     # ==================== CARREGAMENTO DE DADOS ====================
     df_clientes, df_condominios, meta = None, None, None
@@ -261,6 +273,11 @@ def render_relatorios_condominios():
         try:
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
+            
+            # ✅ CORREÇÃO: Tratar colunas de data ao ler Excel
+            for col in df_clientes.select_dtypes(include=['object']).columns:
+                if 'data' in col.lower() or 'date' in col.lower():
+                    df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
             
             metadata = {
                 "timestamp": datetime.now(),
