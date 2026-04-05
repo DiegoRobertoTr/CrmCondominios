@@ -462,6 +462,172 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     return str(value)
 
 # ==================== INTERFACE STREAMLIT ====================
+
+# ==================== FUNÇÕES DE MATURIDADE ====================
+
+def calcular_meses_cadastro(data_cadastro, data_ref=None):
+    """Calcula meses desde o cadastro até data de referência"""
+    if data_ref is None:
+        data_ref = datetime.now().replace(tzinfo=None)
+    if pd.isna(data_cadastro):
+        return None
+    delta = data_ref - data_cadastro
+    return int(delta.days / 30.44)
+
+def classificar_maturidade(row, meses_limite=18):
+    """
+    Classifica condomínio por maturidade baseado em tempo e performance.
+    """
+    meses = row.get("meses_cadastro")
+    ativos = row.get("ativos", 0)
+    aptos = row.get("Apartamentos", 0)
+    ativos_pct = row.get("percentual_ativos", 0)
+
+    # Sem data de cadastro - classificar por performance absoluta
+    if pd.isna(meses):
+        if aptos > 0:
+            if ativos_pct >= 40:
+                return "🟢 Estável (Sem Data Cadastro)"
+            elif ativos_pct >= 10:
+                return "🟡 Em Desenvolvimento (Sem Data)"
+            else:
+                return "⚪ Fraco (Sem Data Cadastro)"
+        else:
+            if ativos > 50:
+                return "🟢 Grande (Sem Data/Aptos)"
+            elif ativos > 20:
+                return "🟡 Médio (Sem Data/Aptos)"
+            elif ativos > 0:
+                return "⚪ Pequeno (Sem Data/Aptos)"
+            else:
+                return "⚪ Inativo (Sem Data Cadastro)"
+
+    # Com data de cadastro
+    tem_aptos = aptos > 0
+
+    if meses >= meses_limite:  # Maduro (>18 meses)
+        if tem_aptos:
+            if ativos_pct >= 40:
+                return "🟢 Maduro Saudável"
+            elif ativos_pct >= 15:
+                return "🟡 Maduro Estagnado"
+            else:
+                return "🔴 Maduro Abandonado"
+        else:
+            if ativos >= 50:
+                return "🟢 Maduro Grande (Sem Aptos)"
+            elif ativos >= 20:
+                return "🟡 Maduro Médio (Sem Aptos)"
+            elif ativos > 0:
+                return "🟠 Maduro Pequeno (Sem Aptos)"
+            else:
+                return "🔴 Maduro Inativo (Sem Aptos)"
+
+    elif meses >= 12:  # Intermediário (12-18 meses)
+        if tem_aptos:
+            if ativos_pct >= 30:
+                return "🔵 Intermediário Saudável"
+            elif ativos_pct >= 10:
+                return "🟡 Intermediário Fraco"
+            else:
+                return "🟠 Intermediário Crítico"
+        else:
+            if ativos >= 30:
+                return "🔵 Intermediário Grande (Sem Aptos)"
+            elif ativos >= 10:
+                return "🟡 Intermediário Médio (Sem Aptos)"
+            else:
+                return "🟠 Intermediário Fraco (Sem Aptos)"
+
+    elif meses >= 6:  # Jovem (6-12 meses)
+        if tem_aptos:
+            if ativos_pct >= 20:
+                return "🔵 Jovem em Crescimento"
+            else:
+                return "🟡 Jovem Fraco"
+        else:
+            if ativos >= 20:
+                return "🔵 Jovem Grande (Sem Aptos)"
+            else:
+                return "🟡 Jovem Pequeno (Sem Aptos)"
+
+    else:  # Novo (<6 meses)
+        if ativos > 10:
+            return "⚪ Novo Promissor"
+        else:
+            return "⚪ Novo Iniciante"
+
+def calcular_receita_perdida_maturidade(row, ticket_medio=89.99):
+    """Calcula receita perdida por abandono/má performance"""
+    classe = row.get("classificacao_maturidade", "")
+    aptos = row.get("Apartamentos", 0)
+    ativos = row.get("ativos", 0)
+
+    # Abandono = classes críticas (maduros ou intermediários com baixa performance)
+    criticas = ["🔴 Maduro", "🟠 Maduro", "🟠 Intermediário", "🔴 Intermediário"]
+    abandonado = any(x in str(classe) for x in criticas)
+
+    if abandonado:
+        if aptos > 0:
+            potencial = max(0, aptos - ativos)
+        else:
+            # Estimar potencial baseado em média de mercado (100 aptos)
+            potencial = max(0, 100 - ativos)
+        return potencial * ticket_medio
+    return 0
+
+def preparar_dados_maturidade(df_clientes, df_condominios, data_ref=None):
+    """Prepara DataFrame completo com análise de maturidade"""
+    if data_ref is None:
+        data_ref = datetime.now().replace(tzinfo=None)
+
+    df_condominios = df_condominios.copy()
+    df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
+    df_condominios["Data cadastro"] = df_condominios["Data cadastro"].apply(limpar_valor_data)
+
+    # Classificar status dos clientes
+    def classificar_status(status):
+        if pd.isna(status): 
+            return "Outros"
+        status_lower = str(status).lower().strip()
+        if "ativo" in status_lower and "atraso" not in status_lower and "bloqueio" not in status_lower:
+            return "Ativo"
+        elif "atraso" in status_lower or "financeiro" in status_lower:
+            return "Em Atraso"
+        elif "bloqueio" in status_lower or "automático" in status_lower or "automatico" in status_lower:
+            return "Bloqueio Automático"
+        elif "desativado" in status_lower or "cancelado" in status_lower:
+            return "Desativado"
+        return "Outros"
+
+    df_clientes = df_clientes.copy()
+    df_clientes["status_classificacao"] = df_clientes["STATUS ACESSO"].apply(classificar_status)
+
+    # Agregar clientes por condomínio
+    clientes_agg = df_clientes.groupby("CONDOMANIO").agg(
+        total_clientes=("CONDOMANIO", "count"),
+        ativos=("status_classificacao", lambda x: (x == "Ativo").sum()),
+        em_atraso=("status_classificacao", lambda x: (x == "Em Atraso").sum()),
+        bloqueio_automatico=("status_classificacao", lambda x: (x == "Bloqueio Automático").sum()),
+        desativados=("status_classificacao", lambda x: (x == "Desativado").sum()),
+    ).reset_index()
+
+    # Merge com condomínios
+    df_maturidade = df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Data cadastro", "Principal Concorrente"]].copy()
+    df_maturidade = df_maturidade.merge(clientes_agg, left_on="ID", right_on="CONDOMANIO", how="left")
+
+    for col in ["ativos", "em_atraso", "bloqueio_automatico", "desativados", "total_clientes"]:
+        df_maturidade[col] = df_maturidade[col].fillna(0).astype(int)
+
+    # Calcular métricas
+    apt_safe = df_maturidade["Apartamentos"].replace(0, np.nan)
+    df_maturidade["total_ocupados"] = df_maturidade["ativos"] + df_maturidade["em_atraso"] + df_maturidade["bloqueio_automatico"]
+    df_maturidade["percentual_ativos"] = (df_maturidade["ativos"] / apt_safe * 100).round(2).fillna(0)
+    df_maturidade["percentual_penetracao"] = (df_maturidade["total_ocupados"] / apt_safe * 100).round(2).fillna(0)
+    df_maturidade["meses_cadastro"] = df_maturidade["Data cadastro"].apply(lambda x: calcular_meses_cadastro(x, data_ref))
+
+    return df_maturidade
+
 def render_relatorios_condominios():
     st.title("🏢 Relatórios Estratégicos - Condomínios")
     st.markdown("Análise de penetração, churn, inadimplência e oportunidades de mercado")
@@ -600,13 +766,14 @@ def render_relatorios_condominios():
 
     # ==================== ABAS DE ANÁLISE ====================
     # ✅ NOVA ABA: Análise por Zona
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🎯 Penetração", 
         "💰 Receita Potencial", 
         "⚠️ Inadimplência", 
         "📉 Churn", 
         "⚔️ Concorrência",
-        "🗺️ Análise por Zona"  # NOVA ABA
+        "🗺️ Análise por Zona",
+        "⏳ Maturidade"
     ])
 
     with tab1:
@@ -1014,6 +1181,194 @@ def render_relatorios_condominios():
                 st.warning("⚠️ Não foi possível gerar análise por zona. Verifique se a coluna 'Região' existe nos dados.")
         else:
             st.warning("⚠️ Dados insuficientes para análise por zona")
+
+    # ==================== ABA MATURIDADE ====================
+    with tab7:
+        st.header("⏳ Análise de Maturidade dos Condomínios")
+        st.markdown("Avaliação do tempo de cadastro vs. performance de ativação")
+
+        # Parâmetros configuráveis
+        col_param1, col_param2, col_param3 = st.columns(3)
+        with col_param1:
+            ticket_medio_maturidade = st.number_input(
+                "💰 Ticket Médio (R$)", 
+                value=89.99, 
+                min_value=10.0, 
+                max_value=500.0, 
+                step=5.0,
+                key="ticket_maturidade"
+            )
+        with col_param2:
+            meses_limite = st.number_input(
+                "⏱️ Meses para 'Maduro'", 
+                value=18, 
+                min_value=6, 
+                max_value=60, 
+                step=3,
+                key="meses_limite"
+            )
+        with col_param3:
+            ordenacao = st.radio(
+                "📅 Ordenação", 
+                ["Mais antigos primeiro", "Mais recentes primeiro"],
+                index=0,
+                key="ordenacao_maturidade"
+            )
+
+        # Preparar dados de maturidade
+        df_maturidade = preparar_dados_maturidade(df_clientes, df_condominios)
+        df_maturidade["classificacao_maturidade"] = df_maturidade.apply(
+            lambda row: classificar_maturidade(row, meses_limite), axis=1
+        )
+        df_maturidade["receita_perdida_mensal"] = df_maturidade.apply(
+            lambda row: calcular_receita_perdida_maturidade(row, ticket_medio_maturidade), axis=1
+        )
+
+        # Cards de resumo
+        st.markdown("### 📊 Resumo da Maturidade")
+
+        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+
+        maduros_saudaveis = len(df_maturidade[df_maturidade["classificacao_maturidade"].str.contains("🟢 Maduro")])
+        maduros_abandonados = len(df_maturidade[df_maturidade["classificacao_maturidade"].str.contains("🔴 Maduro")])
+        intermediarios = len(df_maturidade[df_maturidade["classificacao_maturidade"].str.contains("🔵 Intermediário")])
+        sem_data = len(df_maturidade[df_maturidade["classificacao_maturidade"].str.contains("Sem Data")])
+        perda_total = df_maturidade["receita_perdida_mensal"].sum()
+
+        with col_res1:
+            st.metric("🟢 Maduros Saudáveis", formatar_numero_br(maduros_saudaveis))
+        with col_res2:
+            st.metric("🔴 Maduros Abandonados", formatar_numero_br(maduros_abandonados), 
+                     delta=f"-R$ {formatar_numero_br(perda_total/1000, 1)}k/mês", delta_color="inverse")
+        with col_res3:
+            st.metric("🔵 Intermediários", formatar_numero_br(intermediarios))
+        with col_res4:
+            st.metric("⚪ Sem Data Cadastro", formatar_numero_br(sem_data))
+
+        # Alerta financeiro
+        if perda_total > 0:
+            st.error(f"💸 **Receita Perdida:** R$ {formatar_numero_br(perda_total, 2)}/mês "
+                    f"(R$ {formatar_numero_br(perda_total*12, 2)}/ano) em condomínios abandonados!")
+
+        # Filtros
+        st.markdown("### 🔍 Filtros")
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            classes_disp = sorted(df_maturidade["classificacao_maturidade"].unique())
+            classes_sel = st.multiselect("Classificação", classes_disp, default=[])
+        with col_f2:
+            regioes_disp = [r for r in df_maturidade["Região"].dropna().unique() if r and r != "0"]
+            regioes_sel = st.multiselect("Região", regioes_disp, default=[])
+        with col_f3:
+            min_ativos_filtro = st.number_input("Mín. Ativos", 0, 1000, 0)
+
+        # Aplicar filtros
+        df_filt = df_maturidade.copy()
+        if classes_sel:
+            df_filt = df_filt[df_filt["classificacao_maturidade"].isin(classes_sel)]
+        if regioes_sel:
+            df_filt = df_filt[df_filt["Região"].isin(regioes_sel)]
+        if min_ativos_filtro > 0:
+            df_filt = df_filt[df_filt["ativos"] >= min_ativos_filtro]
+
+        # Ordenação
+        if ordenacao == "Mais antigos primeiro":
+            df_filt = df_filt.sort_values(["Data cadastro", "Condomínio"], na_position="last")
+        else:
+            df_filt = df_filt.sort_values(["Data cadastro", "Condomínio"], ascending=False, na_position="last")
+
+        # Tabela
+        st.markdown(f"### 📋 Condomínios ({len(df_filt)} registros)")
+
+        df_display = df_filt[[
+            "Condomínio", "Data cadastro", "meses_cadastro", "Região",
+            "Apartamentos", "ativos", "percentual_ativos", 
+            "classificacao_maturidade", "receita_perdida_mensal"
+        ]].copy()
+
+        df_display["Data cadastro"] = df_display["Data cadastro"].apply(
+            lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else "Não informada"
+        )
+        df_display["meses_cadastro"] = df_display["meses_cadastro"].apply(
+            lambda x: f"{int(x)} meses" if pd.notna(x) else "-"
+        )
+        df_display["Apartamentos"] = df_display["Apartamentos"].apply(lambda x: formatar_numero_br(x))
+        df_display["ativos"] = df_display["ativos"].apply(lambda x: formatar_numero_br(x))
+        df_display["percentual_ativos"] = df_display["percentual_ativos"].apply(lambda x: f"{x:.1f}%")
+        df_display["receita_perdida_mensal"] = df_display["receita_perdida_mensal"].apply(
+            lambda x: formatar_moeda_br(x) if x > 0 else "-"
+        )
+        df_display.columns = [
+            "Condomínio", "Data Cadastro", "Tempo", "Região",
+            "Aptos", "Ativos", "% Ativos", "Classificação", "Receita Perdida"
+        ]
+
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            column_config={
+                "% Ativos": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+            }
+        )
+
+        # Gráfico de curva de maturidade
+        st.markdown("### 📈 Curva de Maturidade por Ano")
+        df_com_data = df_maturidade[df_maturidade["Data cadastro"].notna()].copy()
+
+        if len(df_com_data) > 0:
+            df_com_data["ano_cadastro"] = df_com_data["Data cadastro"].dt.year
+            curva = df_com_data.groupby("ano_cadastro").agg(
+                total=("Condomínio", "count"),
+                media_ativos=("percentual_ativos", "mean"),
+                total_ativos_abs=("ativos", "sum"),
+                total_apartamentos=("Apartamentos", "sum")
+            ).reset_index()
+            curva["penetracao_real"] = (curva["total_ativos_abs"] / curva["total_apartamentos"].replace(0, np.nan) * 100).round(1)
+
+            fig_curva = go.Figure()
+            fig_curva.add_trace(go.Scatter(
+                x=curva["ano_cadastro"], y=curva["media_ativos"],
+                mode='lines+markers', name='% Ativos Médio',
+                line=dict(color='green', width=3), marker=dict(size=10)
+            ))
+            fig_curva.add_trace(go.Bar(
+                x=curva["ano_cadastro"], y=curva["total"],
+                name='Qtd Condomínios', marker_color='lightblue',
+                opacity=0.6, yaxis='y2'
+            ))
+            fig_curva.update_layout(
+                title="Evolução da Maturidade por Ano de Cadastro",
+                xaxis_title="Ano", yaxis_title="% Ativos Médio",
+                yaxis2=dict(title="Qtd", overlaying='y', side='right'),
+                height=450, legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_curva, use_container_width=True)
+
+        # Alertas de condomínios críticos
+        st.markdown("### 🚨 Condomínios Maduros Abandonados")
+        abandonados = df_maturidade[df_maturidade["classificacao_maturidade"].str.contains("🔴 Maduro")].sort_values("Data cadastro")
+
+        if len(abandonados) > 0:
+            st.warning(f"**{len(abandonados)} condomínios cadastrados há mais de {meses_limite} meses com baixa performance:**")
+            for _, row in abandonados.iterrows():
+                tempo = f"{int(row['meses_cadastro'])} meses" if pd.notna(row['meses_cadastro']) else "tempo não calc."
+                aptos_str = f"{int(row['Apartamentos'])} aptos" if row['Apartamentos'] > 0 else "sem aptos cad."
+                st.markdown(f"• **{row['Condomínio']}** - {tempo} | {aptos_str} | {int(row['ativos'])} ativos ({row['percentual_ativos']:.1f}%) | 💸 {formatar_moeda_br(row['receita_perdida_mensal'])}/mês")
+        else:
+            st.success("✅ Nenhum condomínio maduro abandonado identificado!")
+
+        # Exportar
+        st.markdown("### 📥 Exportar")
+        output_mat = io.BytesIO()
+        with pd.ExcelWriter(output_mat, engine='openpyxl') as writer:
+            df_display.to_excel(writer, sheet_name='Maturidade', index=False)
+        output_mat.seek(0)
+        st.download_button(
+            "📊 Exportar Análise de Maturidade", output_mat,
+            f"maturidade_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
     st.markdown("---")
     st.subheader("🗺️ Mapa Estratégico de Condomínios")
