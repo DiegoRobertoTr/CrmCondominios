@@ -9,7 +9,7 @@ from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
 
-# ==================== FUNÇÕES UTILITÁRIAS PARA DATAS ====================
+# ==================== FUNÇÕES UTILITÁRIAS PARA DATAS E FORMATAÇÃO ====================
 def limpar_valor_data(valor):
     """
     Limpa e converte valores de data, tratando casos especiais como:
@@ -70,6 +70,40 @@ def converter_dataframe_dates(df):
             # Depois limpar NaT e timezones
             df[col] = df[col].apply(lambda x: limpar_valor_data(x))
     return df
+
+# ✅ FUNÇÃO: Formatar números no padrão brasileiro (ponto para milhar, vírgula para decimal)
+def formatar_numero_br(valor, decimais=0):
+    """
+    Formata número no padrão brasileiro:
+    - Milhar: ponto (.)
+    - Decimal: vírgula (,)
+    Ex: 45723 → "45.723"
+    Ex: 1234.56 → "1.234,56"
+    """
+    if pd.isna(valor) or valor is None:
+        return "0"
+    try:
+        numero = float(valor)
+        if decimais == 0:
+            return f"{int(numero):,}".replace(",", ".")
+        else:
+            # Formata com vírgula como decimal e ponto como milhar
+            formatado = f"{numero:,.{decimais}f}"
+            # Troca vírgula por ponto e ponto por vírgula
+            formatado = formatado.replace(",", "X").replace(".", ",").replace("X", ".")
+            return formatado
+    except:
+        return str(valor)
+
+# ✅ FUNÇÃO: Formatar moeda brasileira
+def formatar_moeda_br(valor):
+    """Formata valor como moeda brasileira: R$ 1.234,56"""
+    if pd.isna(valor) or valor is None:
+        return "R$ 0,00"
+    try:
+        return f"R$ {formatar_numero_br(valor, 2)}"
+    except:
+        return f"R$ {valor}"
 
 # ==================== CONFIGURAÇÃO INICIAL ====================
 st.set_page_config(page_title="🏢 Relatórios Condomínios", layout="wide")
@@ -530,9 +564,10 @@ def render_relatorios_condominios():
         total_apartamentos = dashboard_df["Total Apartamentos"].sum()  # ✅ AGORA CORRETO!
         media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
         
-        col1.metric("👥 Total de Ativos", f"{total_ativos:,}")
-        col2.metric("⚠️ Total em Atraso", f"{total_atrasos:,}")
-        col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}")  # ✅ AGORA MOSTRA 45.723
+        # ✅ CORREÇÃO DE FORMATAÇÃO: Usar função formatar_numero_br
+        col1.metric("👥 Total de Ativos", formatar_numero_br(total_ativos))
+        col2.metric("⚠️ Total em Atraso", formatar_numero_br(total_atrasos))
+        col3.metric("🏠 Total de Apartamentos", formatar_numero_br(total_apartamentos))  # ✅ AGORA MOSTRA 45.723 (com ponto)
         col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
         
         # ✅ NOVO: Alerta sobre condomínios sem clientes
@@ -540,10 +575,16 @@ def render_relatorios_condominios():
         if condos_sem_clientes > 0:
             st.info(f"📌 **{condos_sem_clientes} condomínios** sem clientes ativos (oportunidades de expansão)")
         
+        # ✅ CORREÇÃO DE FORMATAÇÃO: Configurar colunas do dataframe para formato brasileiro
         st.dataframe(dashboard_df, use_container_width=True, column_config={
             "Data de Implantação": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "% Ativos (Penetração)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-            "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)
+            "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+            "Total Apartamentos": st.column_config.NumberColumn(format="%d", help="Total de apartamentos no condomínio"),
+            "Qtd Ativos": st.column_config.NumberColumn(format="%d"),
+            "Total Atrasos": st.column_config.NumberColumn(format="%d"),
+            "Desativados": st.column_config.NumberColumn(format="%d"),
+            "Total Ocupados": st.column_config.NumberColumn(format="%d"),
         })
         
         excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
@@ -604,10 +645,12 @@ def render_relatorios_condominios():
         st.plotly_chart(fig, use_container_width=True)
         
         with st.expander("📋 Ver Tabela Completa"):
-            st.dataframe(
-                df_filtered[["Condomínio", "Região", "Apartamentos", "clientes_ativos", "taxa_penetracao", "classificacao"]], 
-                use_container_width=True
-            )
+            # ✅ CORREÇÃO DE FORMATAÇÃO: Aplicar formatação brasileira na tabela
+            df_display = df_filtered[["Condomínio", "Região", "Apartamentos", "clientes_ativos", "taxa_penetracao", "classificacao"]].copy()
+            df_display["Apartamentos"] = df_display["Apartamentos"].apply(lambda x: formatar_numero_br(x))
+            df_display["clientes_ativos"] = df_display["clientes_ativos"].apply(lambda x: formatar_numero_br(x))
+            df_display["taxa_penetracao"] = df_display["taxa_penetracao"].apply(lambda x: f"{x:.1f}%")
+            st.dataframe(df_display, use_container_width=True)
             
         st.markdown("### 💡 Insights Automáticos")
         baixas = df_penetracao[df_penetracao["taxa_penetracao"] < 20]
@@ -635,6 +678,12 @@ def render_relatorios_condominios():
         ticket = st.number_input("🎯 Ticket Médio Estimado (R$)", value=89.99, min_value=10.0, max_value=500.0, step=5.0)
         df_receita = calcular_receita_potencial(df_penetracao, ticket_medio=ticket)
         
+        # ✅ CORREÇÃO DE FORMATAÇÃO: Formatar valores monetários
+        df_receita_display = df_receita.head(15).copy()
+        df_receita_display["receita_atual"] = df_receita_display["receita_atual"].apply(lambda x: formatar_moeda_br(x))
+        df_receita_display["receita_potencial"] = df_receita_display["receita_potencial"].apply(lambda x: formatar_moeda_br(x))
+        df_receita_display["receita_maxima"] = df_receita_display["receita_maxima"].apply(lambda x: formatar_moeda_br(x))
+        
         fig = go.Figure(go.Waterfall(
             name="Receita", 
             orientation="v", 
@@ -642,7 +691,7 @@ def render_relatorios_condominios():
             x=df_receita.head(15)["Condomínio"], 
             y=df_receita.head(15)["receita_potencial"],
             textposition="outside", 
-            text=[f"R$ {v:,.2f}" for v in df_receita.head(15)["receita_potencial"]],
+            text=[f"R$ {formatar_numero_br(v, 0)}" for v in df_receita.head(15)["receita_potencial"]],
             connector={"line": {"color": "rgb(63, 63, 63)"}}
         ))
         fig.update_layout(title="💰 Receita Potencial Não Explorada (Top 15)", showlegend=False, height=500)
@@ -651,6 +700,11 @@ def render_relatorios_condominios():
         st.markdown("### 🎯 Priorização Comercial")
         df_prioridade = df_receita[["Condomínio", "Apartamentos", "clientes_ativos", "potencial_clientes", "receita_potencial"]].copy()
         df_prioridade["prioridade"] = df_prioridade["receita_potencial"].rank(ascending=False)
+        # ✅ CORREÇÃO DE FORMATAÇÃO
+        df_prioridade["Apartamentos"] = df_prioridade["Apartamentos"].apply(lambda x: formatar_numero_br(x))
+        df_prioridade["clientes_ativos"] = df_prioridade["clientes_ativos"].apply(lambda x: formatar_numero_br(x))
+        df_prioridade["potencial_clientes"] = df_prioridade["potencial_clientes"].apply(lambda x: formatar_numero_br(x))
+        df_prioridade["receita_potencial"] = df_prioridade["receita_potencial"].apply(lambda x: formatar_moeda_br(x))
         st.dataframe(df_prioridade.sort_values("receita_potencial", ascending=False).head(20), use_container_width=True)
 
     with tab3:
@@ -683,7 +737,7 @@ def render_relatorios_condominios():
                 em_dia = row.get('Em Dia', 0)
                 st.warning(
                     f"**{row['Condomínio']}**: {row['taxa_inadimplencia']}% inadimplência "
-                    f"({em_atraso} de {em_atraso+em_dia} clientes)"
+                    f"({formatar_numero_br(em_atraso)} de {formatar_numero_br(em_atraso+em_dia)} clientes)"
                 )
 
     with tab4:
@@ -766,23 +820,26 @@ def render_relatorios_condominios():
                 if regioes_selecionadas:
                     zona_filtered = zona_stats[zona_stats["Região"].isin(regioes_selecionadas)]
                     
-                    # Métricas Cards
+                    # Métricas Cards - ✅ CORREÇÃO DE FORMATAÇÃO
                     st.markdown("### 📊 Métricas Consolidadas por Zona")
                     
                     # Criar cards em grid
                     cols = st.columns(min(len(zona_filtered), 4))
                     for idx, (_, row) in enumerate(zona_filtered.iterrows()):
                         with cols[idx % 4]:
-                            st.metric(
-                                label=f"🏙️ {row['Região']}",
-                                value=f"{row['total_apartamentos']:,} aptos",
-                                delta=f"{row['percentual_ativos']:.1f}% ativos"
-                            )
+                            # ✅ CORREÇÃO: Usar HTML para controlar formatação do metric
+                            st.markdown(f"""
+                            <div style="background-color: #f0f2f6; padding: 10px; border-radius: 8px; margin-bottom: 10px;">
+                                <div style="font-size: 14px; color: #555;">🏙️ {row['Região']}</div>
+                                <div style="font-size: 28px; font-weight: bold; color: #000;">{formatar_numero_br(row['total_apartamentos'])} aptos</div>
+                                <div style="font-size: 14px; color: green;">↑ {row['percentual_ativos']:.1f}% ativos</div>
+                            </div>
+                            """, unsafe_allow_html=True)
                     
-                    # Tabela detalhada
+                    # Tabela detalhada - ✅ CORREÇÃO DE FORMATAÇÃO
                     st.markdown("### 📋 Tabela Detalhada por Zona")
                     
-                    # Preparar dados para exibição
+                    # Preparar dados para exibição com formatação brasileira
                     zona_display = zona_filtered[[
                         "Região",
                         "total_condominios",
@@ -797,6 +854,14 @@ def render_relatorios_condominios():
                         "percentual_ocupacao",
                         "media_capacidade_exploracao"
                     ]].copy()
+                    
+                    # ✅ CORREÇÃO: Aplicar formatação brasileira nos números
+                    zona_display["total_condominios"] = zona_display["total_condominios"].apply(lambda x: formatar_numero_br(x))
+                    zona_display["total_apartamentos"] = zona_display["total_apartamentos"].apply(lambda x: formatar_numero_br(x))
+                    zona_display["total_ativos"] = zona_display["total_ativos"].apply(lambda x: formatar_numero_br(x))
+                    zona_display["total_em_atraso"] = zona_display["total_em_atraso"].apply(lambda x: formatar_numero_br(x))
+                    zona_display["total_desativados"] = zona_display["total_desativados"].apply(lambda x: formatar_numero_br(x))
+                    zona_display["total_ocupados"] = zona_display["total_ocupados"].apply(lambda x: formatar_numero_br(x))
                     
                     zona_display.columns = [
                         "Região/Zona",
@@ -821,11 +886,6 @@ def render_relatorios_condominios():
                             "% Atraso": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                             "% Ocupação": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                             "% Cap. Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-                            "Total Aptos": st.column_config.NumberColumn(format="%d"),
-                            "Ativos": st.column_config.NumberColumn(format="%d"),
-                            "Em Atraso": st.column_config.NumberColumn(format="%d"),
-                            "Desativados": st.column_config.NumberColumn(format="%d"),
-                            "Ocupados": st.column_config.NumberColumn(format="%d"),
                         }
                     )
                     
@@ -896,7 +956,7 @@ def render_relatorios_condominios():
                     fig_pen.update_layout(height=400)
                     st.plotly_chart(fig_pen, use_container_width=True)
                     
-                    # Insights automáticos
+                    # Insights automáticos - ✅ CORREÇÃO DE FORMATAÇÃO
                     st.markdown("### 💡 Insights por Zona")
                     
                     # Melhor e pior zona
@@ -910,23 +970,24 @@ def render_relatorios_condominios():
                         st.success(
                             f"**🥇 Melhor Zona: {melhor_zona['Região']}**\n\n"
                             f"• Penetração: **{melhor_zona['percentual_ativos']:.1f}%**\n"
-                            f"• {melhor_zona['total_ativos']:,} ativos de {melhor_zona['total_apartamentos']:,} aptos\n"
-                            f"• {melhor_zona['total_condominios']} condomínios"
+                            f"• {formatar_numero_br(melhor_zona['total_ativos'])} ativos de {formatar_numero_br(melhor_zona['total_apartamentos'])} aptos\n"
+                            f"• {formatar_numero_br(melhor_zona['total_condominios'])} condomínios"
                         )
                     
                     with col_ins2:
+                        oportunidade = pior_zona['total_apartamentos'] - pior_zona['total_ativos']
                         st.warning(
                             f"**⚠️ Zona com Menor Penetração: {pior_zona['Região']}**\n\n"
                             f"• Penetração: **{pior_zona['percentual_ativos']:.1f}%**\n"
-                            f"• {pior_zona['total_ativos']:,} ativos de {pior_zona['total_apartamentos']:,} aptos\n"
-                            f"• Oportunidade: {pior_zona['total_apartamentos'] - pior_zona['total_ativos']:,} aptos vazios"
+                            f"• {formatar_numero_br(pior_zona['total_ativos'])} ativos de {formatar_numero_br(pior_zona['total_apartamentos'])} aptos\n"
+                            f"• Oportunidade: **{formatar_numero_br(oportunidade)} aptos vazios**"
                         )
                     
                     with col_ins3:
                         st.info(
                             f"**🚀 Maior Potencial: {maior_potencial['Região']}**\n\n"
                             f"• Capacidade de Exploração: **{maior_potencial['media_capacidade_exploracao']:.1f}%**\n"
-                            f"• {maior_potencial['total_condominios']} condomínios para expansão\n"
+                            f"• {formatar_numero_br(maior_potencial['total_condominios'])} condomínios para expansão\n"
                             f"• Foco estratégico recomendado"
                         )
                     
