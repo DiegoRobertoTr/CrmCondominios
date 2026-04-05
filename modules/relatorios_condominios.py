@@ -3,11 +3,73 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timezone
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
+
+# ==================== FUNÇÕES UTILITÁRIAS PARA DATAS ====================
+def limpar_valor_data(valor):
+    """
+    Limpa e converte valores de data, tratando casos especiais como:
+    - "00/00/0000" → None
+    - NaT → None
+    - strings vazias → None
+    - pd.Timestamp válido → datetime python
+    """
+    if pd.isna(valor) or valor is None:
+        return None
+    
+    # Se for string, verificar valores inválidos
+    if isinstance(valor, str):
+        valor_limpo = valor.strip()
+        if valor_limpo in ["00/00/0000", "0", "", "nan", "NaT", "null", "NULL"]:
+            return None
+        # Tentar converter string para data
+        try:
+            valor = pd.to_datetime(valor_limpo, errors='coerce')
+            if pd.isna(valor):
+                return None
+        except:
+            return None
+    
+    # Se for pd.Timestamp
+    if isinstance(valor, pd.Timestamp):
+        if pd.isna(valor):
+            return None
+        # Converter para datetime python sem timezone
+        try:
+            return valor.to_pydatetime().replace(tzinfo=None)
+        except:
+            return None
+    
+    # Se for datetime python
+    if isinstance(valor, datetime):
+        # Remover timezone se existir
+        if valor.tzinfo is not None:
+            try:
+                return valor.replace(tzinfo=None)
+            except:
+                return None
+        return valor
+    
+    return None
+
+def converter_dataframe_dates(df):
+    """Converte todas as colunas de data em um DataFrame, tratando NaT"""
+    df = df.copy()
+    for col in df.columns:
+        # Verificar se coluna parece ser de data pelo nome ou tipo
+        col_lower = col.lower()
+        eh_coluna_data = any(palavra in col_lower for palavra in ['data', 'date', 'cadastro', 'ativacao', 'cancelamento', 'nascimento', 'renovacao'])
+        
+        if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
+            # Converter para datetime primeiro
+            df[col] = pd.to_datetime(df[col], errors='coerce')
+            # Depois limpar NaT e timezones
+            df[col] = df[col].apply(lambda x: limpar_valor_data(x))
+    return df
 
 # ==================== CONFIGURAÇÃO INICIAL ====================
 st.set_page_config(page_title="🏢 Relatórios Condomínios", layout="wide")
@@ -43,34 +105,56 @@ def init_mongo():
         st.stop()
 
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
-    """Salva dados com timestamp para versionamento"""
+    """Salva dados com timestamp para versionamento - CORRIGIDO PARA NaT"""
     collection = db["condominios_relatorios"]
+    
+    # ✅ CORREÇÃO: Limpar datas antes de converter para dict
+    df_clientes_limpo = converter_dataframe_dates(df_clientes)
+    
     docs = []
-    for _, row in df_clientes.iterrows():
+    for _, row in df_clientes_limpo.iterrows():
         doc = row.to_dict()
-        for key, value in doc.items():
-            if isinstance(value, pd.Timestamp):
-                doc[key] = None if pd.isna(value) else value.to_pydatetime()
+        
+        # ✅ CORREÇÃO: Garantir que nenhum valor de data cause problemas
+        for key, value in list(doc.items()):
+            if isinstance(value, (pd.Timestamp, datetime)):
+                doc[key] = limpar_valor_data(value)
             elif pd.isna(value):
                 doc[key] = None
-        doc["_import_timestamp"] = metadata["timestamp"]
+        
+        # ✅ CORREÇÃO: Metadata com datetime seguro
+        doc["_import_timestamp"] = datetime.now().replace(tzinfo=None)
         doc["_import_batch"] = metadata["batch_id"]
         docs.append(doc)
 
     if docs:
         collection.insert_many(docs)
+    
+    # ✅ CORREÇÃO: Limpar datas do DataFrame de condomínios também
+    df_condominios_limpo = converter_dataframe_dates(df_condominios)
+    
+    # Converter condomínios para dict com tratamento de NaT
+    condominios_records = []
+    for _, row in df_condominios_limpo.iterrows():
+        record = row.to_dict()
+        for key, value in list(record.items()):
+            if isinstance(value, (pd.Timestamp, datetime)):
+                record[key] = limpar_valor_data(value)
+            elif pd.isna(value):
+                record[key] = None
+        condominios_records.append(record)
         
     db["condominios_meta"].insert_one({
         "batch_id": metadata["batch_id"],
-        "timestamp": metadata["timestamp"],
+        "timestamp": datetime.now().replace(tzinfo=None),  # ✅ Sem timezone
         "total_clientes": len(df_clientes),
         "total_condominios": len(df_condominios),
-        "condominios": df_condominios.to_dict(orient="records")
+        "condominios": condominios_records
     })
     return True
 
 def load_latest_data(db):
-    """Carrega últimos dados importados"""
+    """Carrega últimos dados importados - CORRIGIDO PARA NaT"""
     meta = db["condominios_meta"].find_one(sort=[("timestamp", -1)])
     if not meta:
         return None, None, None
@@ -80,11 +164,12 @@ def load_latest_data(db):
     if "_id" in df_clientes.columns:
         df_clientes = df_clientes.drop(columns=["_id"])
 
-    for col in df_clientes.select_dtypes(include=['object']).columns:
-        if 'data' in col.lower() or 'date' in col.lower():
-            df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
+    # ✅ CORREÇÃO: Converter datas de forma segura
+    df_clientes = converter_dataframe_dates(df_clientes)
             
     df_condominios = pd.DataFrame(meta.get("condominios", []))
+    df_condominios = converter_dataframe_dates(df_condominios)
+    
     return df_clientes, df_condominios, meta
 
 def clear_condominio_data(db, batch_id=None):
@@ -141,7 +226,6 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
     ).reset_index()
 
     # ✅ CORREÇÃO CRÍTICA #3: Fazer merge começando pelos condomínios (RIGHT JOIN logic)
-    # Mesmo os que não têm clientes (aparecerão com NaN nas colunas de clientes)
     df_merged = df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Data cadastro"]].merge(
         clientes_agg,
         left_on="ID",
@@ -297,6 +381,9 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
         return ""
     if isinstance(value, (pd.Timestamp, datetime)):
         try: 
+            # ✅ CORREÇÃO: Remover timezone antes de formatar
+            if hasattr(value, 'tzinfo') and value.tzinfo is not None:
+                value = value.replace(tzinfo=None)
             return value.strftime(fmt)
         except (ValueError, OSError): 
             return ""
@@ -345,19 +432,20 @@ def render_relatorios_condominios():
 
     if uploaded_file:
         try:
+            # ✅ CORREÇÃO: Ler planilha com tratamento de datas
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
-            # ✅ CORREÇÃO PREVENTIVA: Converter Apartamentos para numérico imediatamente
+            # ✅ CORREÇÃO: Converter Apartamentos para numérico imediatamente
             if "Apartamentos" in df_condominios.columns:
                 df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
 
-            for col in df_clientes.select_dtypes(include=['object']).columns:
-                if 'data' in col.lower() or 'date' in col.lower():
-                    df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
+            # ✅ CORREÇÃO: Limpar datas problematicas (00/00/0000, etc)
+            df_clientes = converter_dataframe_dates(df_clientes)
+            df_condominios = converter_dataframe_dates(df_condominios)
             
             metadata = {
-                "timestamp": datetime.now(), 
+                "timestamp": datetime.now().replace(tzinfo=None),  # ✅ Sem timezone
                 "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}", 
                 "filename": uploaded_file.name
             }
@@ -367,6 +455,9 @@ def render_relatorios_condominios():
         except Exception as e:
             st.error(f"❌ Erro ao processar planilha: {str(e)}")
             st.code("Verifique se as abas 'Dados' e 'Condominios' existem e têm os cabeçalhos corretos.")
+            # ✅ CORREÇÃO: Mostrar traceback para debug
+            import traceback
+            st.expander("Detalhes técnicos do erro").code(traceback.format_exc())
     elif st.session_state.get("reload_data") or "df_clientes_cached" not in st.session_state:
         result = load_latest_data(db)
         if result[0] is not None:
