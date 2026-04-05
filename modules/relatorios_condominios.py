@@ -11,25 +11,46 @@ import io
 # ==================== CONFIGURAÇÃO MONGODB ====================
 @st.cache_resource
 def init_mongo():
-    """Conexão segura com MongoDB (variáveis de ambiente)"""
-    uri = st.secrets.get("MONGO_URI")
-    if not uri:
-        st.error("🚨 Variável `MONGO_URI` não configurada nos Secrets do Streamlit.")
-        st.code("Adicione MONGO_URI='mongodb+srv://...' em Settings > Secrets")
-        st.stop()
-        
+    """Conexão segura com MongoDB usando secrets em seções [mongo]"""
     try:
-        # Timeout reduzido para não travar a UI por 30s
+        # Tenta buscar URI direta primeiro (fallback)
+        uri = st.secrets.get("MONGO_URI")
+        
+        # Se não tiver URI direta, monta a partir das credenciais separadas
+        if not uri:
+            mongo_cfg = st.secrets.get("mongo", {})
+            username = mongo_cfg.get("MONGO_USERNAME")
+            password = mongo_cfg.get("MONGO_PASSWORD")
+            cluster = mongo_cfg.get("MONGO_CLUSTER_URL")
+            database = mongo_cfg.get("MONGO_DATABASE", "tracecom_crm")
+            
+            if not all([username, password, cluster]):
+                st.error("🚨 Credenciais MongoDB incompletas nos Secrets.")
+                st.code("""
+Verifique em Settings > Secrets se as variáveis existem na seção [mongo]:
+MONGO_USERNAME = "..."
+MONGO_PASSWORD = "..."
+MONGO_CLUSTER_URL = "..."
+                """)
+                st.stop()
+            
+            # Monta URI no formato MongoDB Atlas
+            from urllib.parse import quote_plus
+            uri = f"mongodb+srv://{username}:{quote_plus(password)}@{cluster}/{database}?retryWrites=true&w=majority"
+        
+        # Conecta com timeout reduzido para falhar rápido (5s em vez de 30s)
         client = MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
-        # Testa a conexão imediatamente
-        client.admin.command('ping')
-        return client["tracecom_crm"]
+        client.admin.command('ping')  # Testa conexão imediatamente
+        
+        database_name = st.secrets.get("mongo", {}).get("MONGO_DATABASE", "tracecom_crm")
+        return client[database_name]
+        
     except (ServerSelectionTimeoutError, ConnectionFailure) as e:
-        st.error(f"❌ Falha ao conectar ao MongoDB:\n`{e}`")
-        st.info("Verifique se a `MONGO_URI` está correta e se o IP do Streamlit Cloud está autorizado no Atlas.")
+        st.error(f"❌ Falha ao conectar ao MongoDB:\n`{type(e).__name__}: {e}`")
+        st.info("💡 Verifique:\n1. Se as credenciais estão corretas\n2. Se o IP do Streamlit Cloud está liberado no Atlas (Network Access > 0.0.0.0/0)\n3. Se o cluster está ativo")
         st.stop()
     except Exception as e:
-        st.error(f"❌ Erro inesperado ao conectar: {e}")
+        st.error(f"❌ Erro inesperado ao conectar: {type(e).__name__}: {e}")
         st.stop()
 
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
@@ -171,6 +192,7 @@ def render_relatorios_condominios():
     st.title("🏢 Relatórios Estratégicos - Condomínios")
     st.markdown("*Análise de penetração, churn, inadimplência e oportunidades de mercado*")
 
+    # Inicializa MongoDB com tratamento de erro
     db = init_mongo()
 
     with st.sidebar:
