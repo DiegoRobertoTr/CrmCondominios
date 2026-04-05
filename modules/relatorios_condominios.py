@@ -12,6 +12,24 @@ import io
 # ==================== CONFIGURAÇÃO INICIAL ====================
 st.set_page_config(page_title="🏢 Relatórios Condomínios", layout="wide")
 
+# ==================== FUNÇÃO DE LIMPEZA PARA MONGODB ====================
+def clean_dataframe_for_mongo(df):
+    """
+    Limpa DataFrame para compatibilidade com MongoDB.
+    Converte timestamps pandas para datetime e trata NaN/NaT como None.
+    """
+    df = df.copy()
+    
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].apply(
+                lambda x: x.to_pydatetime() if pd.notna(x) else None
+            )
+        else:
+            df[col] = df[col].where(pd.notna(df[col]), None)
+    
+    return df
+
 # ==================== CONFIGURAÇÃO MONGODB ====================
 @st.cache_resource
 def init_mongo():
@@ -49,13 +67,11 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     collection = db["condominios_relatorios"]
     docs = []
     
+    # Processar dados dos clientes
     for _, row in df_clientes.iterrows():
-        doc = {}
-        for key, value in row.items():
-            # ✅ CORREÇÃO: Tratamento seguro de todos os tipos
-            if pd.isna(value) or value is None:
-                doc[key] = None
-            elif isinstance(value, pd.Timestamp):
+        doc = row.to_dict()
+        for key, value in doc.items():
+            if isinstance(value, pd.Timestamp):
                 if pd.isna(value):
                     doc[key] = None
                 else:
@@ -63,10 +79,8 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
                         doc[key] = value.to_pydatetime()
                     except (ValueError, OSError):
                         doc[key] = None
-            elif isinstance(value, (np.integer, np.floating)):
-                doc[key] = value.item() if hasattr(value, 'item') else value
-            else:
-                doc[key] = str(value) if not isinstance(value, (str, int, float, bool, datetime)) else value
+            elif pd.isna(value):
+                doc[key] = None
         
         doc["_import_timestamp"] = metadata["timestamp"]
         doc["_import_batch"] = metadata["batch_id"]
@@ -75,36 +89,38 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     if docs:
         collection.insert_many(docs)
 
-    # Salva metadata de forma segura
+    # ✅ CORREÇÃO APLICADA: Limpar df_condominios antes de salvar
+    df_condominios_clean = clean_dataframe_for_mongo(df_condominios)
+    
+    # ✅ CORREÇÃO: Proteger timestamp
     meta_doc = {
         "batch_id": metadata["batch_id"],
-        "timestamp": metadata["timestamp"],
+        "timestamp": metadata["timestamp"] if pd.notna(metadata["timestamp"]) else datetime.now(),
         "total_clientes": int(len(df_clientes)),
         "total_condominios": int(len(df_condominios)),
-        "condominios": df_condominios.to_dict(orient="records")
+        "condominios": df_condominios_clean.to_dict(orient="records")
     }
+    
     db["condominios_meta"].insert_one(meta_doc)
     return True
 
 def load_latest_data(db):
-    """Carrega últimos dados importados - similar ao tplink"""
+    """Carrega últimos dados importados"""
     try:
         meta = db["condominios_meta"].find_one(sort=[("timestamp", -1)])
         if not meta:
             return None, None, None
         
         collection = db["condominios_relatorios"]
-        cursor = collection.find({"_import_batch": meta["batch_id"]})
-        df_clientes = pd.DataFrame(list(cursor))
+        df_clientes = pd.DataFrame(list(collection.find({"_import_batch": meta["batch_id"]})))
 
         if "_id" in df_clientes.columns:
             df_clientes = df_clientes.drop(columns=["_id"])
-        
-        # ✅ CORREÇÃO: Tratamento seguro de datas
+
         for col in df_clientes.select_dtypes(include=['object']).columns:
             if 'data' in col.lower() or 'date' in col.lower():
                 df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
-
+        
         df_condominios = pd.DataFrame(meta.get("condominios", []))
         return df_clientes, df_condominios, meta
     except Exception as e:
@@ -133,7 +149,6 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
         st.error("❌ Coluna 'ID' não encontrada na tabela de condomínios")
         return pd.DataFrame()
 
-    # Mapeia CONDOMANIO (clientes) com ID (condominios)
     df_merged = df_clientes.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Data cadastro"]],
         left_on="CONDOMANIO",
@@ -141,7 +156,6 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
         how="left"
     )
 
-    # Classifica status dos clientes
     def classificar_status(status):
         if pd.isna(status):
             return "Outros"
@@ -159,7 +173,6 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
 
     df_merged["status_classificacao"] = df_merged["STATUS ACESSO"].apply(classificar_status)
 
-    # Agrupa por CONDOMANIO
     dashboard = df_merged.groupby(["CONDOMANIO", "Condomínio", "Região", "Apartamentos", "Data cadastro"]).agg(
         total_clientes=("CONDOMANIO", "count"),
         ativos=("status_classificacao", lambda x: (x == "Ativo").sum()),
@@ -169,14 +182,12 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
         outros=("status_classificacao", lambda x: (x == "Outros").sum())
     ).reset_index()
 
-    # Calcula métricas
     dashboard["total_ocupados"] = dashboard["ativos"] + dashboard["em_atraso"] + dashboard["bloqueio_automatico"]
     dashboard["percentual_ativos"] = (dashboard["ativos"] / dashboard["Apartamentos"] * 100).round(2)
     dashboard["total_atrasos"] = dashboard["em_atraso"] + dashboard["bloqueio_automatico"]
     dashboard["percentual_atraso"] = (dashboard["total_atrasos"] / dashboard["Apartamentos"] * 100).round(2)
     dashboard["capacidade_exploracao"] = ((dashboard["Apartamentos"] - dashboard["total_ocupados"]) / dashboard["Apartamentos"] * 100).round(2)
 
-    # Seleciona e renomeia colunas
     dashboard_final = dashboard[[
         "Região",
         "Condomínio",
@@ -341,7 +352,6 @@ def render_relatorios_condominios():
     st.title("🏢 Relatórios Estratégicos - Condomínios")
     st.markdown("Análise de penetração, churn, inadimplência e oportunidades de mercado")
     
-    # ✅ Inicializa session_state como no tplink
     if "reload_data" not in st.session_state:
         st.session_state.reload_data = False
     if "confirm_delete" not in st.session_state:
@@ -400,16 +410,13 @@ def render_relatorios_condominios():
 
     st.markdown("---")
 
-    # ==================== CARREGAMENTO DE DADOS ====================
     df_clientes, df_condominios, meta = None, None, None
 
-    # ✅ PRIORIDADE 1: Dados do upload atual
     if uploaded_file:
         try:
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
-            # Tratamento seguro de datas
             for col in df_clientes.select_dtypes(include=['object']).columns:
                 if 'data' in col.lower() or 'date' in col.lower():
                     df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
@@ -422,7 +429,6 @@ def render_relatorios_condominios():
             
             if save_condominio_data(db, df_clientes, df_condominios, metadata):
                 st.success(f"✅ Dados importados! {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
-                # Atualiza cache
                 st.session_state.df_clientes_cached = df_clientes
                 st.session_state.df_condominios_cached = df_condominios
                 st.session_state.meta_cached = metadata
@@ -433,22 +439,19 @@ def render_relatorios_condominios():
             st.error(traceback.format_exc())
             st.code("Verifique se as abas 'Dados' e 'Condominios' existem e têm os cabeçalhos corretos.")
 
-    # ✅ PRIORIDADE 2: Carregar do cache/banco
     elif st.session_state.get("reload_data"):
         st.session_state.df_clientes_cached = None
         st.session_state.df_condominios_cached = None
         st.session_state.meta_cached = None
-        st.session_state["reload_data"] = False
+        del st.session_state["reload_data"]
         st.rerun()
 
-    # ✅ PRIORIDADE 3: Usar cache ou carregar do banco
-    if st.session_state.df_clientes_cached is not None:
+    elif st.session_state.df_clientes_cached is not None:
         df_clientes = st.session_state.df_clientes_cached
         df_condominios = st.session_state.df_condominios_cached
         meta = st.session_state.meta_cached
         st.success("📦 Dados carregados da sessão atual")
     else:
-        # Tenta carregar do MongoDB
         result = load_latest_data(db)
         if result[0] is not None:
             df_clientes, df_condominios, meta = result
@@ -460,25 +463,22 @@ def render_relatorios_condominios():
             st.info("👆 Faça upload da planilha para começar")
             return
 
-    # ==================== NOVA ABA: DASHBOARD PRINCIPAL ====================
     st.subheader("📊 Dashboard Principal")
 
     dashboard_df = gerar_dashboard_principal(df_clientes, df_condominios)
 
     if not dashboard_df.empty:
-        # KPIs gerais do dashboard
         col1, col2, col3, col4 = st.columns(4)
         total_ativos = int(dashboard_df["Qtd Ativos"].sum())
         total_atrasos = int(dashboard_df["Total Atrasos"].sum())
-        total_apartamentos = int(dashboard_df["Total Apartamentos"].sum())  # ✅ Garante que é inteiro
+        total_apartamentos = int(dashboard_df["Total Apartamentos"].sum())
         media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
         
         col1.metric("👥 Total de Ativos", f"{total_ativos:,}".replace(",", "."))
         col2.metric("⚠️ Total em Atraso", f"{total_atrasos:,}".replace(",", "."))
-        col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}".replace(",", "."))  # ✅ Formatação correta
+        col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}".replace(",", "."))
         col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
         
-        # Exibe o dashboard
         st.dataframe(
             dashboard_df,
             use_container_width=True,
@@ -497,7 +497,6 @@ def render_relatorios_condominios():
             }
         )
         
-        # Botão de exportação Excel
         excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
         
         st.download_button(
@@ -510,7 +509,6 @@ def render_relatorios_condominios():
 
     st.markdown("---")
 
-    # ==================== ABAS DE ANÁLISE ====================
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", "📉 Churn", "⚔️ Concorrência"])
 
     with tab1:
@@ -631,7 +629,7 @@ def render_relatorios_condominios():
                 with c1:
                     st.success(f"**✅ Melhor desempenho:** vs {melhor['Principal Concorrente']}\n- Penetração média: {melhor['penetracao_ponderada']:.1f}%")
                 with c2:
-                    st.error(f"**⚠️ Desafio:** vs {pior['Principal Concorrente']}\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
+                    st.error(f"**⚠️ Desafio:** vs pior['Principal Concorrente']\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
         else:
             st.info("ℹ️ Dados de concorrentes não disponíveis na planilha importada")
 
