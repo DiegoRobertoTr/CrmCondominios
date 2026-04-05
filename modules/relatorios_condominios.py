@@ -19,14 +19,15 @@ def clean_dataframe_for_mongo(df):
     Converte timestamps pandas para datetime e trata NaN/NaT como None.
     """
     df = df.copy()
-    
     for col in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = df[col].apply(
-                lambda x: x.to_pydatetime() if pd.notna(x) else None
+                lambda x: x.to_pydatetime() if pd.notna(x) and not isinstance(x, type(pd.NaT)) else None
             )
         else:
             df[col] = df[col].where(pd.notna(df[col]), None)
+            # Adicionar verificação explícita para NaT
+            df[col] = df[col].apply(lambda x: None if isinstance(x, type(pd.NaT)) else x)
     
     return df
 
@@ -81,6 +82,8 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
                         doc[key] = None
             elif pd.isna(value):
                 doc[key] = None
+            elif isinstance(value, type(pd.NaT)):
+                doc[key] = None
         
         doc["_import_timestamp"] = metadata["timestamp"]
         doc["_import_batch"] = metadata["batch_id"]
@@ -91,16 +94,28 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
 
     # ✅ CORREÇÃO APLICADA: Limpar df_condominios antes de salvar
     df_condominios_clean = clean_dataframe_for_mongo(df_condominios)
+
+    # ✅ CORREÇÃO: Proteger timestamp contra NaT
+    timestamp_value = metadata.get("timestamp")
+    if timestamp_value is None or (isinstance(timestamp_value, type(pd.NaT))):
+        timestamp_value = datetime.now()
+    elif isinstance(timestamp_value, pd.Timestamp):
+        if pd.isna(timestamp_value):
+            timestamp_value = datetime.now()
+        else:
+            try:
+                timestamp_value = timestamp_value.to_pydatetime()
+            except (ValueError, OSError):
+                timestamp_value = datetime.now()
     
-    # ✅ CORREÇÃO: Proteger timestamp
     meta_doc = {
         "batch_id": metadata["batch_id"],
-        "timestamp": metadata["timestamp"] if pd.notna(metadata["timestamp"]) else datetime.now(),
+        "timestamp": timestamp_value,
         "total_clientes": int(len(df_clientes)),
         "total_condominios": int(len(df_condominios)),
         "condominios": df_condominios_clean.to_dict(orient="records")
     }
-    
+
     db["condominios_meta"].insert_one(meta_doc)
     return True
 
@@ -144,7 +159,7 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
     if "CONDOMANIO" not in df_clientes.columns:
         st.error("❌ Coluna 'CONDOMANIO' não encontrada na tabela de clientes")
         return pd.DataFrame()
-
+    
     if "ID" not in df_condominios.columns:
         st.error("❌ Coluna 'ID' não encontrada na tabela de condomínios")
         return pd.DataFrame()
@@ -247,7 +262,7 @@ def calcular_penetracao(df_clientes, df_condominios):
     """Calcula taxa de penetração por condomínio"""
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
-
+    
     df_merged = clientes_por_cond.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Principal Concorrente"]],
         left_on="CONDOMANIO",
@@ -260,18 +275,22 @@ def calcular_penetracao(df_clientes, df_condominios):
     ).round(2)
 
     def classificar_penetracao(taxa):
-        if pd.isna(taxa): return "🔴 Baixa Presença"
-        if taxa >= 50: return "🟢 Dominado"
-        elif taxa >= 25: return "🟡 Em Crescimento"
-        else: return "🔴 Baixa Presença"
-        
+        if pd.isna(taxa):
+            return "🔴 Baixa Presença"
+        if taxa >= 50:
+            return "🟢 Dominado"
+        elif taxa >= 25:
+            return "🟡 Em Crescimento"
+        else:
+            return "🔴 Baixa Presença"
+    
     df_merged["classificacao"] = df_merged["taxa_penetracao"].apply(classificar_penetracao)
     return df_merged.sort_values("taxa_penetracao", ascending=False)
 
 def analisar_inadimplencia(df_clientes, df_condominios):
     """Análise de inadimplência por condomínio"""
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
-        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", " ", "0", "nan", "nat"] else "Em Dia"
+        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "  ", "0", "nan", "nat"] else "Em Dia"
     )
     
     inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
@@ -280,7 +299,7 @@ def analisar_inadimplencia(df_clientes, df_condominios):
         inadimplencia["taxa_inadimplencia"] = (
             inadimplencia["Em Atraso"] / (inadimplencia["Em Atraso"] + inadimplencia["Em Dia"]) * 100
         ).round(2)
-        
+    
     result = inadimplencia.reset_index().merge(
         df_condominios[["ID", "Condomínio", "Região"]],
         left_on="CONDOMANIO",
@@ -292,10 +311,11 @@ def analisar_inadimplencia(df_clientes, df_condominios):
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn/cancelamentos por condomínio"""
     status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
+    
     if "Ativo" in status_count.columns and "Desativado" in status_count.columns:
         total = status_count["Ativo"] + status_count["Desativado"]
         status_count["churn_rate"] = (status_count["Desativado"] / total * 100).round(2)
-        
+    
     result = status_count.reset_index().merge(
         df_condominios[["ID", "Condomínio", "Região", "Principal Concorrente"]],
         left_on="CONDOMANIO",
@@ -312,6 +332,7 @@ def correlacao_concorrencia(df_penetracao, df_condominios):
             "clientes_ativos": "sum",
             "Apartamentos": "sum"
         }).round(2)
+        
         conc_stats.columns = ["_".join(col).strip() for col in conc_stats.columns.values]
         conc_stats = conc_stats.reset_index()
         conc_stats["penetracao_ponderada"] = (
@@ -362,7 +383,7 @@ def render_relatorios_condominios():
         st.session_state.df_condominios_cached = None
     if "meta_cached" not in st.session_state:
         st.session_state.meta_cached = None
-    
+
     db = init_mongo()
 
     st.markdown("---")
@@ -421,6 +442,7 @@ def render_relatorios_condominios():
                 if 'data' in col.lower() or 'date' in col.lower():
                     df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
             
+            # ✅ CORREÇÃO: Usar datetime.now() diretamente para evitar NaT
             metadata = {
                 "timestamp": datetime.now(),
                 "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -629,7 +651,7 @@ def render_relatorios_condominios():
                 with c1:
                     st.success(f"**✅ Melhor desempenho:** vs {melhor['Principal Concorrente']}\n- Penetração média: {melhor['penetracao_ponderada']:.1f}%")
                 with c2:
-                    st.error(f"**⚠️ Desafio:** vs pior['Principal Concorrente']\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
+                    st.error(f"**⚠️ Desafio:** vs {pior['Principal Concorrente']}\n- Penetração média: {pior['penetracao_ponderada']:.1f}%")
         else:
             st.info("ℹ️ Dados de concorrentes não disponíveis na planilha importada")
 
