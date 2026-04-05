@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timezone  # ✅ CORREÇÃO: Importar timezone
+from datetime import datetime, timezone
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
@@ -44,58 +44,96 @@ def init_mongo():
         st.error(f"❌ Erro inesperado ao conectar: {type(e).__name__}: {e}")
         st.stop()
 
+def convert_value_for_mongo(value):
+    """
+    ✅ CORREÇÃO DEFINITIVA: Converte qualquer valor para um tipo serializável pelo MongoDB.
+    Trata especificamente pd.Timestamp, pd.NaT, np.nan, e outros tipos problemáticos.
+    """
+    # Trata pd.Timestamp e pd.NaT
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value) or value is pd.NaT:
+            return None
+        try:
+            dt = value.to_pydatetime()
+            # Garante que é naive (sem timezone)
+            if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt
+        except Exception:
+            return None
+
+    # Trata datetime com timezone
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.replace(tzinfo=None)
+        return value
+
+    # Trata np.nan, np.float64, etc
+    if isinstance(value, (np.floating, np.integer)):
+        if pd.isna(value):
+            return None
+        return float(value) if isinstance(value, np.floating) else int(value)
+
+    # Trata tipos numpy especiais
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+
+    # Trata pd.NaT explicitamente (caso não seja pego acima)
+    if pd.isna(value):
+        return None
+
+    return value
+
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """Salva dados com timestamp para versionamento"""
     collection = db["condominios_relatorios"]
     docs = []
 
     for _, row in df_clientes.iterrows():
-        doc = row.to_dict()
+        doc = {}
 
-        # ✅ CORREÇÃO CRÍTICA: Tratamento seguro de datas e NaT
-        for key, value in doc.items():
-            if isinstance(value, pd.Timestamp):
-                # ✅ Verifica se é NaT antes de converter
-                if pd.isna(value) or value is pd.NaT:
-                    doc[key] = None
-                else:
-                    try:
-                        # ✅ CORREÇÃO: Converter para datetime naive (sem timezone) para evitar utcoffset error
-                        dt = value.to_pydatetime()
-                        # Se for timezone-aware, converte para naive
-                        if dt.tzinfo is not None:
-                            dt = dt.replace(tzinfo=None)
-                        doc[key] = dt
-                    except (ValueError, OSError, AttributeError) as e:
-                        doc[key] = None
-            elif isinstance(value, datetime):
-                # ✅ CORREÇÃO: Garantir que datetime seja naive
-                if value.tzinfo is not None:
-                    value = value.replace(tzinfo=None)
-                doc[key] = value
-            elif pd.isna(value):
-                doc[key] = None
+        # ✅ CORREÇÃO DEFINITIVA: Converter TODOS os valores antes de salvar
+        for key, value in row.items():
+            # Pula colunas que começam com _ (são internas)
+            if str(key).startswith('_'):
+                continue
 
-        # ✅ CORREÇÃO: Usar UTC para timestamp de metadata
-        doc["_import_timestamp"] = metadata["timestamp"]
+            # Converte o valor usando função segura
+            doc[key] = convert_value_for_mongo(value)
+
+        # Adiciona metadados
+        doc["_import_timestamp"] = convert_value_for_mongo(metadata["timestamp"])
         doc["_import_batch"] = metadata["batch_id"]
         docs.append(doc)
 
     if docs:
-        collection.insert_many(docs)
+        try:
+            collection.insert_many(docs)
+        except Exception as e:
+            st.error(f"❌ Erro ao inserir documentos: {str(e)}")
+            # Debug: mostrar tipos problemáticos
+            if docs:
+                sample = docs[0]
+                problematic = {k: type(v).__name__ for k, v in sample.items() if v is not None and not isinstance(v, (str, int, float, bool, datetime, list, dict))}
+                if problematic:
+                    st.error(f"Tipos problemáticos encontrados: {problematic}")
+            raise
 
-    # ✅ CORREÇÃO: Garantir que timestamp da meta seja naive
-    meta_timestamp = metadata["timestamp"]
-    if meta_timestamp.tzinfo is not None:
-        meta_timestamp = meta_timestamp.replace(tzinfo=None)
-
-    db["condominios_meta"].insert_one({
+    # Salva metadata
+    meta_doc = {
         "batch_id": metadata["batch_id"],
-        "timestamp": meta_timestamp,
-        "total_clientes": len(df_clientes),
-        "total_condominios": len(df_condominios),
+        "timestamp": convert_value_for_mongo(metadata["timestamp"]),
+        "total_clientes": int(len(df_clientes)),
+        "total_condominios": int(len(df_condominios)),
         "condominios": df_condominios.to_dict(orient="records")
-    })
+    }
+
+    # ✅ CORREÇÃO: Converter também os dados dos condomínios
+    for cond in meta_doc["condominios"]:
+        for key, value in cond.items():
+            cond[key] = convert_value_for_mongo(value)
+
+    db["condominios_meta"].insert_one(meta_doc)
     return True
 
 def load_latest_data(db):
@@ -132,7 +170,6 @@ def clear_condominio_data(db, batch_id=None):
 def gerar_dashboard_principal(df_clientes, df_condominios):
     """Gera dashboard principal com visão consolidada por condomínio"""
 
-    # ✅ CORREÇÃO: Verifica se as colunas existem
     if "CONDOMANIO" not in df_clientes.columns:
         st.error("❌ Coluna 'CONDOMANIO' não encontrada na tabela de clientes")
         return pd.DataFrame()
@@ -167,7 +204,6 @@ def gerar_dashboard_principal(df_clientes, df_condominios):
 
     df_merged["status_classificacao"] = df_merged["STATUS ACESSO"].apply(classificar_status)
 
-    # ✅ CORREÇÃO: Agrupa por CONDOMANIO ao invés de ID
     dashboard = df_merged.groupby(["CONDOMANIO", "Condomínio", "Região", "Apartamentos", "Data cadastro"]).agg(
         total_clientes=("CONDOMANIO", "count"),
         ativos=("status_classificacao", lambda x: (x == "Ativo").sum()),
@@ -248,7 +284,6 @@ def calcular_penetracao(df_clientes, df_condominios):
     """Calcula taxa de penetração por condomínio"""
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
 
-    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
 
     df_merged = clientes_por_cond.merge(
@@ -277,7 +312,6 @@ def analisar_inadimplencia(df_clientes, df_condominios):
         lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan", "nat"] else "Em Dia"
     )
 
-    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
 
     if "Em Atraso" in inadimplencia.columns and "Em Dia" in inadimplencia.columns:
@@ -295,7 +329,6 @@ def analisar_inadimplencia(df_clientes, df_condominios):
 
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn/cancelamentos por condomínio"""
-    # ✅ CORREÇÃO: Agrupar por CONDOMANIO
     status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
 
     if "Ativo" in status_count.columns and "Desativado" in status_count.columns:
@@ -374,7 +407,6 @@ def render_relatorios_condominios():
             if st.session_state.get("confirm_delete"):
                 deleted = clear_condominio_data(db)
                 st.success(f"✅ {deleted} registros removidos!")
-                # ✅ CORREÇÃO: Limpar também o session_state
                 for key in ["df_clientes_cached", "df_condominios_cached", "meta_cached", "dashboard_cache"]:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -399,7 +431,6 @@ def render_relatorios_condominios():
 
     st.markdown("---")
 
-    # ✅ CORREÇÃO: Inicialização robusta do session_state (igual ao tplink_inadimplencia)
     if "df_clientes_cached" not in st.session_state:
         st.session_state.df_clientes_cached = None
     if "df_condominios_cached" not in st.session_state:
@@ -416,7 +447,6 @@ def render_relatorios_condominios():
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
 
-            # ✅ CORREÇÃO: Tratar colunas de data com errors='coerce'
             for col in df_clientes.select_dtypes(include=['object']).columns:
                 if 'data' in col.lower() or 'date' in col.lower():
                     df_clientes[col] = pd.to_datetime(df_clientes[col], errors='coerce')
@@ -425,32 +455,28 @@ def render_relatorios_condominios():
                 if 'data' in col.lower() or 'date' in col.lower():
                     df_condominios[col] = pd.to_datetime(df_condominios[col], errors='coerce')
 
-            # ✅ CORREÇÃO: Usar UTC para timestamp
             metadata = {
-                "timestamp": datetime.now(timezone.utc),  # ✅ CORREÇÃO: UTC timezone
+                "timestamp": datetime.now(timezone.utc),
                 "batch_id": f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
                 "filename": uploaded_file.name
             }
 
             if save_condominio_data(db, df_clientes, df_condominios, metadata):
                 st.success(f"✅ Dados importados! {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
-                # ✅ CORREÇÃO: Salvar no session_state imediatamente
                 st.session_state.df_clientes_cached = df_clientes
                 st.session_state.df_condominios_cached = df_condominios
                 st.session_state.meta_cached = metadata
                 st.rerun()
         except Exception as e:
             st.error(f"❌ Erro ao processar planilha: {str(e)}")
-            st.code("Verifique se as abas 'Dados' e 'Condominios' existem e têm os cabeçalhos corretos.")
             import traceback
-            st.error(traceback.format_exc())  # ✅ CORREÇÃO: Mostrar traceback completo para debug
+            st.error(traceback.format_exc())
             return
 
     elif st.session_state.get("reload_data") or st.session_state.df_clientes_cached is None:
         result = load_latest_data(db)
         if result[0] is not None:
             df_clientes, df_condominios, meta = result
-            # ✅ CORREÇÃO: Salvar no session_state
             st.session_state.df_clientes_cached = df_clientes
             st.session_state.df_condominios_cached = df_condominios
             st.session_state.meta_cached = meta
@@ -459,7 +485,6 @@ def render_relatorios_condominios():
             st.info("👆 Faça upload da planilha para começar")
             return
     else:
-        # ✅ CORREÇÃO: Usar dados do session_state
         df_clientes = st.session_state.df_clientes_cached
         df_condominios = st.session_state.df_condominios_cached
         meta = st.session_state.meta_cached
@@ -467,7 +492,6 @@ def render_relatorios_condominios():
     if "reload_data" in st.session_state:
         del st.session_state["reload_data"]
 
-    # ✅ CORREÇÃO: Verificar se temos dados válidos antes de prosseguir
     if df_clientes is None or df_condominios is None or df_clientes.empty or df_condominios.empty:
         st.warning("⚠️ Nenhum dado disponível para análise")
         return
@@ -475,7 +499,6 @@ def render_relatorios_condominios():
     # ==================== NOVA ABA: DASHBOARD PRINCIPAL ====================
     st.subheader("📊 Dashboard Principal")
 
-    # ✅ CORREÇÃO: Cache do dashboard para evitar recálculos
     cache_key = f"dashboard_{meta.get('batch_id', 'none') if meta else 'none'}"
     if cache_key not in st.session_state:
         st.session_state[cache_key] = gerar_dashboard_principal(df_clientes, df_condominios)
@@ -483,21 +506,17 @@ def render_relatorios_condominios():
     dashboard_df = st.session_state[cache_key]
 
     if not dashboard_df.empty:
-        # KPIs gerais do dashboard
         col1, col2, col3, col4 = st.columns(4)
         total_ativos = dashboard_df["Qtd Ativos"].sum()
         total_atrasos = dashboard_df["Total Atrasos"].sum()
-        # ✅ CORREÇÃO: Converter para int para evitar .0 na exibição
         total_apartamentos = int(dashboard_df["Total Apartamentos"].sum())
         media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
 
         col1.metric("👥 Total de Ativos", f"{total_ativos:,}")
         col2.metric("⚠️ Total em Atraso", f"{total_atrasos:,}")
-        # ✅ CORREÇÃO: Formatar como inteiro sem casas decimais
         col3.metric("🏠 Total de Apartamentos", f"{total_apartamentos:,}")
         col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
 
-        # Exibe o dashboard
         st.dataframe(
             dashboard_df,
             use_container_width=True,
@@ -513,7 +532,6 @@ def render_relatorios_condominios():
                     min_value=0,
                     max_value=100
                 ),
-                # ✅ CORREÇÃO: Formatar colunas numéricas como inteiro
                 "Total Apartamentos": st.column_config.NumberColumn(format="%d"),
                 "Qtd Ativos": st.column_config.NumberColumn(format="%d"),
                 "Total Atrasos": st.column_config.NumberColumn(format="%d"),
@@ -522,7 +540,6 @@ def render_relatorios_condominios():
             }
         )
 
-        # Botão de exportação Excel
         excel_buffer = exportar_dashboard_excel(dashboard_df, df_clientes, df_condominios)
 
         st.download_button(
