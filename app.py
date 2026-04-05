@@ -1,4 +1,4 @@
-#app.py
+# app.py
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos
 from pymongo import MongoClient
@@ -12,7 +12,6 @@ import base64
 # ============================================================================
 # 🏢 CONFIGURAÇÃO DE IMAGEM DE FUNDO COM OVERLAY
 # ============================================================================
-
 def get_base64_image(image_path):
     """Converte imagem local para base64 para usar como background."""
     try:
@@ -29,61 +28,61 @@ img_base64 = get_base64_image("assets/condominio.jpg")
 if img_base64:
     st.markdown(f"""
     <style>
-        /* Imagem de fundo com overlay semi-transparente */
-        .main {{
-            background-image: url("data:image/jpeg;base64,{img_base64}");
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            position: relative;
-        }}
-        
-        /* Overlay branco semi-transparente para melhorar legibilidade */
-        .main::before {{
-            content: "";
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.88);
-            z-index: -1;
-        }}
-        
-        /* Sidebar com leve transparência */
-        [data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-        }}
-        
-        /* Melhorar contraste dos elementos principais */
-        .stTextInput, .stSelectbox, .stNumberInput, .stTextArea {{
-            background-color: rgba(255, 255, 255, 0.95);
-            border-radius: 8px;
-        }}
-        
-        /* Cards e containers com fundo mais sólido */
-        .stExpander, .stContainer {{
-            background-color: rgba(255, 255, 255, 0.9);
-            border-radius: 10px;
-        }}
-        
-        /* Títulos com mais destaque */
-        h1, h2, h3 {{
-            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
-        }}
+    /* Imagem de fundo com overlay semi-transparente */
+    .main {{
+        background-image: url("data:image/jpeg;base64,{img_base64}");
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+        position: relative;
+    }}
+    
+    /* Overlay branco semi-transparente para melhorar legibilidade */
+    .main::before {{
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.88);
+        z-index: -1;
+    }}
+    
+    /* Sidebar com leve transparência */
+    [data-testid="stSidebar"] {{
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+    }}
+    
+    /* Melhorar contraste dos elementos principais */
+    .stTextInput, .stSelectbox, .stNumberInput, .stTextArea {{
+        background-color: rgba(255, 255, 255, 0.95);
+        border-radius: 8px;
+    }}
+    
+    /* Cards e containers com fundo mais sólido */
+    .stExpander, .stContainer {{
+        background-color: rgba(255, 255, 255, 0.9);
+        border-radius: 10px;
+    }}
+    
+    /* Títulos com mais destaque */
+    h1, h2, h3 {{
+        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
+    }}
     </style>
     """, unsafe_allow_html=True)
 else:
     # Fallback sem imagem
     st.markdown("""
     <style>
-        .main {
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        }
-        [data-testid="stSidebar"] {
-            background: rgba(255, 255, 255, 0.95);
-        }
+    .main {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    }
+    [data-testid="stSidebar"] {
+        background: rgba(255, 255, 255, 0.95);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -117,9 +116,9 @@ if query_params.get("page") == ["satisfacao"]:
         params["os"] = os_id
     redirect_url = link_base
     if params:
-        redirect_url += "&" + urlencode(params)
+        redirect_url += "?" + urlencode(params)
     st.markdown(f'''
-    <meta http-equiv="refresh" content="0;url={redirect_url}">
+    <meta http-equiv="refresh" content="0; url={redirect_url}">
     Redirecionando para pesquisa de satisfação...
     ''', unsafe_allow_html=True)
     st.stop()
@@ -190,7 +189,7 @@ if not st.session_state["logado"]:
         )
     except Exception:
         pass
-    
+
     if token:
         try:
             usuarios_coll = get_usuarios_collection()
@@ -263,7 +262,7 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Condomínios", "Acompanhamento Técnicos", "Relatórios",
+            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
             "Monitoramento de E-mails", "Teste de Integração",
             "Endereços Bloqueados"
@@ -288,17 +287,17 @@ except ImportError:
         "supervisao_n3": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Relatórios"
+            "Relatórios", "Relatórios Condomínios"
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Adiciona Admin Funcionários e Condomínios apenas para admin
+# ✅ Adiciona módulos extras apenas para admin
 if perfil == "admin":
-    if "Admin Funcionários" not in opcoes_modulos:
-        opcoes_modulos.append("Admin Funcionários")
-    if "Condomínios" not in opcoes_modulos:
-        opcoes_modulos.append("Condomínios")
+    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios"]
+    for mod in extras_admin:
+        if mod not in opcoes_modulos:
+            opcoes_modulos.append(mod)
 
 modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
@@ -338,6 +337,12 @@ try:
     elif modulo == "Condomínios" and perfil == "admin":
         from modules import condominios
         condominios.render_cadastro_condominio()
+        
+    # 🆕 NOVO MÓDULO: RELATÓRIOS CONDOMÍNIOS
+    elif modulo == "Relatórios Condomínios" and perfil in ["admin", "supervisao_n3"]:
+        from modules.relatorios_condominios import render_relatorios_condominios
+        render_relatorios_condominios()
+        
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
         from modules import embaixador
         embaixador.render_embaixador(get_usuarios_collection(), clientes_collection)
@@ -405,6 +410,9 @@ try:
         enderecos_bloqueados.render_enderecos_bloqueados(clientes_collection)
     else:
         st.info("Selecione um módulo no menu lateral.")
+except ImportError as e:
+    st.error(f"⚠️ Módulo não encontrado ou importação falhou: `{e}`")
+    st.info("Verifique se o arquivo está na pasta correta (`modules/`) e se o nome da função `render` está correto.")
 except Exception as e:
     st.error("⚠️ Erro ao carregar o módulo.")
     st.exception(e)
