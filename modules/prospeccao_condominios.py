@@ -484,7 +484,7 @@ def render_prospeccao_condominios():
         total_apartamentos = pd.to_numeric(df_prospeccao["APTO"], errors='coerce').sum() if "APTO" in df_prospeccao.columns else 0
         projetos_em_obra = len(df_prospeccao[df_prospeccao["FASE_CLASSIFICADA"].isin(["🏁 Final de Obra", "🔨 Intermediário", "🚧 Início de Obra"])]) if "FASE_CLASSIFICADA" in df_prospeccao.columns else 0
         entregas_2025 = len(df_prospeccao[(df_prospeccao["PREVISAO_ENTREGA"].dt.year == 2025) if "PREVISAO_ENTREGA" in df_prospeccao.columns else False]) if "PREVISAO_ENTREGA" in df_prospeccao.columns else 0
-        oportunidades_ime diatas = len(df_prospeccao[df_prospeccao["PRIORIDADE"] == "🔴 Urgente"]) if "PRIORIDADE" in df_prospeccao.columns else 0
+        oportunidades_imediatas = len(df_prospeccao[df_prospeccao["PRIORIDADE"] == "🔴 Urgente"]) if "PRIORIDADE" in df_prospeccao.columns else 0
         
         col1.metric("🏗️ Total de Projetos", formatar_numero_br(total_projetos))
         col2.metric("🏠 Total de Apartamentos", formatar_numero_br(int(total_apartamentos)))
