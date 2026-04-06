@@ -11,4 +11,6 @@ streamlit-js-eval==0.1.7
 plotly==5.18.0
 urllib3>=1.26.0
 openpyxl>=3.0.0
+streamlit-folium
+geopy
 
