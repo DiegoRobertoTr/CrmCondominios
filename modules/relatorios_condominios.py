@@ -1032,7 +1032,7 @@ def render_relatorios_condominios():
             for _, row in altos.head(5).iterrows():
                 em_atraso = row.get('Em Atraso', 0)
                 em_dia = row.get('Em Dia', 0)
-                 st.warning(
+                st.warning(
                     f"**{row['Condomínio']}**: {row['taxa_inadimplencia']}% inadimplência"
                     f"({formatar_numero_br(em_atraso)} de {formatar_numero_br(em_atraso+em_dia)} clientes)"
                 )
