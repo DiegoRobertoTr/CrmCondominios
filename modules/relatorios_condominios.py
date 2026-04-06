@@ -1274,7 +1274,7 @@ def render_relatorios_condominios():
                     
                     with col_ins2:
                         oportunidade = pior_zona['total_apartamentos'] - pior_zona['total_ativos']
-                         st.warning(
+                        st.warning(
                             f"**️ Zona com Menor Penetração: {pior_zona['Região']}**\n\n"
                             f"• Penetração: **{pior_zona['percentual_ativos']:.1f}%**\n"
                             f"• {formatar_numero_br(pior_zona['total_ativos'])} ativos de {formatar_numero_br(pior_zona['total_apartamentos'])} aptos\n"
