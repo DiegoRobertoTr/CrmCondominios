@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos
 from pymongo import MongoClient
@@ -165,6 +164,7 @@ def get_usuarios_collection():
 # --- Conexão com clientes ---
 if "clientes_collection" not in st.session_state:
     st.session_state["clientes_collection"] = auth.get_db_connection()
+
 clientes_collection = st.session_state["clientes_collection"]
 
 # Garante índices
@@ -189,7 +189,7 @@ if not st.session_state["logado"]:
         )
     except Exception:
         pass
-
+    
     if token:
         try:
             usuarios_coll = get_usuarios_collection()
@@ -262,7 +262,7 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Acompanhamento Técnicos", "Relatórios",
+            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
             "Monitoramento de E-mails", "Teste de Integração",
             "Endereços Bloqueados"
@@ -287,14 +287,14 @@ except ImportError:
         "supervisao_n3": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Relatórios", "Relatórios Condomínios"
+            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios"
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
 # ✅ Adiciona módulos extras apenas para admin
 if perfil == "admin":
-    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios"]
+    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"]
     for mod in extras_admin:
         if mod not in opcoes_modulos:
             opcoes_modulos.append(mod)
@@ -337,12 +337,16 @@ try:
     elif modulo == "Condomínios" and perfil == "admin":
         from modules import condominios
         condominios.render_cadastro_condominio()
-        
     # 🆕 NOVO MÓDULO: RELATÓRIOS CONDOMÍNIOS
     elif modulo == "Relatórios Condomínios" and perfil in ["admin", "supervisao_n3"]:
         from modules.relatorios_condominios import render_relatorios_condominios
         render_relatorios_condominios()
-        
+    
+    # 🆕 NOVO MÓDULO: PROSPECÇÃO CONDOMÍNIOS
+    elif modulo == "Prospecção Condomínios" and perfil in ["admin", "supervisao_n3"]:
+        from modules.prospeccao_condominios import render_prospeccao_condominios
+        render_prospeccao_condominios()
+    
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
         from modules import embaixador
         embaixador.render_embaixador(get_usuarios_collection(), clientes_collection)
