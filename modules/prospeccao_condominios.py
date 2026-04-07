@@ -819,7 +819,7 @@ def render_prospeccao_condominios():
                     fig3.update_layout(height=500)
                     st.plotly_chart(fig3, use_container_width=True)
 
-                     st.markdown("### Tabela Detalhada")
+                    st.markdown("### Tabela Detalhada")
                     df_display = df_construtoras_filt[["CONSTRUTORA", "total_projetos", "total_apartamentos", "percentual_pronto", "percentual_em_obra", "percentual_lancamento"]].copy()
                     df_display["total_apartamentos"] = df_display["total_apartamentos"].apply(lambda x: formatar_numero_br(int(x) if pd.notna(x) else 0))
                     df_display["percentual_pronto"] = df_display["percentual_pronto"].apply(lambda x: f"{x:.1f}%")
