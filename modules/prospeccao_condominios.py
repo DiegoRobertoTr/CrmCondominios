@@ -591,10 +591,14 @@ def render_prospeccao_condominios():
             if not df_construtoras.empty:
                 # Filtro de construtoras
                 construtoras_disp = df_construtoras["CONSTRUTORA"].dropna().unique().tolist()
+                
+                # ✅ CORREÇÃO: Garantir que defaults existam nas opções
+                default_construtoras = construtoras_disp[:5] if len(construtoras_disp) >= 5 else construtoras_disp
+                
                 construtoras_sel = st.multiselect(
                     "Filtrar Construtoras",
                     options=construtoras_disp,
-                    default=construtoras_disp[:5] if len(construtoras_disp) >= 5 else construtoras_disp,
+                    default=default_construtoras,
                     key="construtoras_filter"
                 )
 
@@ -854,10 +858,19 @@ def render_prospeccao_condominios():
                 with col_pri2:
                     # Filtro por prioridade
                     prioridades_disp = df_prospeccao["PRIORIDADE"].unique().tolist()
+                    
+                    # ✅ CORREÇÃO: Garantir que defaults existam nas opções disponíveis
+                    default_options = ["🔴 Urgente", "🟠 Alta"]
+                    valid_defaults = [opt for opt in default_options if opt in prioridades_disp]
+                    
+                    # Se nenhum padrão válido, usa o primeiro disponível ou lista vazia
+                    if not valid_defaults and prioridades_disp:
+                        valid_defaults = [prioridades_disp[0]]
+                    
                     prioridade_sel = st.multiselect(
                         "Filtrar por Prioridade",
                         options=prioridades_disp,
-                        default=["🔴 Urgente", "🟠 Alta"] if "🔴 Urgente" in prioridades_disp or "🟠 Alta" in prioridades_disp else prioridades_disp,
+                        default=valid_defaults,
                         key="prioridade_filter"
                     )
 
