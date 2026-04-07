@@ -836,7 +836,7 @@ def render_prospeccao_condominios():
             if not df_zonas.empty:
                 col_zona = df_zonas.columns[0]
                 col_map1, col_map2 = st.columns(2)
-                 with col_map1:
+                with col_map1:
                     fig_zona = px.bar(df_zonas, x=col_zona, y="total_projetos", color="total_projetos", color_continuous_scale="Reds", title="Projetos por Região", text="total_projetos")
                     fig_zona.update_traces(texttemplate='%{text}', textposition='outside')
                     st.plotly_chart(fig_zona, use_container_width=True)
@@ -845,7 +845,7 @@ def render_prospeccao_condominios():
                     fig_oport.update_traces(texttemplate='%{text}', textposition='outside')
                     st.plotly_chart(fig_oport, use_container_width=True)
                 
-                 if "BAIRRO" in df_prospeccao.columns:
+                if "BAIRRO" in df_prospeccao.columns:
                     st.markdown("###  Top 15 Bairros")
                     bairros_stats = df_prospeccao.groupby("BAIRRO").agg(total_projetos=("NOME", "count")).reset_index().sort_values("total_projetos", ascending=False).head(15)
                     fig_bairro = px.bar(bairros_stats, x="total_projetos", y="BAIRRO", orientation="h", title="Top 15 Bairros", color="total_projetos", color_continuous_scale="Blues")
