@@ -207,7 +207,9 @@ def extrair_previsao_entrega(viabilidade_str):
     if pd.isna(viabilidade_str):
         return None
 
-    viab_lower = str(viabilidade_str).lower()
+    # ✅ CORREÇÃO: Converter para string primeiro e garantir que usamos essa versão em todo lugar
+    viabilidade_str = str(viabilidade_str)
+    viab_lower = viabilidade_str.lower()
 
     # Padrões de data
     padroes_data = [
@@ -218,6 +220,7 @@ def extrair_previsao_entrega(viabilidade_str):
     ]
 
     for padrao in padroes_data:
+        # ✅ Agora sempre usa a variável convertida para string
         match = re.search(padrao, viabilidade_str, re.IGNORECASE)
         if match:
             try:
