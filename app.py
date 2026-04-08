@@ -259,7 +259,7 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Tecnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionarios", "Condominios", "Relatorios Condominios", "Prospeccao Condominios", 
+            "Admin Funcionarios", "Condominios", "Relatorios Condominios", "Prospeccao Condominios",
             "Acompanhamento Tecnicos", "Relatorios",
             "Roteiro de Vendas", "HotSpots WiFi", "Satisfacao",
             "Monitoramento de E-mails", "Teste de Integracao",
@@ -294,13 +294,6 @@ except ImportError:
         ]
     }
     opcoes_modulos = modulo_map.get(perfil, [])
-
-# Adiciona modulos extras apenas para admin (caso a importacao funcione mas precise de ajuste fino)
-if perfil == "admin":
-    extras_admin = ["Admin Funcionarios", "Condominios", "Relatorios Condominios", "Prospeccao Condominios"]
-    for mod in extras_admin:
-        if mod not in opcoes_modulos:
-            opcoes_modulos.append(mod)
 
 modulo = st.sidebar.radio("Selecione o modulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
