@@ -49,20 +49,20 @@ def render_admin_funcionarios(usuarios_collection):
                 if permissoes_atuais:
                     st.info(f"📋 **Permissões deste perfil:**\n{', '.join(permissoes_atuais)}")
                 else:
-                    st.warning("⚠️ Este perfil não tem permissões definidas ainda.")
+                    st.warning("️ Este perfil não tem permissões definidas ainda.")
             
             enviado = st.form_submit_button("💾 Cadastrar Funcionário")
             
             if enviado:
                 if not all([nome_exibicao, login, senha, confirmar_senha]):
-                    st.error("❌ Preencha todos os campos obrigatórios!")
+                    st.error(" Preencha todos os campos obrigatórios!")
                 elif senha != confirmar_senha:
                     st.error("❌ As senhas não coincidem!")
                 elif len(senha) < 6:
                     st.error("❌ A senha deve ter no mínimo 6 caracteres!")
                 else:
                     if usuarios_collection.find_one({"login": login}):
-                        st.error("❌ Este login já está em uso!")
+                        st.error(" Este login já está em uso!")
                     else:
                         try:
                             usuario_data = {
@@ -116,7 +116,7 @@ def render_admin_funcionarios(usuarios_collection):
                             )
                             st.rerun()
                     with col_ac2:
-                        if st.button("️ Excluir", key=f"delete_{func['_id']}", type="secondary"):
+                        if st.button("🗑️ Excluir", key=f"delete_{func['_id']}", type="secondary"):
                             usuarios_collection.delete_one({"_id": func["_id"]})
                             st.rerun()
         else:
