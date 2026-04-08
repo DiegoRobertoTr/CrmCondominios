@@ -35,7 +35,6 @@ if img_base64:
         background-attachment: fixed;
         position: relative;
     }}
-    
     /* Overlay branco semi-transparente para melhorar legibilidade */
     .main::before {{
         content: "";
@@ -47,25 +46,21 @@ if img_base64:
         background: rgba(255, 255, 255, 0.88);
         z-index: -1;
     }}
-    
     /* Sidebar com leve transparência */
     [data-testid="stSidebar"] {{
         background: rgba(255, 255, 255, 0.95);
         backdrop-filter: blur(10px);
     }}
-    
     /* Melhorar contraste dos elementos principais */
     .stTextInput, .stSelectbox, .stNumberInput, .stTextArea {{
         background-color: rgba(255, 255, 255, 0.95);
         border-radius: 8px;
     }}
-    
     /* Cards e containers com fundo mais sólido */
     .stExpander, .stContainer {{
         background-color: rgba(255, 255, 255, 0.9);
         border-radius: 10px;
     }}
-    
     /* Títulos com mais destaque */
     h1, h2, h3 {{
         text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
@@ -96,7 +91,7 @@ st.set_page_config(
 )
 
 # ============================================================================
-# 🔹 🔹 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO 🔹 🔹 🔹
+# 🔹 🔹 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO 🔹 🔹 
 # ============================================================================
 query_params = st.query_params.to_dict()
 
@@ -107,17 +102,16 @@ if query_params.get("page") == ["satisfacao"]:
     os_id = query_params.get("os", [""])[0]
     link_base = "https://forms.gle/DNburCnrLyLgYcweA"
     params = {}
-    if id_cliente:
-        params["id"] = id_cliente
-    if tipo:
-        params["tipo"] = tipo
-    if os_id:
-        params["os"] = os_id
+    if id_cliente: params["id"] = id_cliente
+    if tipo: params["tipo"] = tipo
+    if os_id: params["os"] = os_id
+    
     redirect_url = link_base
     if params:
         redirect_url += "?" + urlencode(params)
+    
     st.markdown(f'''
-    <meta http-equiv="refresh" content="0; url={redirect_url}">
+    <meta http-equiv="refresh" content="0;url={redirect_url}" />
     Redirecionando para pesquisa de satisfação...
     ''', unsafe_allow_html=True)
     st.stop()
@@ -164,7 +158,6 @@ def get_usuarios_collection():
 # --- Conexão com clientes ---
 if "clientes_collection" not in st.session_state:
     st.session_state["clientes_collection"] = auth.get_db_connection()
-
 clientes_collection = st.session_state["clientes_collection"]
 
 # Garante índices
@@ -189,7 +182,7 @@ if not st.session_state["logado"]:
         )
     except Exception:
         pass
-    
+
     if token:
         try:
             usuarios_coll = get_usuarios_collection()
@@ -210,11 +203,12 @@ if not st.session_state["logado"]:
                     st.session_state["login_tecnico"] = usuario["login"]
                 elif perfil == "revenda":
                     st.session_state["codigo_revenda"] = usuario["codigo_revenda"]
+                
                 st.toast("✅ Sessão restaurada automaticamente.", icon="🔓")
                 st.rerun()
             else:
                 auth.remove_local_storage_token()
-                st.warning("⚠️ Sessão expirada. Faça login novamente.")
+                st.warning("️ Sessão expirada. Faça login novamente.")
         except Exception as e:
             st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
@@ -241,7 +235,7 @@ if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.header("📋 Módulos")
+st.sidebar.header(" Módulos")
 
 # ============================================================================
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
@@ -262,7 +256,8 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", "Acompanhamento Técnicos", "Relatórios",
+            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", 
+            "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
             "Monitoramento de E-mails", "Teste de Integração",
             "Endereços Bloqueados"
@@ -289,10 +284,15 @@ except ImportError:
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
             "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios"
         ],
+        # --- NOVO PERFIL NO FALLBACK ---
+        "diretoria": [
+            "Relatórios Condomínios", 
+            "Prospecção Condomínios"
+        ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Adiciona módulos extras apenas para admin
+# ✅ Adiciona módulos extras apenas para admin (caso precise de ajustes finos no fallback)
 if perfil == "admin":
     extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"]
     for mod in extras_admin:
@@ -337,16 +337,17 @@ try:
     elif modulo == "Condomínios" and perfil == "admin":
         from modules import condominios
         condominios.render_cadastro_condominio()
-    # 🆕 NOVO MÓDULO: RELATÓRIOS CONDOMÍNIOS
-    elif modulo == "Relatórios Condomínios" and perfil in ["admin", "supervisao_n3"]:
+    
+    # 🆕 NOVO MÓDULO: RELATÓRIOS CONDOMÍNIOS (Acesso para Admin, Supervisão N3 e Diretoria)
+    elif modulo == "Relatórios Condomínios" and perfil in ["admin", "supervisao_n3", "diretoria"]:
         from modules.relatorios_condominios import render_relatorios_condominios
         render_relatorios_condominios()
     
-    # 🆕 NOVO MÓDULO: PROSPECÇÃO CONDOMÍNIOS
-    elif modulo == "Prospecção Condomínios" and perfil in ["admin", "supervisao_n3"]:
+    #  NOVO MÓDULO: PROSPECÇÃO CONDOMÍNIOS (Acesso para Admin, Supervisão N3 e Diretoria)
+    elif modulo == "Prospecção Condomínios" and perfil in ["admin", "supervisao_n3", "diretoria"]:
         from modules.prospeccao_condominios import render_prospeccao_condominios
         render_prospeccao_condominios()
-    
+
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
         from modules import embaixador
         embaixador.render_embaixador(get_usuarios_collection(), clientes_collection)
@@ -390,7 +391,7 @@ try:
         db = clientes_collection.database
         respostas = list(db.satisfacao_respostas.find())
         if not respostas:
-            st.info("⚠️ Nenhuma resposta registrada ainda.")
+            st.info("️ Nenhuma resposta registrada ainda.")
         else:
             df = pd.DataFrame(respostas)
             col1, col2, col3 = st.columns(3)
@@ -414,8 +415,9 @@ try:
         enderecos_bloqueados.render_enderecos_bloqueados(clientes_collection)
     else:
         st.info("Selecione um módulo no menu lateral.")
+
 except ImportError as e:
-    st.error(f"⚠️ Módulo não encontrado ou importação falhou: `{e}`")
+    st.error(f"️ Módulo não encontrado ou importação falhou: `{e}`")
     st.info("Verifique se o arquivo está na pasta correta (`modules/`) e se o nome da função `render` está correto.")
 except Exception as e:
     st.error("⚠️ Erro ao carregar o módulo.")
