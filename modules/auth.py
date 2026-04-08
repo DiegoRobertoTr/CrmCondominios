@@ -13,8 +13,8 @@ def remove_local_storage_token():
     components.html(
         """
         <script>
-            console.log("🧹 localStorage: removendo crm_auth_token");
-            localStorage.removeItem('crm_auth_token');
+        console.log("🧹 localStorage: removendo crm_auth_token");
+        localStorage.removeItem('crm_auth_token');
         </script>
         """,
         height=0, width=0,
@@ -66,20 +66,20 @@ def login():
     if not is_fixed_user:
         manter_conectado = st.sidebar.checkbox("✅ Manter conectado", value=False)
     else:
-        st.sidebar.caption("🔒 Usuário fixo: sessão não persiste após fechar o navegador.")
-
+        st.sidebar.caption(" Usuário fixo: sessão não persiste após fechar o navegador.")
+    
     if st.sidebar.button("Entrar", key="btn_entrar"):
         # === 1. Logins FIXOS (admin / recepção) ===
         if (login_input == st.secrets["usuarios"]["recepcao_login"] and
             senha_input == st.secrets["usuarios"]["recepcao_senha"]):
             _set_session("recepcao", login_input)
             st.rerun()
-
+        
         elif (login_input == st.secrets["usuarios"]["admin_login"] and
               senha_input == st.secrets["usuarios"]["admin_senha"]):
             _set_session("admin", login_input)
             st.rerun()
-
+        
         # === 2. Usuários DINÂMICOS (MongoDB) ===
         else:
             usuarios_coll = get_usuarios_collection()
@@ -88,31 +88,32 @@ def login():
             if not usuario:
                 st.sidebar.error("❌ Usuário ou senha inválidos")
                 return
-
+            
             # ✅ Verifica se usuário está ativo
             if not usuario.get("ativo", True):
                 st.sidebar.error("❌ Usuário desativado. Contate o administrador.")
                 return
-
+            
             # Valida senha com SHA-256
             senha_hash = hashlib.sha256(senha_input.encode()).hexdigest()
             if usuario.get("senha_hash") != senha_hash:
                 st.sidebar.error("❌ Usuário ou senha inválidos")
                 return
-
+            
             perfil = usuario.get("perfil")
             
-            # ✅ Atualizado para incluir novos perfis de supervisão
+            # ✅ ATUALIZADO: Inclui o novo perfil "diretoria"
             perfis_validos = [
                 "embaixador", "tecnico", "pap", "revenda",  # Externos
                 "admin", "recepcao", "atendente_n1",  # Internos básicos
-                "supervisao_n1", "supervisao_n2", "supervisao_n3"  # ← NOVOS
+                "supervisao_n1", "supervisao_n2", "supervisao_n3",  # Supervisão
+                "diretoria"  # ← NOVO PERFIL ADICIONADO
             ]
             
             if perfil not in perfis_validos:
                 st.sidebar.error("❌ Perfil não reconhecido.")
                 return
-
+            
             # Configura sessão
             _set_session(
                 perfil=perfil,
@@ -128,7 +129,7 @@ def login():
             
             st.rerun()
 
-# --- 🧠 Auxiliares de Sessão ---
+# ---  Auxiliares de Sessão ---
 def _set_session(perfil, nome_exibicao=None, codigo_embaixador=None, codigo_revenda=None, login_tecnico=None):
     """Configura variáveis de sessão do Streamlit"""
     st.session_state["logado"] = True
@@ -149,36 +150,36 @@ def _handle_persistent_login(login):
     """
     token = str(uuid.uuid4())
     expira_em = datetime.utcnow() + timedelta(days=30)
-    
     usuarios_coll = get_usuarios_collection()
+    
     result = usuarios_coll.update_one(
         {"login": login},
         {"$set": {"token_autologin": token, "token_expira_em": expira_em}},
         upsert=False
     )
-
+    
     if result.matched_count == 0:
         st.error("⚠️ Erro: usuário não encontrado no MongoDB para persistência.")
         st.toast("❌ Não foi possível salvar a sessão. Verifique o usuário no banco.", icon="🚨")
         return
-
+    
     components.html(
         f"""
         <script>
-            console.log("🔐 Salvando token no localStorage para '{login}': ", "{token}");
+            console.log(" Salvando token no localStorage para '{login}': ", "{token}");
             localStorage.setItem('crm_auth_token', '{token}');
         </script>
         """,
         height=0, width=0,
     )
-
+    
     if "active_sessions" not in st.session_state:
         st.session_state["active_sessions"] = {}
     st.session_state["active_sessions"][token] = {
         "login": login,
         "expira_em": expira_em
     }
-
+    
     st.toast(
         "✅ Sessão salva com sucesso. Você permanecerá conectado mesmo após fechar/reabrir o navegador.",
         icon="🔒"
