@@ -1,4 +1,3 @@
-# modules/auth.py
 import streamlit as st
 from pymongo import MongoClient
 import urllib.parse
@@ -13,8 +12,8 @@ def remove_local_storage_token():
     components.html(
         """
         <script>
-            console.log("🧹 localStorage: removendo crm_auth_token");
-            localStorage.removeItem('crm_auth_token');
+        console.log("🧹 localStorage: removendo crm_auth_token");
+        localStorage.removeItem('crm_auth_token');
         </script>
         """,
         height=0, width=0,
@@ -24,7 +23,6 @@ def remove_local_storage_token():
 def get_mongo_client():
     """
     Retorna cliente MongoDB configurado com secrets do Streamlit.
-    ✅ URI ajustada para Atlas Free Tier com appName=Cluster0
     """
     try:
         username = st.secrets["mongo"]["MONGO_USERNAME"]
@@ -37,9 +35,7 @@ def get_mongo_client():
     
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
-    
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
-    
     return MongoClient(uri)
 
 def get_db_connection():
@@ -57,11 +53,15 @@ def login():
     login_input = st.sidebar.text_input("Usuário", key="login_input")
     senha_input = st.sidebar.text_input("Senha", type="password", key="senha_input")
     
-    is_fixed_user = (
-        login_input == st.secrets["usuarios"]["recepcao_login"] or
-        login_input == st.secrets["usuarios"]["admin_login"]
-    )
-    
+    # Verifica se é um usuário fixo (secrets)
+    is_fixed_user = False
+    try:
+        if st.secrets.get("usuarios", {}).get("recepcao_login") == login_input or \
+           st.secrets.get("usuarios", {}).get("admin_login") == login_input:
+            is_fixed_user = True
+    except:
+        pass
+
     manter_conectado = False
     if not is_fixed_user:
         manter_conectado = st.sidebar.checkbox("✅ Manter conectado", value=False)
@@ -69,66 +69,70 @@ def login():
         st.sidebar.caption("🔒 Usuário fixo: sessão não persiste após fechar o navegador.")
 
     if st.sidebar.button("Entrar", key="btn_entrar"):
-        # === 1. Logins FIXOS (admin / recepção) ===
-        if (login_input == st.secrets["usuarios"]["recepcao_login"] and
-            senha_input == st.secrets["usuarios"]["recepcao_senha"]):
-            _set_session("recepcao", login_input)
-            st.rerun()
+        # === 1. Logins FIXOS (admin / recepção via secrets) ===
+        try:
+            if (login_input == st.secrets["usuarios"]["recepcao_login"] and
+                senha_input == st.secrets["usuarios"]["recepcao_senha"]):
+                _set_session("recepcao", login_input)
+                st.rerun()
 
-        elif (login_input == st.secrets["usuarios"]["admin_login"] and
-              senha_input == st.secrets["usuarios"]["admin_senha"]):
-            _set_session("admin", login_input)
-            st.rerun()
+            elif (login_input == st.secrets["usuarios"]["admin_login"] and
+                  senha_input == st.secrets["usuarios"]["admin_senha"]):
+                _set_session("admin", login_input)
+                st.rerun()
+        except KeyError:
+            # Se não tiver secrets configurados, ignora essa parte
+            pass
 
         # === 2. Usuários DINÂMICOS (MongoDB) ===
-        else:
-            usuarios_coll = get_usuarios_collection()
-            usuario = usuarios_coll.find_one({"login": login_input})
-            
-            if not usuario:
-                st.sidebar.error("❌ Usuário ou senha inválidos")
-                return
+        usuarios_coll = get_usuarios_collection()
+        usuario = usuarios_coll.find_one({"login": login_input})
+        
+        if not usuario:
+            st.sidebar.error("❌ Usuário ou senha inválidos")
+            return
 
-            # ✅ Verifica se usuário está ativo
-            if not usuario.get("ativo", True):
-                st.sidebar.error("❌ Usuário desativado. Contate o administrador.")
-                return
+        # ✅ Verifica se usuário está ativo
+        if not usuario.get("ativo", True):
+            st.sidebar.error("❌ Usuário desativado. Contate o administrador.")
+            return
 
-            # Valida senha com SHA-256
-            senha_hash = hashlib.sha256(senha_input.encode()).hexdigest()
-            if usuario.get("senha_hash") != senha_hash:
-                st.sidebar.error("❌ Usuário ou senha inválidos")
-                return
+        # Valida senha com SHA-256
+        senha_hash = hashlib.sha256(senha_input.encode()).hexdigest()
+        if usuario.get("senha_hash") != senha_hash:
+            st.sidebar.error("❌ Usuário ou senha inválidos")
+            return
 
-            perfil = usuario.get("perfil")
-            
-            # ✅ Atualizado para incluir novos perfis de supervisão
-            perfis_validos = [
-                "embaixador", "tecnico", "pap", "revenda",  # Externos
-                "admin", "recepcao", "atendente_n1",  # Internos básicos
-                "supervisao_n1", "supervisao_n2", "supervisao_n3"  # ← NOVOS
-            ]
-            
-            if perfil not in perfis_validos:
-                st.sidebar.error("❌ Perfil não reconhecido.")
-                return
+        perfil = usuario.get("perfil")
+        
+        # ✅ LISTA DE PERFIS VÁLIDOS ATUALIZADA (INCLUINDO DIRETORIA)
+        perfis_validos = [
+            "embaixador", "tecnico", "pap", "revenda",  # Externos
+            "admin", "recepcao", "atendente_n1",        # Internos básicos
+            "supervisao_n1", "supervisao_n2", "supervisao_n3", # Supervisão
+            "diretoria"  # <--- NOVO PERFIL ADICIONADO AQUI
+        ]
+        
+        if perfil not in perfis_validos:
+            st.sidebar.error(f"❌ Perfil '{perfil}' não reconhecido pelo sistema.")
+            return
 
-            # Configura sessão
-            _set_session(
-                perfil=perfil,
-                nome_exibicao=usuario["nome_exibicao"],
-                codigo_embaixador=usuario.get("codigo_embaixador"),
-                codigo_revenda=usuario.get("codigo_revenda"),
-                login_tecnico=usuario.get("login") if perfil == "tecnico" else None
-            )
-            
-            # ✅ Persistência SÓ para dinâmicos
-            if manter_conectado:
-                _handle_persistent_login(login_input)
-            
-            st.rerun()
+        # Configura sessão
+        _set_session(
+            perfil=perfil,
+            nome_exibicao=usuario["nome_exibicao"],
+            codigo_embaixador=usuario.get("codigo_embaixador"),
+            codigo_revenda=usuario.get("codigo_revenda"),
+            login_tecnico=usuario.get("login") if perfil == "tecnico" else None
+        )
+        
+        # ✅ Persistência SÓ para dinâmicos (agora inclui diretoria se quiser)
+        if manter_conectado:
+            _handle_persistent_login(login_input)
+        
+        st.rerun()
 
-# --- 🧠 Auxiliares de Sessão ---
+# ---  Auxiliares de Sessão ---
 def _set_session(perfil, nome_exibicao=None, codigo_embaixador=None, codigo_revenda=None, login_tecnico=None):
     """Configura variáveis de sessão do Streamlit"""
     st.session_state["logado"] = True
@@ -145,12 +149,11 @@ def _set_session(perfil, nome_exibicao=None, codigo_embaixador=None, codigo_reve
 def _handle_persistent_login(login):
     """
     Gera token de sessão persistente (30 dias) e salva no MongoDB + localStorage.
-    ✅ Só chamado para perfis: embaixador, tecnico, pap, revenda
     """
     token = str(uuid.uuid4())
     expira_em = datetime.utcnow() + timedelta(days=30)
-    
     usuarios_coll = get_usuarios_collection()
+    
     result = usuarios_coll.update_one(
         {"login": login},
         {"$set": {"token_autologin": token, "token_expira_em": expira_em}},
@@ -165,8 +168,8 @@ def _handle_persistent_login(login):
     components.html(
         f"""
         <script>
-            console.log("🔐 Salvando token no localStorage para '{login}': ", "{token}");
-            localStorage.setItem('crm_auth_token', '{token}');
+        console.log("🔐 Salvando token no localStorage para '{login}': {token}");
+        localStorage.setItem('crm_auth_token', '{token}');
         </script>
         """,
         height=0, width=0,
@@ -181,5 +184,5 @@ def _handle_persistent_login(login):
 
     st.toast(
         "✅ Sessão salva com sucesso. Você permanecerá conectado mesmo após fechar/reabrir o navegador.",
-        icon="🔒"
+        icon=""
     )
