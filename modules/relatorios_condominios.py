@@ -8,8 +8,8 @@ from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
-# Removido time.sleep desnecessário graças ao cache
 
+# Removido time.sleep desnecessário graças ao cache
 # --- NOVAS IMPORTAÇÕES PARA O MAPA ---
 try:
     import folium
@@ -21,13 +21,12 @@ except ImportError:
     GEOCODING_AVAILABLE = False
 
 # ==================== FUNÇÕES UTILITÁRIAS OTIMIZADAS ====================
-
 def limpar_valor_data(valor):
     if pd.isna(valor) or valor is None:
         return None
     if isinstance(valor, str):
         valor_limpo = valor.strip()
-        if valor_limpo in ["00/00/0000", "0", "", "nan", "NaT", "null", "NULL"]:
+        if valor_limpo in ["00/00/0000", "0", " ", "nan", "NaT", "null", "NULL"]:
             return None
         try:
             valor = pd.to_datetime(valor_limpo, errors='coerce')
@@ -35,6 +34,7 @@ def limpar_valor_data(valor):
                 return None
         except:
             return None
+    
     if isinstance(valor, pd.Timestamp):
         if pd.isna(valor):
             return None
@@ -42,6 +42,7 @@ def limpar_valor_data(valor):
             return valor.to_pydatetime().replace(tzinfo=None)
         except:
             return None
+            
     if isinstance(valor, datetime):
         if valor.tzinfo is not None:
             try:
@@ -84,7 +85,7 @@ def formatar_moeda_br(valor):
         return f"R$ {valor}"
 
 # ==================== CONFIGURAÇÃO INICIAL ====================
-st.set_page_config(page_title=" Relatórios Condomínios", layout="wide")
+st.set_page_config(page_title="Relatórios Condomínios", layout="wide")
 
 # ==================== CONFIGURAÇÃO MONGODB ====================
 @st.cache_resource
@@ -115,31 +116,47 @@ def init_mongo():
         st.stop()
 
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
-    collection = db["condominios_relatorios"]
+    """
+    Salva os dados limpando qualquer registro anterior.
+    Mantém apenas o último estado para evitar crescimento do DB e duplicidade visual.
+    """
+    collection_clientes = db["condominios_relatorios"]
+    collection_meta = db["condominios_meta"]
     
-    # Limpeza preventiva do batch anterior para evitar duplicatas
-    batch_id = metadata["batch_id"]
-    collection.delete_many({"_import_batch": batch_id})
-    db["condominios_meta"].delete_many({"batch_id": batch_id})
+    # 1. LIMPEZA TOTAL ANTES DA INSERÇÃO (CORREÇÃO DE DUPLICIDADE)
+    # Apaga TODOS os clientes de importações anteriores
+    count_clientes_del = collection_clientes.delete_many({})
+    # Apaga TODOS os metadados de importações anteriores
+    count_meta_del = collection_meta.delete_many({})
+    
+    if count_clientes_del.deleted_count > 0 or count_meta_del.deleted_count > 0:
+        print(f"Limpeza realizada: {count_clientes_del.deleted_count} clientes e {count_meta_del.deleted_count} metadados removidos.")
 
+    # 2. PREPARAÇÃO DOS DADOS DOS CLIENTES
+    batch_id = metadata["batch_id"]
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
+    
     docs = []
     for _, row in df_clientes_limpo.iterrows():
         doc = row.to_dict()
+        # Tratamento de datas e nulos
         for key, value in list(doc.items()):
             if isinstance(value, (pd.Timestamp, datetime)):
                 doc[key] = limpar_valor_data(value)
             elif pd.isna(value):
                 doc[key] = None
+        
         doc["_import_timestamp"] = datetime.now().replace(tzinfo=None)
-        doc["_import_batch"] = batch_id
+        doc["_import_batch"] = batch_id # Mantemos o batch_id apenas para referência do lote atual
         docs.append(doc)
 
     if docs:
-        collection.insert_many(docs)
+        collection_clientes.insert_many(docs)
 
+    # 3. PREPARAÇÃO DOS DADOS DOS CONDOMÍNIOS (METADADOS)
     df_condominios_limpo = converter_dataframe_dates(df_condominios)
     condominios_records = []
+    
     for _, row in df_condominios_limpo.iterrows():
         record = row.to_dict()
         for key, value in list(record.items()):
@@ -149,13 +166,15 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
                 record[key] = None
         condominios_records.append(record)
 
-    db["condominios_meta"].insert_one({
+    # Insere o metadata do lote atual
+    collection_meta.insert_one({
         "batch_id": batch_id,
         "timestamp": datetime.now().replace(tzinfo=None),
         "total_clientes": len(df_clientes),
         "total_condominios": len(df_condominios),
         "condominios": condominios_records
     })
+    
     return True
 
 def load_latest_data(db):
@@ -165,10 +184,11 @@ def load_latest_data(db):
     
     collection = db["condominios_relatorios"]
     df_clientes = pd.DataFrame(list(collection.find({"_import_batch": meta["batch_id"]})))
+    
     if "_id" in df_clientes.columns:
         df_clientes = df_clientes.drop(columns=["_id"])
     df_clientes = converter_dataframe_dates(df_clientes)
-    
+
     df_condominios = pd.DataFrame(meta.get("condominios", []))
     df_condominios = converter_dataframe_dates(df_condominios)
 
@@ -185,7 +205,6 @@ def clear_condominio_data(db, batch_id=None):
     return result.deleted_count
 
 # ==================== CACHE DE CÁLCULOS PESADOS (PERFORMANCE BOOST) ====================
-
 @st.cache_data(ttl=300) # Cache de 5 minutos para cálculos analíticos
 def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo_ativos):
     """Versão em cache da geração do dashboard principal"""
@@ -241,11 +260,11 @@ def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo
 
     apt_safe = df_merged["Apartamentos"].replace(0, np.nan)
     df_merged["percentual_ativos"] = (df_merged["ativos"] / apt_safe * 100).round(2)
-    
+
     df_merged["total_atrasos"] = df_merged["em_atraso"] + df_merged["bloqueio_automatico"]
     ocupados_safe = df_merged["total_ocupados"].replace(0, np.nan)
     df_merged["percentual_atraso"] = (df_merged["total_atrasos"] / ocupados_safe * 100).round(2).fillna(0)
-    
+
     df_merged["capacidade_exploracao"] = ((apt_safe - df_merged["total_ocupados"]) / apt_safe * 100).round(2)
 
     dashboard_final = df_merged[[
@@ -269,32 +288,30 @@ def calcular_penetracao_cached(df_clientes_json, df_condominios_json):
     
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
-    
+
     df_merged = clientes_por_cond.merge(
         df_condominios[["ID", "Condomínio", "Apartamentos", "Região", "Principal Concorrente", "Endereço", "Número", "CEP", "Cidade", "Sindico", "Celular sindico"]],
         left_on="CONDOMANIO", right_on="ID", how="right"
     )
-    
+
     df_merged["Apartamentos"] = pd.to_numeric(df_merged["Apartamentos"], errors="coerce").fillna(0)
     df_merged["clientes_ativos"] = df_merged["clientes_ativos"].fillna(0)
     df_merged["taxa_penetracao"] = (df_merged["clientes_ativos"] / df_merged["Apartamentos"].replace(0, np.nan) * 100).round(2)
     df_merged["Apartamentos"] = df_merged["Apartamentos"].fillna(0).astype(int)
 
     def classificar_penetracao(taxa):
-        if pd.isna(taxa): return " Baixa Presença"
-        if taxa >= 50: return "🟢 Dominado"
-        elif taxa >= 25: return "🟡 Em Crescimento"
+        if pd.isna(taxa): return "Baixa Presença"
+        if taxa >= 50: return " Dominado"
+        elif taxa >= 25: return " Em Crescimento"
         return "🔴 Baixa Presença"
         
     df_merged["classificacao"] = df_merged["taxa_penetracao"].apply(classificar_penetracao)
     return df_merged.sort_values("taxa_penetracao", ascending=False)
 
 # ==================== FUNÇÕES DE ANÁLISE (Sem cache pesado, mas otimizadas) ====================
-
 def analisar_por_zona(df_dashboard):
     if df_dashboard.empty or "Região" not in df_dashboard.columns:
         return pd.DataFrame()
-    
     zona_stats = df_dashboard.groupby("Região").agg(
         total_condominios=("Condomínio", "count"),
         total_apartamentos=("Total Apartamentos", "sum"),
@@ -306,17 +323,17 @@ def analisar_por_zona(df_dashboard):
         media_atraso=("% Atraso", "mean"),
         media_capacidade_exploracao=("% Capacidade de Exploração", "mean")
     ).reset_index()
-    
+
     zona_stats["percentual_ativos"] = (zona_stats["total_ativos"] / zona_stats["total_apartamentos"] * 100).round(2)
     zona_stats["percentual_ocupacao"] = (zona_stats["total_ocupados"] / zona_stats["total_apartamentos"] * 100).round(2)
     zona_stats["percentual_atraso"] = (zona_stats["total_em_atraso"] / zona_stats["total_apartamentos"] * 100).round(2)
     zona_stats["percentual_desativados"] = (zona_stats["total_desativados"] / zona_stats["total_apartamentos"] * 100).round(2)
-    
+
     return zona_stats.sort_values("total_apartamentos", ascending=False).reset_index(drop=True)
 
 def analisar_inadimplencia(df_clientes, df_condominios):
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
-        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", "", "0", "nan", "nat"] else "Em Dia"
+        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in ["00/00/0000", " ", "0", "nan", "nat"] else "Em Dia"
     )
     inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
     if "Em Atraso" in inadimplencia.columns and "Em Dia" in inadimplencia.columns:
@@ -386,7 +403,6 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     return str(value)
 
 # ==================== FUNÇÕES DE MATURIDADE ====================
-
 def calcular_meses_cadastro(data_cadastro, data_ref=None):
     if data_ref is None: data_ref = datetime.now().replace(tzinfo=None)
     if pd.isna(data_cadastro): return None
@@ -405,37 +421,37 @@ def classificar_maturidade(row, meses_limite=18):
             elif ativos_pct >= 10: return "🟡 Em Desenvolvimento (Sem Data)"
             else: return "⚪ Fraco (Sem Data Cadastro)"
         else:
-            if ativos > 50: return " Grande (Sem Data/Aptos)"
-            elif ativos > 20: return "🟡 Médio (Sem Data/Aptos)"
-            elif ativos > 0: return " Pequeno (Sem Data/Aptos)"
+            if ativos >= 50: return "Grande (Sem Data/Aptos)"
+            elif ativos >= 20: return "🟡 Médio (Sem Data/Aptos)"
+            elif ativos > 0: return "Pequeno (Sem Data/Aptos)"
             else: return "⚪ Inativo (Sem Data Cadastro)"
 
     tem_aptos = aptos > 0
     if meses >= meses_limite:
         if tem_aptos:
             if ativos_pct >= 40: return "🟢 Maduro Saudável"
-            elif ativos_pct >= 15: return " Maduro Estagnado"
-            else: return " Maduro Abandonado"
+            elif ativos_pct >= 15: return "Maduro Estagnado"
+            else: return "Maduro Abandonado"
         else:
             if ativos >= 50: return "🟢 Maduro Grande (Sem Aptos)"
             elif ativos >= 20: return "🟡 Maduro Médio (Sem Aptos)"
-            elif ativos > 0: return "🟡 Maduro Pequeno (Sem Aptos)"
-            else: return "🔴 Maduro Inativo (Sem Aptos)"
+            elif ativos > 0: return " Maduro Pequeno (Sem Aptos)"
+            else: return " Maduro Inativo (Sem Aptos)"
     elif meses >= 12:
         if tem_aptos:
             if ativos_pct >= 30: return "🔵 Intermediário Saudável"
             elif ativos_pct >= 10: return "🟡 Intermediário Fraco"
-            else: return " Intermediário Crítico"
+            else: return "Intermediário Crítico"
         else:
-            if ativos >= 30: return "🔵 Intermediário Grande (Sem Aptos)"
-            elif ativos >= 10: return " Intermediário Médio (Sem Aptos)"
-            else: return " Intermediário Fraco (Sem Aptos)"
+            if ativos >= 30: return " Intermediário Grande (Sem Aptos)"
+            elif ativos >= 10: return "Intermediário Médio (Sem Aptos)"
+            else: return "Intermediário Fraco (Sem Aptos)"
     elif meses >= 6:
         if tem_aptos:
-            if ativos_pct >= 20: return "🔵 Jovem em Crescimento"
-            else: return " Jovem Fraco"
+            if ativos_pct >= 20: return " Jovem em Crescimento"
+            else: return "Jovem Fraco"
         else:
-            if ativos >= 20: return "🔵 Jovem Grande (Sem Aptos)"
+            if ativos >= 20: return " Jovem Grande (Sem Aptos)"
             else: return "🟡 Jovem Pequeno (Sem Aptos)"
     else:
         if ativos > 10: return "⚪ Novo Promissor"
@@ -446,7 +462,7 @@ def preparar_dados_maturidade(df_clientes, df_condominios, data_ref=None):
     df_condominios = df_condominios.copy()
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
     df_condominios["Data cadastro"] = df_condominios["Data cadastro"].apply(limpar_valor_data)
-
+    
     def classificar_status(status):
         if pd.isna(status): return "Outros"
         status_lower = str(status).lower().strip()
@@ -481,16 +497,15 @@ def preparar_dados_maturidade(df_clientes, df_condominios, data_ref=None):
     return df_maturidade
 
 # ==================== GEOCODIFICAÇÃO OTIMIZADA (COM CACHE NO BANCO) ====================
-
 @st.cache_data(ttl=3600)
 def obter_coordenadas_se_nao_existir(endereco, numero, cep, cidade="Rio de Janeiro"):
     """
-    Tenta obter lat/lon. 
+    Tenta obter lat/lon.
     Nota: Esta função é chamada APENAS se não houver coordenadas salvas no DB.
     """
     if not GEOCODING_AVAILABLE:
         return None, None
-    
+        
     endereco_completo = f"{endereco}, {numero}, {cep}, {cidade}, Brasil"
     endereco_completo = endereco_completo.replace("NaN", "").strip()
     if not endereco_completo or endereco_completo == ", , , Brasil":
@@ -498,9 +513,6 @@ def obter_coordenadas_se_nao_existir(endereco, numero, cep, cidade="Rio de Janei
 
     try:
         geolocator = Nominatim(user_agent="tracecom_condominios_app_v2_optimized")
-        # REMOVIDO time.sleep: Como estamos chamando isso apenas para novos endereços ou fallback,
-        # e o ideal é ter tudo no DB, a espera não é necessária aqui se o volume for baixo.
-        # Se tiver milhares de novos, considere rodar um script externo.
         location = geolocator.geocode(endereco_completo, timeout=10)
         
         if location:
@@ -514,7 +526,6 @@ def obter_coordenadas_se_nao_existir(endereco, numero, cep, cidade="Rio de Janei
         return None, None
 
 # ==================== INTERFACE STREAMLIT ====================
-
 def render_relatorios_condominios():
     st.title("🏢 Relatórios Estratégicos - Condomínios")
     st.markdown("Análise de penetração, churn, inadimplência e oportunidades de mercado")
@@ -547,9 +558,9 @@ def render_relatorios_condominios():
         ts_str = safe_strftime(ts, "%d/%m/%Y %H:%M") if ts else "Data não disponível"
         st.info(f"""
         **Última Importação:**
-        -  {ts_str}
+        - {ts_str}
         - 👥 {meta['total_clientes']} clientes
-        - 🏢 {meta['total_condominios']} condomínios
+        -  {meta['total_condominios']} condomínios
         """)
     else:
         st.warning("⚠️ Nenhum dado importado ainda")
@@ -594,7 +605,7 @@ def render_relatorios_condominios():
             st.session_state["meta_cached"] = meta
             st.success("📦 Dados pré-carregados da última importação")
         else:
-            st.info(" Faça upload da planilha para começar")
+            st.info("Faça upload da planilha para começar")
             return
     else:
         df_clientes = st.session_state["df_clientes_cached"]
@@ -627,7 +638,7 @@ def render_relatorios_condominios():
             st.success("✅ Modo atual: **Todos os Ocupados** = Ativos + Em Atraso + Bloqueio Automático")
             modo_param = "todos_ativos"
         else:
-            st.warning("⚠️ Modo atual: **Somente Ativos Limpos** = Apenas status 'Ativo' puro")
+            st.warning("️ Modo atual: **Somente Ativos Limpos** = Apenas status 'Ativo' puro")
             modo_param = "somente_ativos"
 
     st.markdown("---")
@@ -635,7 +646,7 @@ def render_relatorios_condominios():
     # ✅ PERFORMANCE: Usar versão em cache convertendo DF para JSON
     df_clientes_json = df_clientes.to_json(orient='split')
     df_condominios_json = df_condominios.to_json(orient='split')
-    
+
     dashboard_df = gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo_param)
 
     if not dashboard_df.empty:
@@ -646,10 +657,10 @@ def render_relatorios_condominios():
         total_ocupados = dashboard_df["Total Ocupados"].sum()
         media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
 
-        col1.metric(" Total de Ativos", formatar_numero_br(total_ativos))
+        col1.metric("Total de Ativos", formatar_numero_br(total_ativos))
         col2.metric("⚠️ Total em Atraso", formatar_numero_br(total_atrasos))
-        col3.metric(" Total de Apartamentos", formatar_numero_br(total_apartamentos))
-        col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
+        col3.metric("Total de Apartamentos", formatar_numero_br(total_apartamentos))
+        col4.metric(" Penetração Média", f"{media_penetracao:.1f}%")
 
         condos_sem_clientes = len(dashboard_df[dashboard_df["Qtd Ativos"] == 0])
         if condos_sem_clientes > 0:
@@ -670,7 +681,7 @@ def render_relatorios_condominios():
             "Bloqueio Automático": st.column_config.NumberColumn(format="%d"),
         })
 
-        with st.expander(" Entenda os cálculos"):
+        with st.expander("Entenda os cálculos"):
             st.markdown(f"""
             ### Como são calculados os indicadores:
             **Modo atual:** {'**Todos os Ocupados**' if modo_param == 'todos_ativos' else '**Somente Ativos Limpos**'}
@@ -688,14 +699,14 @@ def render_relatorios_condominios():
             df_condominios.to_excel(writer, sheet_name='Condomínios', index=False)
         output.seek(0)
         
-        st.download_button("📥 Exportar Dashboard Completo", output, f"dashboard_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.download_button(" Exportar Dashboard Completo", output, f"dashboard_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     st.markdown("---")
 
     # ==================== ABAS DE ANÁLISE ====================
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", " Churn", 
-        "⚔️ Concorrência", "🗺️ Análise por Zona", "⏳ Maturidade", " Mapeamento Geográfico"
+        "🎯 Penetração", " Receita Potencial", "⚠️ Inadimplência", "Churn", 
+        "⚔️ Concorrência", "🗺️ Análise por Zona", "⏳ Maturidade", "Mapeamento Geográfico"
     ])
 
     # TAB 1: PENETRAÇÃO
@@ -709,7 +720,7 @@ def render_relatorios_condominios():
             regioes = df_condominios["Região"].dropna().unique()
             regiao_filter = st.multiselect("Região", list(regioes) if len(regioes) > 0 else [], key="penetracao_regiao")
         with col2:
-            classific_filter = st.multiselect("Classificação", ["🟢 Dominado", "🟡 Em Crescimento", "🔴 Baixa Presença"], key="penetracao_classificacao")
+            classific_filter = st.multiselect("Classificação", ["🟢 Dominado", " Em Crescimento", "🔴 Baixa Presença"], key="penetracao_classificacao")
         with col3:
             min_penetracao = st.slider("Penetração Mínima (%)", 0, 100, 0)
             
@@ -721,7 +732,7 @@ def render_relatorios_condominios():
         fig = px.bar(df_filtered.head(20), x="taxa_penetracao", y="Condomínio", color="classificacao", orientation="h", title="Top 20 Condomínios por Penetração")
         st.plotly_chart(fig, use_container_width=True)
         
-        with st.expander("📋 Ver Tabela Completa"):
+        with st.expander(" Ver Tabela Completa"):
             st.dataframe(df_filtered[["Condomínio", "Região", "Apartamentos", "clientes_ativos", "taxa_penetracao", "classificacao"]], use_container_width=True)
 
     # TAB 2: RECEITA
@@ -751,24 +762,24 @@ def render_relatorios_condominios():
 
     # TAB 4: CHURN
     with tab4:
-        st.header("📉 Análise de Churn por Condomínio")
+        st.header(" Análise de Churn por Condomínio")
         df_churn = analisar_churn(df_clientes, df_condominios)
         fig = px.bar(df_churn.head(15), x="Condomínio", y="churn_rate", color="churn_rate", color_continuous_scale="Reds", title="Top 15 Condomínios com Maior Taxa de Cancelamento")
         st.plotly_chart(fig, use_container_width=True)
 
     # TAB 5: CONCORRÊNCIA
     with tab5:
-        st.header("⚔️ Análise Competitiva")
+        st.header("️ Análise Competitiva")
         df_concorrencia = correlacao_concorrencia(df_penetracao, df_condominios)
         if not df_concorrencia.empty:
             fig = px.bar(df_concorrencia, x="Principal Concorrente", y="penetracao_ponderada", color="penetracao_ponderada", color_continuous_scale="RdYlGn", title="Penetração Média por Concorrente Principal")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("ℹ️ Dados de concorrentes não disponíveis")
+            st.info("️ Dados de concorrentes não disponíveis")
 
     # TAB 6: ZONA
     with tab6:
-        st.header("️ Análise Consolidada por Zona/Região")
+        st.header("📍 Análise Consolidada por Zona/Região")
         if not dashboard_df.empty and "Região" in dashboard_df.columns:
             zona_stats = analisar_por_zona(dashboard_df)
             if not zona_stats.empty:
@@ -797,7 +808,7 @@ def render_relatorios_condominios():
             cols_existentes = [c for c in cols_endereco if c in df_condominios.columns]
             
             if len(cols_existentes) < 3:
-                st.warning("️ Colunas de endereço insuficientes para gerar o mapa.")
+                st.warning("⚠️ Colunas de endereço insuficientes para gerar o mapa.")
             else:
                 df_mapa_base = df_mapa_base.merge(df_condominios[cols_existentes], left_on="CONDOMANIO", right_on="ID", how="left")
                 
@@ -806,7 +817,7 @@ def render_relatorios_condominios():
                 if "lat" not in df_mapa_base.columns or "lon" not in df_mapa_base.columns:
                     # Se não tem, tentamos buscar no banco uma coleção de coordenadas salvas (opcional, aqui faremos on-demand com cache de sessão)
                     # Mas o ideal é que o usuário tenha feito o upload com essas colunas ou o sistema tenha salvo antes.
-                    # Vamos assumir que precisamos gerar se não existir.
+                    # Vamos assumir que precisamos gerar se não existir. 
                     
                     st.info("ℹ️ Coordenadas não encontradas nos dados. Gerando mapa...")
                     
@@ -830,7 +841,7 @@ def render_relatorios_condominios():
                         df_plot = df_mapa_base.dropna(subset=["lat", "lon"])
 
                     if df_plot.empty or "lat" not in df_plot.columns:
-                         st.warning("Nenhuma coordenada válida encontrada.")
+                        st.warning("Nenhuma coordenada válida encontrada.")
                     else:
                         st.success(f"✅ {len(df_plot)} endereços mapeados!")
                         
