@@ -1,5 +1,5 @@
 import streamlit as st
-from modules import auth, cadastro, followup, agendamentos
+from modules import auth, cadastro, followup, agendamentos, leads_eventos  # ✅ Adicionado leads_eventos
 from pymongo import MongoClient
 import urllib.parse
 from datetime import datetime
@@ -26,7 +26,6 @@ img_base64 = get_base64_image("assets/condominio.jpg")
 # CSS personalizado com imagem de fundo e overlay
 if img_base64:
     st.markdown(f"""
-    <style>
     /* Imagem de fundo com overlay semi-transparente */
     .main {{
         background-image: url("data:image/jpeg;base64,{img_base64}");
@@ -65,19 +64,16 @@ if img_base64:
     h1, h2, h3 {{
         text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
     }}
-    </style>
     """, unsafe_allow_html=True)
 else:
     # Fallback sem imagem
     st.markdown("""
-    <style>
     .main {
         background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
     }
     [data-testid="stSidebar"] {
         background: rgba(255, 255, 255, 0.95);
     }
-    </style>
     """, unsafe_allow_html=True)
 
 # ============================================================================
@@ -91,7 +87,7 @@ st.set_page_config(
 )
 
 # ============================================================================
-# 🔹 🔹 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO 🔹 🔹 
+# 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO
 # ============================================================================
 query_params = st.query_params.to_dict()
 
@@ -105,11 +101,10 @@ if query_params.get("page") == ["satisfacao"]:
     if id_cliente: params["id"] = id_cliente
     if tipo: params["tipo"] = tipo
     if os_id: params["os"] = os_id
-    
     redirect_url = link_base
     if params:
         redirect_url += "?" + urlencode(params)
-    
+
     st.markdown(f'''
     <meta http-equiv="refresh" content="0;url={redirect_url}" />
     Redirecionando para pesquisa de satisfação...
@@ -138,7 +133,6 @@ if query_params.get("page") == ["hotspots/confirmar"]:
 # ============================================================================
 # --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
 # ============================================================================
-
 # Função auxiliar: coleção de usuários
 def get_usuarios_collection():
     try:
@@ -149,7 +143,6 @@ def get_usuarios_collection():
         username = st.secrets.get("MONGO_USERNAME", "")
         password = st.secrets.get("MONGO_PASSWORD", "")
         cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "cluster0.6eywlbl.mongodb.net")
-    
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
@@ -188,7 +181,7 @@ if not st.session_state["logado"]:
             usuarios_coll = get_usuarios_collection()
             usuario = usuarios_coll.find_one({
                 "token_autologin": token,
-                "token_expira_em": {"$gt": datetime.utcnow()}
+                "token_expira_em": { "$gt": datetime.utcnow()}
             })
             if usuario:
                 perfil = usuario["perfil"]
@@ -208,7 +201,7 @@ if not st.session_state["logado"]:
                 st.rerun()
             else:
                 auth.remove_local_storage_token()
-                st.warning("️ Sessão expirada. Faça login novamente.")
+                st.warning("⚠️ Sessão expirada. Faça login novamente.")
         except Exception as e:
             st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
@@ -225,7 +218,6 @@ if not st.session_state["logado"]:
 # --- ✅ Interface principal ---
 # ============================================================================
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
-
 if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     chaves_para_deletar = [k for k in st.session_state.keys() if not k.startswith("__")]
     for k in chaves_para_deletar:
@@ -235,7 +227,7 @@ if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.header(" Módulos")
+st.sidebar.header("📂 Módulos")
 
 # ============================================================================
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
@@ -256,38 +248,32 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", 
+            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
-            "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
-            "Monitoramento de E-mails", "Teste de Integração",
-            "Endereços Bloqueados"
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"  # ✅ Atualizado
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos",
-            "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
-            "Endereços Bloqueados"
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"  # ✅ Atualizado
         ],
         "atendente_n1": [
             "Cadastro", "Follow-up", "Agendamentos",
-            "Roteiro de Vendas", "HotSpots WiFi", "Satisfação",
-            "Endereços Bloqueados"
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"  # ✅ Atualizado
         ],
         "supervisao_n1": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas"
+            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"  # ✅ Atualizado
         ],
         "supervisao_n2": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-            "Admin Embaixadores", "Admin PaP", "Admin Revendas"
+            "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"  # ✅ Atualizado
         ],
         "supervisao_n3": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios"
+            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"  # ✅ Atualizado
         ],
-        # --- NOVO PERFIL NO FALLBACK ---
         "diretoria": [
-            "Relatórios Condomínios", 
-            "Prospecção Condomínios"
+            "Relatórios Condomínios", "Prospecção Condomínios"
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
@@ -337,17 +323,12 @@ try:
     elif modulo == "Condomínios" and perfil == "admin":
         from modules import condominios
         condominios.render_cadastro_condominio()
-    
-    # 🆕 NOVO MÓDULO: RELATÓRIOS CONDOMÍNIOS (Acesso para Admin, Supervisão N3 e Diretoria)
     elif modulo == "Relatórios Condomínios" and perfil in ["admin", "supervisao_n3", "diretoria"]:
         from modules.relatorios_condominios import render_relatorios_condominios
         render_relatorios_condominios()
-    
-    #  NOVO MÓDULO: PROSPECÇÃO CONDOMÍNIOS (Acesso para Admin, Supervisão N3 e Diretoria)
     elif modulo == "Prospecção Condomínios" and perfil in ["admin", "supervisao_n3", "diretoria"]:
         from modules.prospeccao_condominios import render_prospeccao_condominios
         render_prospeccao_condominios()
-
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
         from modules import embaixador
         embaixador.render_embaixador(get_usuarios_collection(), clientes_collection)
@@ -382,34 +363,11 @@ try:
     elif modulo == "Roteiro de Vendas" and perfil in ["admin", "recepcao", "atendente_n1", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
-    elif modulo == "HotSpots WiFi" and perfil in ["admin", "recepcao", "atendente_n1"]:
-        from modules.hotspots.hotspots import render_hotspots
-        render_hotspots(clientes_collection)
-    elif modulo == "Satisfação" and perfil in ["admin", "recepcao", "atendente_n1"]:
-        import pandas as pd
-        st.title("Dashboard de Satisfação — LGPD Compliant")
-        db = clientes_collection.database
-        respostas = list(db.satisfacao_respostas.find())
-        if not respostas:
-            st.info("️ Nenhuma resposta registrada ainda.")
-        else:
-            df = pd.DataFrame(respostas)
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total de Respostas", len(df))
-            col2.metric("NPS Médio", f"{df['nps'].mean():.1f}")
-            st.subheader("📈 NPS ao longo do tempo")
-            df_sorted = df.sort_values("data_resposta")
-            st.line_chart(df_sorted.set_index("data_resposta")["nps"])
-            criticos = df[df["nps"] <= 6][["nome_completo", "nps", "feedback"]]
-            if not criticos.empty:
-                st.subheader("🚨 Feedbacks Críticos (NPS ≤6)")
-                st.dataframe(criticos)
-    elif modulo == "Monitoramento de E-mails" and perfil == "admin":
-        from modules import monitoramento_emails
-        monitoramento_emails.render_monitoramento()
-    elif modulo == "Teste de Integração" and perfil == "admin":
-        from modules import teste_integracao
-        teste_integracao.render_teste_integracao()
+    
+    # ✅ NOVO MÓDULO: LEADS & EVENTOS
+    elif modulo == "Leads & Eventos":
+        leads_eventos.render_registro_lead()
+        
     elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao", "atendente_n1"]:
         from modules import enderecos_bloqueados
         enderecos_bloqueados.render_enderecos_bloqueados(clientes_collection)
@@ -417,7 +375,7 @@ try:
         st.info("Selecione um módulo no menu lateral.")
 
 except ImportError as e:
-    st.error(f"️ Módulo não encontrado ou importação falhou: `{e}`")
+    st.error(f"⚠️ Módulo não encontrado ou importação falhou: `{e}`")
     st.info("Verifique se o arquivo está na pasta correta (`modules/`) e se o nome da função `render` está correto.")
 except Exception as e:
     st.error("⚠️ Erro ao carregar o módulo.")
