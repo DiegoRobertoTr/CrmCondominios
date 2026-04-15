@@ -115,7 +115,7 @@ if query_params.get("page") == ["satisfacao"]:
     ''', unsafe_allow_html=True)
     st.stop()
 
-# ✅ HotSpots WiFi — ROTA PÚBLICA (portal captive)
+# ✅ HotSpots WiFi — ROTA PÚBLICA (portal captive) - MANTIDO PARA FUNCIONAMENTO TÉCNICO
 if query_params.get("page") == ["hotspots/captive"]:
     try:
         from modules.hotspots.captive_portal import render_captive_portal
@@ -125,7 +125,7 @@ if query_params.get("page") == ["hotspots/captive"]:
         st.exception(e)
     st.stop()
 
-# ✅ HotSpots — Confirmação de acesso (pública)
+# ✅ HotSpots — Confirmação de acesso (pública) - MANTIDO PARA FUNCIONAMENTO TÉCNICO
 if query_params.get("page") == ["hotspots/confirmar"]:
     try:
         from modules.hotspots.confirmar_acesso import confirmar_acesso
@@ -247,6 +247,8 @@ try:
     opcoes_modulos = get_modulos_permitidos(perfil)
 except ImportError:
     # Fallback se módulo não existir ainda
+    # ❌ REMOVIDOS: HotSpots WiFi, Satisfação, Monitoramento de E-mails, Teste de Integração
+    # ✅ ADICIONADO: Leads de Eventos (após Cadastro)
     modulo_map = {
         "embaixador": ["Painel Embaixador"],
         "tecnico": ["Painel Técnico"],
@@ -399,10 +401,11 @@ try:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
     
-    # ❌ REMOVIDO: HotSpots WiFi
-    # ❌ REMOVIDO: Satisfação
-    # ❌ REMOVIDO: Monitoramento de E-mails
-    # ❌ REMOVIDO: Teste de Integração
+    # ❌ REMOVIDOS OS SEGUINTES MÓDULOS:
+    # - HotSpots WiFi
+    # - Satisfação
+    # - Monitoramento de E-mails
+    # - Teste de Integração
     
     elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao", "atendente_n1"]:
         from modules import enderecos_bloqueados
