@@ -2,18 +2,21 @@ import streamlit as st
 from datetime import datetime
 from pymongo import MongoClient
 import urllib.parse
+from bson.objectid import ObjectId
 
-# --- Funções de Conexão (Mantendo o padrão do seu arquivo original) ---
+# --- Funções de Conexão (Padrão MongoDB) ---
 def get_db_client():
     """Retorna o cliente MongoDB configurado"""
     try:
+        # Tentativa de buscar estrutura aninhada (comum no Streamlit Cloud)
         username = st.secrets["mongo"]["MONGO_USERNAME"]
         password = st.secrets["mongo"]["MONGO_PASSWORD"]
         cluster_url = st.secrets["mongo"]["MONGO_CLUSTER_URL"]
     except KeyError:
-        username = st.secrets.get("MONGO_USERNAME", " ")
-        password = st.secrets.get("MONGO_PASSWORD", " ")
-        cluster_url = st.secrets.get("MONGO_CLUSTER_URL", " ")
+        # Fallback para variáveis planas
+        username = st.secrets.get("MONGO_USERNAME", "")
+        password = st.secrets.get("MONGO_PASSWORD", "")
+        cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "")
     
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
@@ -25,18 +28,30 @@ def get_leads_collection():
     client = get_db_client()
     return client.crm_db.leads
 
-def get_condominios_collection():
-    """Retorna coleção de condomínios (Importado do seu módulo original)"""
-    client = get_db_client()
-    return client.crm_db.condominios
+def update_lead_status(lead_id, novo_status, convertido=False):
+    """Atualiza o status ou marca como convertido no MongoDB"""
+    try:
+        collection = get_leads_collection()
+        update_data = {"status": novo_status}
+        if convertido:
+            update_data["convertido"] = True
+            update_data["status"] = "✅ Convertido"
+            
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)}, 
+            {"$set": update_data}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar: {e}")
+        return False
 
 # --- Módulo de Registro de Leads ---
 def render_registro_lead():
     """Renderiza formulário de captura de leads em eventos"""
     st.title("🤝 Captura de Leads & Eventos")
     st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
-    
-    # Lista de Produtos conforme solicitado
+
     PRODUTOS = [
         "Conecta e Protege (Câmeras + Internet + Bônus)",
         "Câmeras de Segurança",
@@ -45,7 +60,7 @@ def render_registro_lead():
         "Automação Residencial",
         "Automação Predial"
     ]
-    
+
     with st.form("form_lead_evento"):
         col1, col2 = st.columns(2)
         
@@ -58,10 +73,18 @@ def render_registro_lead():
             email = st.text_input("E-mail", max_chars=100)
             
         with col2:
-            st.subheader("📍 Dados do Evento")
+            st.subheader("📍 Dados do Evento & Agenda")
             nome_evento = st.text_input("Nome do Evento / Origem *", value="Feira de Condomínios", max_chars=100)
             data_evento = st.date_input("Data do Contato", value=datetime.now())
-            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente (Pronto para fechar)", "⚡ Morno (Interessado, vai analisar)", "❄️ Frio (Apenas coletou info)"])
+            
+            # NOVO: Data para Próximo Contato (Touch)
+            data_proximo_contato = st.date_input(
+                "📅 Data para Próximo Contato (Touch)", 
+                value=datetime.now(),
+                help="Defina quando você deve entrar em contato novamente."
+            )
+            
+            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "⚡ Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
         st.subheader("🛒 Interesse em Produtos")
@@ -93,12 +116,14 @@ def render_registro_lead():
                     "email": email.strip() if email else None,
                     "evento": nome_evento.strip(),
                     "data_evento": datetime.combine(data_evento, datetime.min.time()),
+                    "data_proximo_contato": datetime.combine(data_proximo_contato, datetime.min.time()),
                     "nivel_interesse": nivel_interesse,
                     "status": status_lead,
                     "produtos_interesse": produtos_interesse,
                     "observacoes": observacoes.strip(),
                     "data_cadastro": datetime.now(),
-                    "ativo": True
+                    "ativo": True,
+                    "convertido": False # Campo novo para controle de conversão
                 }
                 
                 try:
@@ -106,29 +131,106 @@ def render_registro_lead():
                     result = collection.insert_one(lead_data)
                     st.success(f"✅ Lead '{nome_contato}' registrado com sucesso! ID: {result.inserted_id}")
                     st.balloons()
-                    # Limpar formulário via rerun ou mensagem
                 except Exception as e:
                     st.error(f"❌ Erro ao salvar: {e}")
 
-# --- Visualização Simples de Leads (Opcional, para conferência) ---
-def render_lista_leads():
-    """Exibe os últimos leads cadastrados"""
-    st.subheader("📋 Últimos Leads Registrados")
-    collection = get_leads_collection()
-    leads = list(collection.find().sort("data_cadastro", -1).limit(10))
-    
-    if not leads:
-        st.info("Nenhum lead registrado ainda.")
-    else:
-        for lead in leads:
-            with st.expander(f"{lead['nome_contato']} - {lead['evento']} ({lead['nivel_interesse']})"):
-                st.write(f"**Telefone:** {lead['telefone']}")
-                st.write(f"**Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
-                st.write(f"**Obs:** {lead.get('observacoes', 'Sem observações')}")
-                st.write(f"**Data:** {lead['data_evento'].strftime('%d/%m/%Y')}")
+# --- Visualização e Gestão de Leads (Agenda) ---
+def render_agenda_leads():
+    """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
+    st.title("📋 Agenda & Acompanhamento de Leads")
+    st.markdown("Lista organizada por **data do próximo contato** (mais urgentes no topo).")
 
-# --- Execução Principal (Para teste standalone) ---
+    collection = get_leads_collection()
+    
+    # Filtro opcional de status
+    filtro_status = st.multiselect(
+        "Filtrar por Status:", 
+        options=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
+        default=["Novo", "Em Negociação", "Aguardando Retorno"]
+    )
+
+    # Query com ordenação por data_proximo_contato (ascendente)
+    # Se não tiver data, usa data_cadastro como fallback na lógica de exibição
+    query = {}
+    if filtro_status:
+        query["status"] = {"$in": filtro_status}
+
+    try:
+        # Tenta ordenar por data_proximo_contato. 
+        # Nota: Campos nulos podem variar dependendo da versão do Mongo, mas geralmente vão para o fim/inicio.
+        leads = list(collection.find(query).sort("data_proximo_contato", 1).limit(50))
+    except Exception as e:
+        st.error(f"Erro ao buscar leads: {e}")
+        leads = []
+
+    if not leads:
+        st.info("Nenhum lead encontrado com os filtros selecionados.")
+    else:
+        # Agrupamento visual por data (opcional, mas bom para agenda)
+        for lead in leads:
+            # Formatação de datas
+            data_contato = lead.get("data_proximo_contato")
+            if data_contato:
+                data_str = data_contato.strftime("%d/%m/%Y")
+            else:
+                data_str = "Não agendado"
+            
+            # Cor ou ícone baseado na urgência (simples)
+            hoje = datetime.now().date()
+            icono_data = "🔴" if data_contato and data_contato.date() < hoje else "🟢"
+            
+            label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')})"
+            
+            with st.expander(label_expander):
+                col_info, col_action = st.columns([2, 1])
+                
+                with col_info:
+                    st.write(f"**📞 Telefone:** {lead.get('telefone')}")
+                    st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio', 'N/A')}")
+                    st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+                    st.write(f"**📝 Obs:** {lead.get('observacoes', 'Sem observações')}")
+                    st.write(f"**📅 Evento:** {lead.get('evento')} em {lead.get('data_evento').strftime('%d/%m/%Y')}")
+                    st.write(f"**🔄 Status Atual:** {lead.get('status')}")
+                    if lead.get('convertido'):
+                        st.success("**🎉 CLIENTE CONVERTIDO**")
+
+                with col_action:
+                    st.markdown("### Ações")
+                    # Formulário único para atualização deste lead
+                    with st.form(key=f"form_update_{lead['_id']}"):
+                        is_convertido = st.checkbox("✅ Cliente Convertido", value=lead.get('convertido', False))
+                        
+                        novo_status = st.selectbox(
+                            "Alterar Status",
+                            ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
+                            index=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"].index(lead.get('status', 'Novo')) if lead.get('status') in ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"] else 0
+                        )
+                        
+                        submit_update = st.form_submit_button("Atualizar", use_container_width=True)
+                        
+                        if submit_update:
+                            # Se marcou convertido, força o status para convertido também
+                            status_final = novo_status
+                            flag_convertido = is_convertido
+                            if is_convertido:
+                                status_final = "✅ Convertido"
+                            
+                            if update_lead_status(lead['_id'], status_final, flag_convertido):
+                                st.success("Atualizado!")
+                                st.rerun()
+                            else:
+                                st.error("Falha ao atualizar.")
+
+# --- Execução Principal ---
 if __name__ == "__main__":
-    render_registro_lead()
-    st.divider()
-    render_lista_leads()
+    # Configuração da Página
+    st.set_page_config(page_title="CRM Eventos", layout="wide")
+    
+    # Criação de Abas
+    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
+    
+    with tab1:
+        render_registro_lead()
+        
+    with tab2:
+        render_agenda_leads()
