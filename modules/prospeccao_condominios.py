@@ -132,30 +132,61 @@ def init_mongo():
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
 def save_prospeccao_data(db, df_prospeccao, metadata):
-    """Salva dados de prospecção no MongoDB - VERSÃO OTIMIZADA SEM LOOPS"""
+    """Salva dados de prospecção no MongoDB - VERSÃO CORRIGIDA E OTIMIZADA"""
     collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
     batch_id = metadata["batch_id"]
     
+    # Limpeza em lote
     collection.delete_many({"_import_batch": batch_id})
     meta_collection.delete_many({"batch_id": batch_id})
 
+    # Preparar dados
     df_para_salvar = df_prospeccao.copy()
     
-    cols_data = [c for c in df_para_salvar.columns if 'data' in c.lower() or 'date' in c.lower() or 'previsao' in c.lower()]
-    for col in cols_data:
+    # ✅ 1. IDENTIFICAR E TRATAR COLUNAS DE DATA (APENAS AS QUE REALMENTE SÃO DATAS)
+    colunas_data_validas = [
+        'Data da Atualização', 'Data_Atualizacao', 'data_atualizacao',
+        'Previsão de Entrega', 'Previsao_Entrega', 'previsao_entrega',
+        'PREVISAO_ENTREGA', 'Data Vencimento', 'data_vencimento'
+    ]
+    
+    for col in colunas_data_validas:
         if col in df_para_salvar.columns:
             df_para_salvar[col] = pd.to_datetime(df_para_salvar[col], errors='coerce', dayfirst=True)
     
+    # ✅ 2. GARANTIR QUE COLUNAS DE TEXTO NÃO VIREM DATA
+    colunas_texto = ['Prazo Medio', 'Prazo_Medio', 'VIABILIDADE', 'OBS', 'ESTÁGIO', 
+                     'FASE_ORIGINAL', 'FASE_CLASSIFICADA', 'PRIORIDADE']
+    for col in colunas_texto:
+        if col in df_para_salvar.columns:
+            df_para_salvar[col] = df_para_salvar[col].astype(str).fillna('')
+            df_para_salvar[col] = df_para_salvar[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN'], '')
+    
+    # ✅ 3. TRATAR VALORES NUMÉRICOS
+    colunas_numericas = ['APTO', 'DIAS_RESTANTES', 'BLOCO']
+    for col in colunas_numericas:
+        if col in df_para_salvar.columns:
+            df_para_salvar[col] = pd.to_numeric(df_para_salvar[col], errors='coerce')
+    
+    # Adicionar metadados
     df_para_salvar["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_para_salvar["_import_batch"] = batch_id
-    df_para_salvar = df_para_salvar.replace({pd.NaT: None, np.nan: None})
+    
+    # Substituir valores problemáticos
+    df_para_salvar = df_para_salvar.replace({pd.NaT: None, np.nan: None, float('inf'): None, float('-inf'): None})
+    
+    # Converter para lista de dicionários
     docs = df_para_salvar.to_dict('records')
     
+    # Inserir em lotes
     if docs:
-        for i in range(0, len(docs), 1000):
-            collection.insert_many(docs[i:i+1000])
+        batch_size = 500
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i:i+batch_size]
+            collection.insert_many(batch)
 
+    # Salvar metadados
     meta_collection.insert_one({
         "batch_id": batch_id,
         "timestamp": datetime.now().replace(tzinfo=None),
@@ -163,6 +194,7 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
         "fases": metadata.get("fases", {}),
         "construtoras": metadata.get("construtoras", [])
     })
+    
     return True
 
 
@@ -172,38 +204,32 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
     """
     try:
         # ⚡ PASSO 1: Identificar alterações de forma VETORIZADA
-        # Criar máscara para cada coluna (comparação vetorizada)
         mascaras_alteracao = {}
         for col in colunas_para_comparar:
             if col in df_original.columns and col in df_editado.columns:
-                # Comparação vetorizada entre DataFrames
                 mascaras_alteracao[col] = df_editado[col] != df_original[col]
         
-        # ⚡ PASSO 2: Combinar máscaras para identificar linhas com alterações
         if not mascaras_alteracao:
             return 0
         
-        # Criar DataFrame com todas as máscaras e identificar onde HOUVE alteração
         df_mascaras = pd.DataFrame(mascaras_alteracao)
         linhas_com_alteracao = df_mascaras.any(axis=1)
         
         if not linhas_com_alteracao.any():
             return 0
         
-        # ⚡ PASSO 3: Filtrar apenas linhas alteradas (VETORIZADO)
         df_original_alterado = df_original[linhas_com_alteracao].copy()
         df_editado_alterado = df_editado[linhas_com_alteracao].copy()
         ids_alterados = df_original_alterado['_id'].values
         
-        # ⚡ PASSO 4: Para linhas com ESTÁGIO alterado, recalcular FASE_CLASSIFICADA (VETORIZADO)
+        # ⚡ PASSO 4: Para linhas com ESTÁGIO alterado, recalcular FASE_CLASSIFICADA
         if 'ESTÁGIO' in colunas_para_comparar and 'ESTÁGIO' in df_editado_alterado.columns:
             mask_estagio_alterado = df_editado_alterado['ESTÁGIO'] != df_original_alterado['ESTÁGIO']
             if mask_estagio_alterado.any():
-                # Aplicar classificação vetorizada apenas nos valores alterados
                 df_editado_alterado.loc[mask_estagio_alterado, 'FASE_CLASSIFICADA'] = \
                     classificar_fase_vetorizado(df_editado_alterado.loc[mask_estagio_alterado, 'ESTÁGIO'])
         
-        # ⚡ PASSO 5: Para linhas com VIABILIDADE alterado, recalcular PREVISAO_ENTREGA (VETORIZADO)
+        # ⚡ PASSO 5: Para linhas com VIABILIDADE alterado, recalcular PREVISAO_ENTREGA
         if 'VIABILIDADE' in colunas_para_comparar and 'VIABILIDADE' in df_editado_alterado.columns:
             mask_viab_alterado = df_editado_alterado['VIABILIDADE'] != df_original_alterado['VIABILIDADE']
             if mask_viab_alterado.any():
@@ -217,8 +243,7 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
                 df_editado_alterado.loc[mask_previsao_alterado, 'DIAS_RESTANTES'] = \
                     calcular_dias_para_entrega_vetorizado(df_editado_alterado.loc[mask_previsao_alterado, 'PREVISAO_ENTREGA'])
         
-        # ⚡ PASSO 7: Recalcular PRIORIDADE se necessário (VETORIZADO em TODOS os registros alterados)
-        # Identificar quais linhas precisam de recalculo de prioridade
+        # ⚡ PASSO 7: Recalcular PRIORIDADE se necessário
         colunas_que_afetam_prioridade = ['ESTÁGIO', 'FASE_CLASSIFICADA', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES']
         mask_precisa_prioridade = pd.Series([False] * len(df_editado_alterado))
         for col in colunas_que_afetam_prioridade:
@@ -227,7 +252,6 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
                     mask_precisa_prioridade |= (df_editado_alterado[col] != df_original_alterado[col])
         
         if mask_precisa_prioridade.any():
-            # Criar DataFrame temporário com os dados atualizados para calcular prioridade
             df_temp = df_original_alterado.copy()
             for col in df_editado_alterado.columns:
                 if col in df_temp.columns and col != '_id':
@@ -236,24 +260,18 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
             df_temp['PRIORIDADE'] = calcular_prioridade_vetorizado(df_temp)
             df_editado_alterado.loc[mask_precisa_prioridade, 'PRIORIDADE'] = df_temp.loc[mask_precisa_prioridade, 'PRIORIDADE']
         
-        # ⚡ PASSO 8: Preparar operações bulk (único loop para construir operações - necessário)
-        # Este é o ÚNICO loop que permanece, mas é apenas para construir o array de operações
-        # Não processa dados, apenas prepara para o MongoDB
+        # ⚡ PASSO 8: Preparar operações bulk
         bulk_operations = []
         for idx, record_id in enumerate(ids_alterados):
-            # Coletar apenas colunas que foram alteradas para este registro
             updates = {}
             for col in colunas_para_comparar:
                 if col in df_editado_alterado.columns and col in df_original_alterado.columns:
-                    # Verificar se o valor mudou (usando iloc para acesso rápido)
                     if df_editado_alterado[col].iloc[idx] != df_original_alterado[col].iloc[idx]:
                         valor = df_editado_alterado[col].iloc[idx]
-                        # Converter NaN para None
                         if pd.isna(valor):
                             valor = None
                         updates[col] = valor
             
-            # Adicionar campos calculados se foram alterados
             if 'FASE_CLASSIFICADA' in df_editado_alterado.columns and 'FASE_CLASSIFICADA' in colunas_para_comparar:
                 updates['FASE_CLASSIFICADA'] = df_editado_alterado['FASE_CLASSIFICADA'].iloc[idx]
             
@@ -269,7 +287,6 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
             if updates:
                 bulk_operations.append(UpdateOne({"_id": ObjectId(record_id)}, {"$set": updates}))
         
-        # ⚡ PASSO 9: Executar todas as operações em UMA chamada
         if bulk_operations:
             collection = db["prospeccao_condominios"]
             result = collection.bulk_write(bulk_operations)
@@ -606,6 +623,13 @@ def render_prospeccao_condominios():
                 df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao.get("PREVISAO_ENTREGA"))
                 df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
                 
+                # ✅ LIMPEZA DE COLUNAS PROBLEMÁTICAS
+                colunas_texto_limpeza = ['Prazo Medio', 'Prazo_Medio', 'VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL']
+                for col in colunas_texto_limpeza:
+                    if col in df_prospeccao.columns:
+                        df_prospeccao[col] = df_prospeccao[col].astype(str).fillna('')
+                        df_prospeccao[col] = df_prospeccao[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN'], '')
+                
                 progress_bar.progress(95)
                 fases_count = df_prospeccao["FASE_CLASSIFICADA"].value_counts().to_dict()
                 metadata = {
@@ -623,6 +647,7 @@ def render_prospeccao_condominios():
                     st.cache_data.clear()
                     if "df_prospeccao_cached" in st.session_state:
                         del st.session_state["df_prospeccao_cached"]
+                    time.sleep(1)
                     st.rerun()
                     
         except Exception as e:
@@ -722,11 +747,9 @@ def render_prospeccao_condominios():
                     st.error("Erro interno: ID não encontrado nos dados filtrados.")
                     st.stop()
                 
-                # Guardar cópia original para comparação
                 df_original_edit = df_filtered[cols_existing + ["_id"]].copy()
                 df_edit_display = df_original_edit.drop(columns=["_id"]).copy()
                 
-                # Configurar column_config
                 column_config = {
                     "ESTÁGIO": st.column_config.SelectboxColumn(
                         "Estágio da Obra",
@@ -753,9 +776,7 @@ def render_prospeccao_condominios():
                     if isinstance(edited_df, dict):
                         edited_df = pd.DataFrame(edited_df)
                     
-                    # ⚡⚡⚡ PROCESSAMENTO 100% VETORIZADO - SEM LOOP PYTHON! ⚡⚡⚡
                     with st.spinner(f'🔄 Processando alterações de forma vetorizada...'):
-                        # Chamar função que processa tudo em VETORIZADO
                         colunas_para_comparar = cols_existing
                         modified_count = update_records_batch_vectorized(
                             db, 
