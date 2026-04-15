@@ -15,22 +15,45 @@ import time
 
 # ==================== FUNÇÕES UTILITÁRIAS OTIMIZADAS ====================
 
-def limpar_valor_data_vectorizado(serie):
-    """
-    ✅ OTIMIZAÇÃO CRÍTICA: Processa coluna inteira de uma vez
-    Em vez de iterar linha por linha, usa operações vetorizadas do Pandas
-    """
-    if serie is None or len(serie) == 0:
-        return serie
+def limpar_valor_data(valor):
+    """Limpa e converte valores de data com tratamento robusto para NaT"""
+    # ✅ CORREÇÃO CRÍTICA: Verifica NaT/NaN/None PRIMEIRO
+    if pd.isna(valor) or valor is None:
+        return None
     
-    # Converte toda a coluna de uma vez
-    serie_dt = pd.to_datetime(serie, errors='coerce', dayfirst=True)
+    try:
+        if isinstance(valor, str):
+            valor_limpo = valor.strip()
+            if valor_limpo in ["00/00/0000", "0", "", "nan", "NaT", "null", "NULL", "-"]:
+                return None
+            
+            match = re.search(r'\d{2}/\d{2}/\d{2,4}', valor_limpo)
+            if match:
+                valor_limpo = match.group()
+            
+            valor_dt = pd.to_datetime(valor_limpo, errors='coerce', dayfirst=True)
+            if pd.isna(valor_dt):
+                return None
+            
+            result = valor_dt.to_pydatetime().replace(tzinfo=None)
+            return result
+            
+        elif isinstance(valor, (pd.Timestamp, datetime)):
+            # ✅ CORREÇÃO: Verifica se é NaT antes de tentar acessar tzinfo
+            if pd.isna(valor):
+                return None
+            
+            if hasattr(valor, 'tzinfo') and valor.tzinfo is not None:
+                result = valor.replace(tzinfo=None)
+            else:
+                result = valor
+            
+            return result
+            
+    except Exception:
+        return None
     
-    # Normaliza timezone se existir
-    if hasattr(serie_dt.dt, 'tz') and serie_dt.dt.tz is not None:
-        serie_dt = serie_dt.dt.tz_localize(None)
-    
-    return serie_dt
+    return None
 
 def converter_dataframe_dates_otimizado(df, colunas_alvo=None):
     """
@@ -49,12 +72,20 @@ def converter_dataframe_dates_otimizado(df, colunas_alvo=None):
             col_lower = col.lower()
             if any(palavra in col_lower for palavra in palavras_chave):
                 colunas_alvo.append(col)
+            elif pd.api.types.is_datetime64_any_dtype(df[col]):
+                colunas_alvo.append(col)
     
     # Processa TODAS as colunas de uma vez (operações vetorizadas)
     for col in colunas_alvo:
         if col in df.columns:
             try:
-                df[col] = limpar_valor_data_vectorizado(df[col])
+                # Converte toda a coluna de uma vez
+                df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
+                # ✅ CORREÇÃO: Aplica limpeza apenas nos valores não nulos
+                mask_notna = df[col].notna()
+                df.loc[mask_notna, col] = df.loc[mask_notna, col].apply(
+                    lambda x: limpar_valor_data(x) if pd.notna(x) else None
+                )
             except Exception:
                 pass
     
@@ -126,7 +157,7 @@ def init_mongo():
 def save_prospeccao_data_otimizado(db, df_prospeccao, metadata):
     """
     ✅ OTIMIZAÇÃO CRÍTICA: Insert em batch (todos os registros de uma vez)
-    Comparado ao original: 100x mais rápido para 200+ registros
+    ✅ CORREÇÃO: Tratamento adequado para valores NaT antes do insert
     """
     collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
@@ -143,7 +174,7 @@ def save_prospeccao_data_otimizado(db, df_prospeccao, metadata):
     cols_data = ["PREVISAO_ENTREGA", "Data da Atualização", "Previsão de Entrega"] 
     cols_data.extend([c for c in df_prospeccao.columns if 'data' in c.lower() or 'date' in c.lower()])
 
-    # Conversão vetorizada de datas (MUITO mais rápido que linha por linha)
+    # Conversão vetorizada de datas
     df_limpo = converter_dataframe_dates_otimizado(df_prospeccao, colunas_alvo=list(set(cols_data)))
 
     # Prepara documentos para insert em batch
@@ -154,17 +185,26 @@ def save_prospeccao_data_otimizado(db, df_prospeccao, metadata):
     registros = df_limpo.to_dict('records')
     
     for doc in registros:
-        # Limpeza rápida dos dados
+        # ✅ CORREÇÃO CRÍTICA: Limpeza completa dos dados ANTES do insert
         for key, value in list(doc.items()):
-            if isinstance(value, (pd.Timestamp, datetime)):
-                if hasattr(value, 'tzinfo') and value.tzinfo is not None:
-                    doc[key] = value.replace(tzinfo=None)
-                else:
-                    doc[key] = value
-            elif pd.isna(value):
+            # PRIMEIRO: Verifica se é NaT, NaN ou None (antes de verificar datetime)
+            if pd.isna(value):
                 doc[key] = None
+            # SEGUNDO: Verifica se é datetime válido
+            elif isinstance(value, (pd.Timestamp, datetime)):
+                # Verifica se o timestamp é válido antes de tentar remover timezone
+                if pd.isna(value):
+                    doc[key] = None
+                else:
+                    if hasattr(value, 'tzinfo') and value.tzinfo is not None:
+                        doc[key] = value.replace(tzinfo=None)
+                    else:
+                        doc[key] = value
+            # TERCEIRO: Converte tipos numpy para Python nativo
             elif isinstance(value, (np.integer, np.floating)):
-                doc[key] = value.item()  # Converte tipos numpy para Python nativo
+                doc[key] = value.item()
+            elif isinstance(value, (pd.Series, pd.DataFrame)):
+                doc[key] = str(value)
         
         doc["_import_timestamp"] = timestamp_atual
         doc["_import_batch"] = batch_id
@@ -172,7 +212,13 @@ def save_prospeccao_data_otimizado(db, df_prospeccao, metadata):
 
     # INSERT EM BATCH - CRÍTICO PARA PERFORMANCE
     if docs:
-        collection.insert_many(docs)  # Uma única operação para todos os registros
+        try:
+            collection.insert_many(docs)  # Uma única operação para todos os registros
+        except Exception as e:
+            st.error(f"❌ Erro ao inserir no MongoDB: {str(e)}")
+            if len(docs) > 0:
+                st.error(f"Primeiro documento problemático: {docs[0]}")
+            return False
 
     meta_collection.insert_one({
          "batch_id": batch_id,
@@ -729,7 +775,7 @@ def render_prospeccao_condominios():
                         axis=1
                     )
                 
-                status_text.text(" Calculando métricas...")
+                status_text.text("⏱️ Calculando métricas...")
                 progress_bar.progress(90)
                 # ✅ OTIMIZAÇÃO: Cálculo vetorizado
                 if "PREVISAO_ENTREGA" in df_prospeccao.columns:
