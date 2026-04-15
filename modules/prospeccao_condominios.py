@@ -3,143 +3,121 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timezone, date
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
 import re
-import time
+import calendar
 from bson.objectid import ObjectId
+import time
 
-# ==================== FUNÇÕES VETORIZADAS PURAS (SEM LOOPS) ====================
+# ==================== FUNÇÕES UTILITÁRIAS VETORIZADAS ====================
 
-def processar_dataframe_prospeccao(df_raw):
-    """Processa o DataFrame completo em operações VETORIZADAS - SEM LOOPS"""
+@st.cache_data
+def classificar_fase_vetorizado(fases_series):
+    """Versão vetorizada para classificar fases - MUITO MAIS RÁPIDO"""
+    fases_lower = fases_series.fillna('').astype(str).str.lower().str.strip()
     
-    df = df_raw.copy()
-    
-    # 1. Limpar nomes das colunas
-    df.columns = [str(col).strip() for col in df.columns]
-    
-    # 2. Renomear colunas (vetorizado)
-    col_mapping = {
-        'região': 'Região', 'zona': 'Região', 'bairro': 'BAIRRO',
-        'endereço': 'ENDEREÇO', 'endereco': 'ENDEREÇO', 'nome': 'NOME',
-        'condomínio': 'NOME', 'condominio': 'NOME', 'bloco': 'BLOCO',
-        'apto': 'APTO', 'apartamentos': 'APTO', 'construtora': 'CONSTRUTORA',
-        'estágio': 'ESTÁGIO', 'estagio': 'ESTÁGIO', 'viabilidade': 'VIABILIDADE',
-        'obs': 'OBS', 'observações': 'OBS', 'data da atualização': 'Data da Atualização',
-        'previsão de entrega': 'Previsão de Entrega'
+    # Criar DataFrame com flags para cada condição
+    conditions = {
+        '✅ Entramos': fases_lower.str.contains('entramos|entrada confirmada|projeto aceito|ganhamos|contratado', na=False),
+        '💼 Em Negociação': fases_lower.str.contains('em negociação|negociando|tratativa|proposta|estudo|análise|avaliação', na=False),
+        '📢 Lançamento': fases_lower.str.contains('lançamento|lancamento|vendas|grupo em formação|pré-venda', na=False),
+        '🚧 Início de Obra': fases_lower.str.contains('início de obra|inicio de obra|inicial|fundação|estrutura|começando', na=False),
+        '🔨 Obra em Andamento': fases_lower.str.contains('obra em andamento|andamento|intermediário|intermediario|em construção|50%|60%|70%|80%', na=False),
+        '🏁 Final de Obra': fases_lower.str.contains('final de obra|fase final|acabamento|estágio final|estagio final|terminando', na=False),
+        '🎉 Entregue': fases_lower.str.contains('entregue|entregues|finalizado|concluído|concluido', na=False),
+        '🏡 Pronto Para Morar': fases_lower.str.contains('pronto para morar|pronto pra morar|habite-se|disponível', na=False),
+        '📅 Futuro Lançamento': fases_lower.str.contains('futuro|planejado|terreno|futuro lançamento|previsão|previsto', na=False),
+        '❌ Não Entramos': fases_lower.str.contains('não entramos|nao entramos|perdido|embargado|sem viabilidade|não autorizado|descartado', na=False)
     }
     
-    cols_to_rename = {k: v for k, v in col_mapping.items() 
-                     if k in [c.lower() for c in df.columns]}
-    df = df.rename(columns=cols_to_rename)
+    # Inicializar com valor padrão
+    resultado = pd.Series('💼 Em Negociação', index=fases_series.index, dtype='object')
     
-    # 3. Classificar fases (usando numpy.select - MUITO RÁPIDO)
-    if 'ESTÁGIO' in df.columns:
-        fases_lower = df['ESTÁGIO'].fillna('').astype(str).str.lower().str.strip()
-        
-        conditions = [
-            fases_lower.str.contains('entramos|entrada confirmada|projeto aceito|ganhamos|contratado', na=False, regex=True),
-            fases_lower.str.contains('em negociação|negociando|tratativa|proposta|estudo|análise|avaliação', na=False, regex=True),
-            fases_lower.str.contains('lançamento|lancamento|vendas|grupo em formação|pré-venda', na=False, regex=True),
-            fases_lower.str.contains('início de obra|inicio de obra|inicial|fundação|estrutura|começando', na=False, regex=True),
-            fases_lower.str.contains('obra em andamento|andamento|intermediário|intermediario|em construção|50%|60%|70%|80%', na=False, regex=True),
-            fases_lower.str.contains('final de obra|fase final|acabamento|estágio final|estagio final|terminando', na=False, regex=True),
-            fases_lower.str.contains('entregue|entregues|finalizado|concluído|concluido', na=False, regex=True),
-            fases_lower.str.contains('pronto para morar|pronto pra morar|habite-se|disponível', na=False, regex=True),
-            fases_lower.str.contains('futuro|planejado|terreno|futuro lançamento|previsão|previsto', na=False, regex=True),
-            fases_lower.str.contains('não entramos|nao entramos|perdido|embargado|sem viabilidade|não autorizado|descartado', na=False, regex=True)
-        ]
-        
-        choices = [
-            '✅ Entramos', '💼 Em Negociação', '📢 Lançamento', '🚧 Início de Obra',
-            '🔨 Obra em Andamento', '🏁 Final de Obra', '🎉 Entregue', '🏡 Pronto Para Morar',
-            '📅 Futuro Lançamento', '❌ Não Entramos'
-        ]
-        
-        df['FASE_CLASSIFICADA'] = np.select(conditions, choices, default='💼 Em Negociação')
-        df['FASE_ORIGINAL'] = df['ESTÁGIO']
+    # Aplicar condições em ordem de prioridade
+    for fase, cond in conditions.items():
+        resultado[cond] = fase
     
-    # 4. Extrair previsão de entrega (vetorizado com regex - CORRIGIDO)
-    if 'VIABILIDADE' in df.columns:
-        viab_str = df['VIABILIDADE'].fillna('').astype(str)
-        
-        # Tentar extrair data completa
-        datas = viab_str.str.extract(r'(\d{2}/\d{2}/\d{2,4})', expand=False)
-        
-        # Se não encontrou, tentar mês/ano
-        mask_no_data = datas.isna()
-        if mask_no_data.any():
-            mes_ano = viab_str[mask_no_data].str.extract(r'(\d{2}/\d{4})', expand=False)
-            datas_copy = datas.copy()
-            datas_copy[mask_no_data] = mes_ano
-            datas = datas_copy
-            # Adicionar dia 01 para conversão
-            mask_mes_ano = datas.notna() & (datas.str.len() == 7)
-            if mask_mes_ano.any():
-                datas_updated = datas.copy()
-                datas_updated[mask_mes_ano] = '01/' + datas[mask_mes_ano]
-                datas = datas_updated
-        
-        # Converter para datetime com tratamento de erro
-        df['PREVISAO_ENTREGA'] = pd.to_datetime(datas, errors='coerce', dayfirst=True)
+    return resultado
+
+
+@st.cache_data
+def extrair_previsao_entrega_vetorizado(viabilidade_series):
+    """Versão vetorizada para extrair previsão de entrega"""
+    if viabilidade_series is None:
+        return pd.Series([None] * len(viabilidade_series))
     
-    # 5. Se houver coluna específica de previsão, usar ela como優先
-    if 'Previsão de Entrega' in df.columns:
-        previsao_direta = pd.to_datetime(df['Previsão de Entrega'], errors='coerce', dayfirst=True)
-        if 'PREVISAO_ENTREGA' in df.columns:
-            df['PREVISAO_ENTREGA'] = df['PREVISAO_ENTREGA'].fillna(previsao_direta)
-        else:
-            df['PREVISAO_ENTREGA'] = previsao_direta
+    viabilidade_str = viabilidade_series.fillna('').astype(str)
     
-    # 6. Calcular dias restantes (vetorizado - CORRIGIDO)
-    if 'PREVISAO_ENTREGA' in df.columns:
-        hoje = datetime.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
-        # Converter para datetime sem timezone
-        previsao_clean = pd.to_datetime(df['PREVISAO_ENTREGA'], errors='coerce')
-        # Remover timezone se existir
-        if previsao_clean.dt.tz is not None:
-            previsao_clean = previsao_clean.dt.tz_localize(None)
-        # Calcular diferença
-        df['DIAS_RESTANTES'] = (previsao_clean - pd.Timestamp(hoje)).dt.days
+    # Tentar extrair data com regex de forma vetorizada
+    data_encontrada = viabilidade_str.str.extract(r'(\d{2}/\d{2}/\d{2,4})', expand=False)
     
-    # 7. Calcular prioridade (vetorizado com numpy.select)
-    if 'FASE_CLASSIFICADA' in df.columns:
-        fase = df['FASE_CLASSIFICADA']
-        dias = df.get('DIAS_RESTANTES', pd.Series([np.nan] * len(df)))
-        
-        # Tratar valores nulos
-        dias = dias.fillna(9999)
-        
-        priority_conditions = [
-            fase == '✅ Entramos',
-            fase == '💼 Em Negociação',
-            fase.isin(['🎉 Entregue', '🏡 Pronto Para Morar']),
-            (fase == '🏁 Final de Obra') & (dias <= 90),
-            (fase == '🏁 Final de Obra') & (dias > 90) & (dias <= 180),
-            (fase == '🏁 Final de Obra') & (dias > 180),
-            fase.isin(['🔨 Obra em Andamento', '🚧 Início de Obra']) & (dias <= 365),
-            fase.isin(['🔨 Obra em Andamento', '🚧 Início de Obra']) & (dias > 365),
-            fase.isin(['📢 Lançamento', '📅 Futuro Lançamento']),
-            fase == '❌ Não Entramos'
-        ]
-        
-        priority_choices = [
-            '🟢 Ação Imediata', '🟠 Alta Prioridade', '🟡 Acompanhamento',
-            '🔴 Urgente', '🟠 Alta', '🟡 Média', '🟠 Alta', '🟡 Média',
-            '🔵 Planejamento', '⚪ Arquivado'
-        ]
-        
-        df['PRIORIDADE'] = np.select(priority_conditions, priority_choices, default='⚪ Baixa')
+    # Se não encontrou, tentar outros formatos
+    mask_sem_data = data_encontrada.isna()
+    if mask_sem_data.any():
+        data_mes_ano = viabilidade_str[mask_sem_data].str.extract(r'(\d{2}/\d{4})', expand=False)
+        data_encontrada[mask_sem_data] = data_mes_ano
+        # Adicionar dia 01 para conversão
+        mask_so_mes_ano = data_encontrada.notna() & (data_encontrada.str.len() == 7)
+        data_encontrada[mask_so_mes_ano] = '01/' + data_encontrada[mask_so_mes_ano]
     
-    # 8. Converter colunas numéricas
-    if 'APTO' in df.columns:
-        df['APTO'] = pd.to_numeric(df['APTO'], errors='coerce')
+    # Converter para datetime
+    resultado = pd.to_datetime(data_encontrada, errors='coerce', dayfirst=True)
     
-    return df
+    return resultado
+
+
+@st.cache_data
+def calcular_prioridade_vetorizado(df):
+    """Versão vetorizada para calcular prioridades"""
+    fase = df['FASE_CLASSIFICADA'].fillna('')
+    dias = df.get('DIAS_RESTANTES', pd.Series([None] * len(df)))
+    
+    prioridade = pd.Series('⚪ Baixa', index=df.index)
+    
+    # Condições vetorizadas
+    prioridade[fase == '✅ Entramos'] = '🟢 Ação Imediata'
+    prioridade[fase == '💼 Em Negociação'] = '🟠 Alta Prioridade'
+    prioridade[fase.isin(['🎉 Entregue', '🏡 Pronto Para Morar'])] = '🟡 Acompanhamento'
+    
+    # Final de Obra com diferentes prazos
+    mask_final_obra = fase == '🏁 Final de Obra'
+    if mask_final_obra.any() and dias is not None:
+        prioridade[mask_final_obra & (dias <= 90)] = '🔴 Urgente'
+        prioridade[mask_final_obra & (dias > 90) & (dias <= 180)] = '🟠 Alta'
+        prioridade[mask_final_obra & (dias > 180)] = '🟡 Média'
+    
+    # Obra em Andamento
+    mask_obra = fase.isin(['🔨 Obra em Andamento', '🚧 Início de Obra'])
+    if mask_obra.any() and dias is not None:
+        prioridade[mask_obra & (dias <= 365)] = '🟠 Alta'
+        prioridade[mask_obra & (dias > 365)] = '🟡 Média'
+    
+    # Lançamentos
+    prioridade[fase.isin(['📢 Lançamento', '📅 Futuro Lançamento'])] = '🔵 Planejamento'
+    prioridade[fase == '❌ Não Entramos'] = '⚪ Arquivado'
+    
+    return prioridade
+
+
+@st.cache_data
+def calcular_dias_para_entrega_vetorizado(previsao_series):
+    """Versão vetorizada para calcular dias restantes"""
+    if previsao_series is None or previsao_series.empty:
+        return pd.Series([None] * len(previsao_series))
+    
+    hoje = datetime.now().replace(tzinfo=None)
+    
+    # Garantir que é datetime
+    previsao_dt = pd.to_datetime(previsao_series, errors='coerce')
+    
+    # Calcular diferença em dias
+    dias = (previsao_dt - pd.Timestamp(hoje)).dt.days
+    
+    return dias
 
 
 # ==================== CONFIGURAÇÃO MONGODB ====================
@@ -166,49 +144,47 @@ def init_mongo():
         database_name = st.secrets.get("mongo", {}).get("MONGO_DATABASE", "tracecom_crm")
         return client[database_name]
     except (ServerSelectionTimeoutError, ConnectionFailure) as e:
-        st.error(f"❌ Falha ao conectar ao MongoDB: {e}")
+        st.error(f"❌ Falha ao conectar ao MongoDB:\n`{type(e).__name__}: {e}`")
         st.stop()
     except Exception as e:
-        st.error(f"❌ Erro inesperado: {e}")
+        st.error(f"❌ Erro inesperado ao conectar: {type(e).__name__}: {e}")
         st.stop()
 
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
-def save_prospeccao_data_super_rapido(db, df_prospeccao, metadata):
-    """Salva dados - SEM NENHUM LOOP, usando inserção em lote puro"""
+def save_prospeccao_data(db, df_prospeccao, metadata):
+    """Salva dados de prospecção no MongoDB - VERSÃO OTIMIZADA SEM LOOPS"""
     collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
     batch_id = metadata["batch_id"]
     
-    # Limpeza rápida em lote
+    # Limpeza em lote (uma única operação)
     collection.delete_many({"_import_batch": batch_id})
     meta_collection.delete_many({"batch_id": batch_id})
+
+    # Preparar dados EM LOTE - UMA ÚNICA CONVERSÃO
+    df_para_salvar = df_prospeccao.copy()
     
-    # PREPARAÇÃO SUPER RÁPIDA - TUDO VETORIZADO
-    df = df_prospeccao.copy()
+    # Converter datas em lote (vetorizado)
+    cols_data = [c for c in df_para_salvar.columns if 'data' in c.lower() or 'date' in c.lower() or 'previsao' in c.lower()]
+    for col in cols_data:
+        if col in df_para_salvar.columns:
+            df_para_salvar[col] = pd.to_datetime(df_para_salvar[col], errors='coerce', dayfirst=True)
     
-    # Converter todas as datas de uma vez (sem timezone)
-    date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
-    for col in date_cols:
-        # Remover timezone se existir
-        if df[col].dt.tz is not None:
-            df[col] = df[col].dt.tz_localize(None)
-        df[col] = df[col].where(df[col].notna(), None)
+    # Adicionar metadados em lote
+    df_para_salvar["_import_timestamp"] = datetime.now().replace(tzinfo=None)
+    df_para_salvar["_import_batch"] = batch_id
     
-    # Adicionar metadados (vetorizado)
-    df['_import_timestamp'] = datetime.now().replace(tzinfo=None)
-    df['_import_batch'] = batch_id
+    # Substituir NaN por None e converter para dict UMA ÚNICA VEZ
+    df_para_salvar = df_para_salvar.replace({pd.NaT: None, np.nan: None})
     
-    # Substituir NaN/NaT por None em TODO o DataFrame de uma vez
-    df = df.where(pd.notna(df), None)
+    # Converter para lista de dicionários de uma vez
+    docs = df_para_salvar.to_dict('records')
     
-    # CONVERSÃO ÚNICA PARA DICT - A OPERAÇÃO MAIS RÁPIDA POSSÍVEL
-    docs = df.to_dict('records')
-    
-    # Inserção em lote (ordered=False é mais rápido)
+    # Inserir em lote
     if docs:
-        collection.insert_many(docs, ordered=False)
-    
+        collection.insert_many(docs)
+
     # Salvar metadados
     meta_collection.insert_one({
         "batch_id": batch_id,
@@ -217,20 +193,21 @@ def save_prospeccao_data_super_rapido(db, df_prospeccao, metadata):
         "fases": metadata.get("fases", {}),
         "construtoras": metadata.get("construtoras", [])
     })
-    
     return True
 
 
-def load_latest_prospeccao(db):
-    """Carrega últimos dados de prospecção"""
-    meta = db["prospeccao_meta"].find_one(sort=[("timestamp", -1)])
+@st.cache_data
+def load_latest_prospeccao(_db):
+    """Carrega últimos dados de prospecção - COM CACHE"""
+    meta = _db["prospeccao_meta"].find_one(sort=[("timestamp", -1)])
     if not meta:
         return None, None
     
-    collection = db["prospeccao_condominios"]
+    collection = _db["prospeccao_condominios"]
     cursor = collection.find({"_import_batch": meta["batch_id"]})
     df_prospeccao = pd.DataFrame(list(cursor))
 
+    # Converter _id para string em lote
     if "_id" in df_prospeccao.columns:
         df_prospeccao["_id"] = df_prospeccao["_id"].astype(str)
     else:
@@ -261,8 +238,16 @@ def update_single_record(db, record_id, updates):
             st.error("ID inválido.")
             return False
         
+        # Limpar updates em lote
         clean_updates = {k: (None if (isinstance(v, str) and v.strip() == "") or pd.isna(v) else v) 
                         for k, v in updates.items() if k != "_id"}
+        
+        # Converter datas
+        date_cols = [k for k in clean_updates.keys() if 'data' in k.lower() or 'previsao' in k.lower()]
+        for col in date_cols:
+            if clean_updates[col] is not None:
+                clean_updates[col] = pd.to_datetime(clean_updates[col], errors='coerce', dayfirst=True)
+                clean_updates[col] = None if pd.isna(clean_updates[col]) else clean_updates[col]
         
         result = collection.update_one({"_id": obj_id}, {"$set": clean_updates})
         return result.modified_count > 0
@@ -276,18 +261,36 @@ def insert_new_record(db, new_data):
     try:
         collection = db["prospeccao_condominios"]
         
-        # Criar DataFrame temporário para processamento vetorizado
-        temp_df = pd.DataFrame([new_data])
-        temp_df = processar_dataframe_prospeccao(temp_df)
+        # Processar em lote (mesmo para um único registro)
+        doc = new_data.copy()
         
-        # Extrair o documento processado
-        doc = temp_df.iloc[0].to_dict()
+        if "ESTÁGIO" in doc:
+            # Usar função vetorizada mesmo para um valor
+            fase_series = pd.Series([doc["ESTÁGIO"]])
+            doc["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(fase_series).iloc[0]
+        
+        if "VIABILIDADE" in doc:
+            viab_series = pd.Series([doc["VIABILIDADE"]])
+            doc["PREVISAO_ENTREGA"] = extrair_previsao_entrega_vetorizado(viab_series).iloc[0]
+        
+        # Calcular dias e prioridade
+        if doc.get("PREVISAO_ENTREGA"):
+            previsao_series = pd.Series([doc["PREVISAO_ENTREGA"]])
+            doc["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(previsao_series).iloc[0]
+        
+        # Criar DataFrame temporário para cálculo de prioridade
+        temp_df = pd.DataFrame([doc])
+        doc["PRIORIDADE"] = calcular_prioridade_vetorizado(temp_df).iloc[0]
         
         doc["_import_timestamp"] = datetime.now().replace(tzinfo=None)
         doc["_import_batch"] = "manual_entry"
         
-        # Converter NaN para None
-        doc = {k: (None if pd.isna(v) else v) for k, v in doc.items()}
+        # Converter datas
+        for key, value in list(doc.items()):
+            if isinstance(value, (pd.Timestamp, datetime)):
+                doc[key] = None if pd.isna(value) else value
+            elif pd.isna(value):   
+                doc[key] = None
         
         collection.insert_one(doc)
         return True
@@ -303,10 +306,12 @@ def analisar_por_construtora(df_prospeccao):
     if df_prospeccao.empty or "CONSTRUTORA" not in df_prospeccao.columns:
         return pd.DataFrame()
     
+    # Pré-processar dados numéricos em lote
     df_copy = df_prospeccao.copy()
     if "APTO" in df_copy.columns:
         df_copy["APTO"] = pd.to_numeric(df_copy["APTO"], errors='coerce')
     
+    # Groupby único com múltiplas agregações
     construtora_stats = df_copy.groupby("CONSTRUTORA").agg(
         total_projetos=("NOME", "count"),
         total_apartamentos=("APTO", "sum"),
@@ -322,6 +327,7 @@ def analisar_por_construtora(df_prospeccao):
         projetos_nao_entramos=("FASE_CLASSIFICADA", lambda x: (x == "❌ Não Entramos").sum())
     ).reset_index()
 
+    # Calcular percentuais (vetorizado)
     construtora_stats["percentual_entregue"] = (construtora_stats["projetos_entregue"] / construtora_stats["total_projetos"] * 100).round(1)
     construtora_stats["percentual_em_obra"] = ((construtora_stats["projetos_inicio_obra"] + construtora_stats["projetos_andamento"] + construtora_stats["projetos_final_obra"]) / construtora_stats["total_projetos"] * 100).round(1)
     construtora_stats["percentual_oportunidades"] = ((construtora_stats["projetos_lancamento"] + construtora_stats["projetos_futuro"] + construtora_stats["projetos_negociacao"]) / construtora_stats["total_projetos"] * 100).round(1)
@@ -343,6 +349,7 @@ def analisar_por_zona(df_prospeccao):
     if "APTO" in df_copy.columns:
         df_copy["APTO"] = pd.to_numeric(df_copy["APTO"], errors='coerce')
     
+    # Groupby único
     zona_stats = df_copy.groupby(col_zona).agg(
         total_projetos=("NOME", "count"),
         total_apartamentos=("APTO", "sum"),
@@ -351,6 +358,7 @@ def analisar_por_zona(df_prospeccao):
         oportunidades=("FASE_CLASSIFICADA", lambda x: x.isin(["📢 Lançamento", "📅 Futuro Lançamento", "💼 Em Negociação", "✅ Entramos"]).sum())
     ).reset_index()
 
+    # Percentuais vetorizados
     zona_stats["percentual_em_obra"] = (zona_stats["projetos_em_obra"] / zona_stats["total_projetos"] * 100).round(1)
     zona_stats["percentual_entregue"] = (zona_stats["projetos_entregue"] / zona_stats["total_projetos"] * 100).round(1)
     zona_stats["percentual_oportunidades"] = (zona_stats["oportunidades"] / zona_stats["total_projetos"] * 100).round(1)
@@ -360,7 +368,7 @@ def analisar_por_zona(df_prospeccao):
 
 @st.cache_data
 def timeline_entregas(df_prospeccao):
-    """Prepara dados para timeline de entregas"""
+    """Prepara dados para timeline de entregas - OTIMIZADA"""
     if "PREVISAO_ENTREGA" not in df_prospeccao.columns:
         return pd.DataFrame()
     
@@ -371,8 +379,8 @@ def timeline_entregas(df_prospeccao):
     if df_timeline.empty:
         return df_timeline
 
-    hoje = datetime.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
-    df_timeline["DIAS_RESTANTES"] = (df_timeline["PREVISAO_ENTREGA"] - pd.Timestamp(hoje)).dt.days
+    # Operações vetorizadas
+    df_timeline["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_timeline["PREVISAO_ENTREGA"])
     df_timeline["ANO_ENTREGA"] = df_timeline["PREVISAO_ENTREGA"].dt.year
     df_timeline["MES_ENTREGA"] = df_timeline["PREVISAO_ENTREGA"].dt.to_period('M')
     
@@ -381,11 +389,13 @@ def timeline_entregas(df_prospeccao):
 
 # ==================== FUNÇÃO DE EXPORTAÇÃO OTIMIZADA ====================
 def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
-    """Exporta dados de prospecção para Excel - SEM LOOPS DESNECESSÁRIOS"""
+    """
+    Exporta dados de prospecção para Excel - SEM LOOPS DESNECESSÁRIOS
+    """
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # ABA 1: RESUMO EXECUTIVO
+        # === ABA 1: RESUMO EXECUTIVO ===
         resumo_data = {
             'Métrica': [
                 'Total de Projetos',
@@ -413,10 +423,10 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
         df_resumo = pd.DataFrame(resumo_data)
         df_resumo.to_excel(writer, sheet_name='📊 Resumo Executivo', index=False)
         
-        # ABA 2: DADOS COMPLETOS
+        # === ABA 2: DADOS COMPLETOS ===
         df_prospeccao.to_excel(writer, sheet_name='📋 Completo', index=False)
         
-        # ABAS POR FASE
+        # === ABAS POR FASE (SEM LOOP, USANDO DICIONÁRIO) ===
         fases_map = {
             '✅ Entramos': '00_Entramos_Destaque',
             '💼 Em Negociação': '01_Em_Negociacao',
@@ -430,6 +440,7 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
             '❌ Não Entramos': '09_Nao_Entramos'
         }
         
+        # Preparar colunas base uma única vez
         cols_base = ['NOME', 'CONSTRUTORA', 'BAIRRO', 
                     'Região' if 'Região' in df_prospeccao.columns else 'ZONA', 
                     'ENDEREÇO', 'BLOCO', 'APTO', 'FASE_CLASSIFICADA', 'PRIORIDADE']
@@ -445,6 +456,7 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
                 df_export = df_fase[cols_final].copy()
                  
                 if 'PREVISAO_ENTREGA' in df_export.columns:
+                    # Formatação vetorizada
                     mask_notna = df_export['PREVISAO_ENTREGA'].notna()
                     df_export.loc[mask_notna, 'PREVISAO_ENTREGA'] = pd.to_datetime(df_export.loc[mask_notna, 'PREVISAO_ENTREGA']).dt.strftime('%d/%m/%Y')
                     df_export.loc[~mask_notna, 'PREVISAO_ENTREGA'] = ''
@@ -452,6 +464,7 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
                 nome_aba = nome_aba[:31]
                 df_export.to_excel(writer, sheet_name=nome_aba, index=False)
         
+        # Abas adicionais
         if not df_construtoras.empty:
             df_construtoras.to_excel(writer, sheet_name='10_Por_Construtora', index=False)
         
@@ -462,7 +475,7 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
     return output
 
 
-# ==================== INTERFACE STREAMLIT PRINCIPAL ====================
+# ==================== INTERFACE STREAMLIT OTIMIZADA ====================
 def render_prospeccao_condominios():
     st.title("🏗️ Prospecção de Condomínios")
     st.markdown("Acompanhamento de fases de construção por construtora e oportunidades de mercado")
@@ -471,7 +484,7 @@ def render_prospeccao_condominios():
     
     st.markdown("---")
 
-    # GERENCIAMENTO DE DADOS
+    # ==================== GERENCIAMENTO DE DADOS ====================
     st.subheader("📂 Gerenciamento de Dados")
     col1, col2 = st.columns([3, 1])
 
@@ -484,6 +497,7 @@ def render_prospeccao_condominios():
 
     with col2:
         if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
+            # Limpar cache forçando recarregamento
             st.cache_data.clear()
             st.session_state["reload_prospeccao"] = True
             st.rerun()
@@ -501,70 +515,94 @@ def render_prospeccao_condominios():
                 st.warning("⚠️ Clique novamente para confirmar")
                 st.session_state["confirm_delete_prospeccao"] = True
 
-    # Mostrar metadados da última importação
-    meta = db["prospeccao_meta"].find_one(sort=[("timestamp", -1)])
-    if meta:
-        ts = meta.get('timestamp')
-        ts_str = ts.strftime("%d/%m/%Y %H:%M") if ts else "Data não disponível"
-        st.info(f"""
-        **Última Importação:**
-        - 📅 {ts_str}
-        - 🏗️ {meta['total_projetos']} projetos
-        - 🏢 {len(meta.get('construtoras', []))} construtoras
-        """)
-    else:
-        st.warning("⚠️ Nenhum dado importado ainda")
-
-    st.markdown("---")
-
-    # IMPORTAÇÃO DA PLANILHA (VERSÃO ULTRA RÁPIDA)
+    # ==================== IMPORTAÇÃO DA PLANILHA OTIMIZADA ====================
     if uploaded_file:
-        with st.spinner('🚀 Processando planilha com engine otimizado...'):
-            try:
-                start_time = time.time()
+        start_time = time.time()
+        progress_bar = st.progress(0)
+        
+        try:
+            progress_bar.progress(10)
+            df_prospeccao = pd.read_excel(uploaded_file, sheet_name=0)
+            
+            progress_bar.progress(30)
+            # Verificar e remover linha de cabeçalho duplicado
+            if len(df_prospeccao) > 0:
+                primeira_linha = df_prospeccao.iloc[0].astype(str).str.lower()
+                if all(val in [c.lower() for c in df_prospeccao.columns] or val == 'nan' for val in primeira_linha):
+                    df_prospeccao = df_prospeccao.iloc[1:].reset_index(drop=True)
+            
+            progress_bar.progress(50)
+            # Renomear colunas em lote
+            if len(df_prospeccao) > 0:
+                col_mapping = {
+                    'região': 'Região', 'zona': 'Região', 'bairro': 'BAIRRO',
+                    'endereço': 'ENDEREÇO', 'endereco': 'ENDEREÇO', 'nome': 'NOME',
+                    'condomínio': 'NOME', 'condominio': 'NOME', 'bloco': 'BLOCO',
+                    'apto': 'APTO', 'apartamentos': 'APTO', 'construtora': 'CONSTRUTORA',
+                    'estágio': 'ESTÁGIO', 'estagio': 'ESTÁGIO', 'viabilidade': 'VIABILIDADE',
+                    'obs': 'OBS', 'observações': 'OBS', 'data da atualização': 'Data da Atualização',
+                    'previsão de entrega': 'Previsão de Entrega'
+                }
                 
-                # Ler Excel de uma vez
-                df_raw = pd.read_excel(uploaded_file, sheet_name=0)
+                df_prospeccao.columns = [str(col).strip() for col in df_prospeccao.columns]
+                df_prospeccao = df_prospeccao.rename(columns={k: v for k, v in col_mapping.items() if k in [c.lower() for c in df_prospeccao.columns]})
                 
-                # Remover linha de cabeçalho duplicado se existir
-                if len(df_raw) > 0:
-                    primeira_linha = df_raw.iloc[0].astype(str).str.lower()
-                    colunas_lower = [c.lower() for c in df_raw.columns]
-                    if all(val in colunas_lower or val == 'nan' for val in primeira_linha):
-                        df_raw = df_raw.iloc[1:].reset_index(drop=True)
+                progress_bar.progress(70)
+                if "ESTÁGIO" not in df_prospeccao.columns:
+                    st.error("❌ Coluna 'ESTÁGIO' não encontrada na planilha!")
+                    st.stop()
                 
-                # Processar tudo de uma vez
-                df_prospeccao = processar_dataframe_prospeccao(df_raw)
+                # APLICAÇÃO VETORIZADA - MUITO MAIS RÁPIDO
+                df_prospeccao["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(df_prospeccao["ESTÁGIO"])
+                df_prospeccao["FASE_ORIGINAL"] = df_prospeccao["ESTÁGIO"]
                 
-                # Calcular estatísticas
-                construtoras_list = df_prospeccao['CONSTRUTORA'].dropna().unique().tolist() if 'CONSTRUTORA' in df_prospeccao.columns else []
-                fases_count = df_prospeccao['FASE_CLASSIFICADA'].value_counts().to_dict()
+                progress_bar.progress(80)
+                # Extrair previsão de entrega de forma vetorizada
+                if "VIABILIDADE" in df_prospeccao.columns:
+                    df_prospeccao["PREVISAO_ENTREGA"] = extrair_previsao_entrega_vetorizado(df_prospeccao["VIABILIDADE"])
+                if "Previsão de Entrega" in df_prospeccao.columns:
+                    previsao2 = extrair_previsao_entrega_vetorizado(df_prospeccao["Previsão de Entrega"])
+                    # Combinar usando where (vetorizado)
+                    if "PREVISAO_ENTREGA" in df_prospeccao.columns:
+                        df_prospeccao["PREVISAO_ENTREGA"] = df_prospeccao["PREVISAO_ENTREGA"].where(
+                            df_prospeccao["PREVISAO_ENTREGA"].notna(), previsao2
+                        )
+                    else:
+                        df_prospeccao["PREVISAO_ENTREGA"] = previsao2
                 
+                progress_bar.progress(90)
+                # Calcular dias e prioridade de forma vetorizada
+                df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao.get("PREVISAO_ENTREGA"))
+                df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
+                
+                progress_bar.progress(95)
+                # Preparar metadados
+                fases_count = df_prospeccao["FASE_CLASSIFICADA"].value_counts().to_dict()
                 metadata = {
                     "timestamp": datetime.now().replace(tzinfo=None),
                     "batch_id": f"prospeccao_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                     "filename": uploaded_file.name,
                     "fases": fases_count,
-                    "construtoras": construtoras_list
+                    "construtoras": df_prospeccao["CONSTRUTORA"].dropna().unique().tolist() if "CONSTRUTORA" in df_prospeccao.columns else []
                 }
                 
-                # Salvar no MongoDB
-                if save_prospeccao_data_super_rapido(db, df_prospeccao, metadata):
+                progress_bar.progress(100)
+                if save_prospeccao_data(db, df_prospeccao, metadata):
                     elapsed_time = time.time() - start_time
-                    st.success(f"✅ Dados importados! {len(df_prospeccao)} projetos de {len(construtoras_list)} construtoras (Tempo: {elapsed_time:.2f}s)")
-                    st.balloons()
+                    st.success(f"✅ Dados importados! {len(df_prospeccao)} projetos de {len(metadata['construtoras'])} construtoras (Tempo: {elapsed_time:.2f}s)")
                     st.cache_data.clear()
                     if "df_prospeccao_cached" in st.session_state:
                         del st.session_state["df_prospeccao_cached"]
                     st.rerun()
                     
-            except Exception as e:
-                st.error(f"❌ Erro ao processar planilha: {str(e)}")
-                import traceback
-                with st.expander("Detalhes técnicos do erro"):
-                    st.code(traceback.format_exc())
+        except Exception as e:
+            st.error(f"❌ Erro ao processar planilha: {str(e)}")
+            import traceback
+            st.expander("Detalhes técnicos do erro").code(traceback.format_exc())
+        finally:
+            progress_bar.empty()
 
-    # CARREGAMENTO DOS DADOS
+    # ==================== CARREGAMENTO COM CACHE ====================
     elif st.session_state.get("reload_prospeccao") or "df_prospeccao_cached" not in st.session_state:
         with st.spinner('🔄 Carregando dados do banco...'):
             start_time = time.time()
@@ -572,15 +610,24 @@ def render_prospeccao_condominios():
             if result[0] is not None:
                 df_prospeccao, meta = result
                 
-                # Verificar e processar colunas faltantes
+                # Verificar e processar colunas faltantes (vetorizado)
                 if "FASE_CLASSIFICADA" not in df_prospeccao.columns and "ESTÁGIO" in df_prospeccao.columns:
-                    df_prospeccao = processar_dataframe_prospeccao(df_prospeccao)
+                    df_prospeccao["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(df_prospeccao["ESTÁGIO"])
+                
+                if "PREVISAO_ENTREGA" not in df_prospeccao.columns and "VIABILIDADE" in df_prospeccao.columns:
+                    df_prospeccao["PREVISAO_ENTREGA"] = extrair_previsao_entrega_vetorizado(df_prospeccao["VIABILIDADE"])
+                
+                if "DIAS_RESTANTES" not in df_prospeccao.columns and "PREVISAO_ENTREGA" in df_prospeccao.columns:
+                    df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao["PREVISAO_ENTREGA"])
+                    
+                if "PRIORIDADE" not in df_prospeccao.columns:
+                    df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
                 
                 st.session_state["df_prospeccao_cached"] = df_prospeccao
                 st.session_state["meta_cached"] = meta
                 
                 elapsed_time = time.time() - start_time
-                st.success(f"📦 Dados carregados! (Tempo: {elapsed_time:.2f}s)")
+                st.success(f"📦 Dados carregados e otimizados! (Tempo: {elapsed_time:.2f}s)")
             else:
                 st.info("👆 Faça upload da planilha para começar")
                 return
@@ -590,11 +637,6 @@ def render_prospeccao_condominios():
 
     if "reload_prospeccao" in st.session_state:
         del st.session_state["reload_prospeccao"]
-
-    # VERIFICAR SE HÁ DADOS
-    if df_prospeccao is None or df_prospeccao.empty:
-        st.info("👆 Faça upload da planilha para visualizar os dados")
-        return
 
     # ==================== ABAS PRINCIPAIS ====================
     tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5 = st.tabs([
@@ -607,108 +649,138 @@ def render_prospeccao_condominios():
         "📋 Lista Completa"
     ])
 
-    # ABA: ATUALIZAR EMPREENDIMENTOS
+    # --- LÓGICA DA ABA: ATUALIZAR EMPREENDIMENTOS ---
     with tab_update:
         st.header("✏️ Atualização de Cadastros")
         st.markdown("Filtre os empreendimentos e edite diretamente na tabela abaixo.")
         
-        c1, c2, c3, c4 = st.columns(4)
-        
-        construtoras_opts = sorted(df_prospeccao["CONSTRUTORA"].dropna().unique().tolist()) if "CONSTRUTORA" in df_prospeccao.columns else []
-        regioes_opts = sorted(df_prospeccao["Região"].dropna().unique().tolist()) if "Região" in df_prospeccao.columns else (sorted(df_prospeccao["ZONA"].dropna().unique().tolist()) if "ZONA" in df_prospeccao.columns else [])
-        fases_opts = sorted(df_prospeccao["FASE_CLASSIFICADA"].dropna().unique().tolist()) if "FASE_CLASSIFICADA" in df_prospeccao.columns else []
-        
-        with c1:
-            filter_construtora = st.multiselect("Construtora", options=construtoras_opts, placeholder="Todas")
-        with c2:
-            filter_regiao = st.multiselect("Região/Zona", options=regioes_opts, placeholder="Todas")
-        with c3:
-            filter_fase = st.multiselect("Estágio/Fase", options=fases_opts, placeholder="Todos")
-        with c4:
-            search_nome = st.text_input("Buscar por Nome", placeholder="Ex: MRV...")
-        
-        df_filtered = df_prospeccao.copy()
-        if filter_construtora:
-            df_filtered = df_filtered[df_filtered["CONSTRUTORA"].isin(filter_construtora)]
-        if filter_regiao:
-            col_reg = "Região" if "Região" in df_filtered.columns else "ZONA"
-            df_filtered = df_filtered[df_filtered[col_reg].isin(filter_regiao)]
-        if filter_fase:
-            df_filtered = df_filtered[df_filtered["FASE_CLASSIFICADA"].isin(filter_fase)]
-        if search_nome:
-            df_filtered = df_filtered[df_filtered["NOME"].str.contains(search_nome, case=False, na=False)]
-        
-        st.markdown(f"**{len(df_filtered)} registros encontrados para edição.**")
-        
-        if not df_filtered.empty and "_id" in df_filtered.columns:
-            cols_to_edit = ["NOME", "CONSTRUTORA", "BAIRRO", "Região" if "Região" in df_filtered.columns else "ZONA", 
-                            "ESTÁGIO", "VIABILIDADE", "APTO", "OBS", "PREVISAO_ENTREGA"]
+        if df_prospeccao is not None and not df_prospeccao.empty:
+            c1, c2, c3, c4 = st.columns(4)
             
-            cols_existing = [c for c in cols_to_edit if c in df_filtered.columns]
-            df_edit = df_filtered[cols_existing + ["_id"]].copy()
+            construtoras_opts = sorted(df_prospeccao["CONSTRUTORA"].dropna().unique().tolist()) if "CONSTRUTORA" in df_prospeccao.columns else []
+            regioes_opts = sorted(df_prospeccao["Região"].dropna().unique().tolist()) if "Região" in df_prospeccao.columns else (sorted(df_prospeccao["ZONA"].dropna().unique().tolist()) if "ZONA" in df_prospeccao.columns else [])
+            fases_opts = sorted(df_prospeccao["FASE_CLASSIFICADA"].dropna().unique().tolist()) if "FASE_CLASSIFICADA" in df_prospeccao.columns else []
             
-            column_config = {
-                "ESTÁGIO": st.column_config.SelectboxColumn(
-                    "Estágio da Obra",
-                    options=[
-                        "✅ Entramos", "💼 Em Negociação", "📢 Lançamento",
-                        "🚧 Início de Obra", "🔨 Obra em Andamento", "🏁 Final de Obra",
-                        "🎉 Entregue", "🏡 Pronto Para Morar", "📅 Futuro Lançamento", "❌ Não Entramos"
-                    ],
-                    required=True
+            with c1:
+                filter_construtora = st.multiselect("Construtora", options=construtoras_opts, placeholder="Todas")
+            with c2:
+                filter_regiao = st.multiselect("Região/Zona", options=regioes_opts, placeholder="Todas")
+            with c3:
+                filter_fase = st.multiselect("Estágio/Fase", options=fases_opts, placeholder="Todos")
+            with c4:
+                search_nome = st.text_input("Buscar por Nome", placeholder="Ex: MRV...")
+            
+            df_filtered = df_prospeccao.copy()
+            if filter_construtora:
+                df_filtered = df_filtered[df_filtered["CONSTRUTORA"].isin(filter_construtora)]
+            if filter_regiao:
+                col_reg = "Região" if "Região" in df_filtered.columns else "ZONA"
+                df_filtered = df_filtered[df_filtered[col_reg].isin(filter_regiao)]
+            if filter_fase:
+                df_filtered = df_filtered[df_filtered["FASE_CLASSIFICADA"].isin(filter_fase)]
+            if search_nome:
+                df_filtered = df_filtered[df_filtered["NOME"].str.contains(search_nome, case=False, na=False)]
+            
+            st.markdown(f"**{len(df_filtered)} registros encontrados para edição.**")
+            
+            if not df_filtered.empty:
+                cols_to_edit = ["NOME", "CONSTRUTORA", "BAIRRO", "Região" if "Região" in df_filtered.columns else "ZONA", 
+                                "ESTÁGIO", "VIABILIDADE", "APTO", "OBS", "PREVISAO_ENTREGA"]
+                
+                cols_existing = [c for c in cols_to_edit if c in df_filtered.columns]
+                
+                if "_id" not in df_filtered.columns:
+                    st.error("Erro interno: ID não encontrado nos dados filtrados.")
+                    st.stop()
+                
+                df_edit = df_filtered[cols_existing + ["_id"]].copy()
+                
+                # Configurar column_config
+                column_config = {
+                    "ESTÁGIO": st.column_config.SelectboxColumn(
+                        "Estágio da Obra",
+                        options=[
+                            "✅ Entramos", "💼 Em Negociação", "📢 Lançamento",
+                            "🚧 Início de Obra", "🔨 Obra em Andamento", "🏁 Final de Obra",
+                            "🎉 Entregue", "🏡 Pronto Para Morar", "📅 Futuro Lançamento", "❌ Não Entramos"
+                        ],
+                        required=True
+                    )
+                }
+                
+                edited_df = st.data_editor(
+                    df_edit.drop(columns=["_id"]),
+                    key="editor_prospeccao",
+                    use_container_width=True,
+                    num_rows="fixed",
+                    disabled=["_id"],
+                    column_config=column_config
                 )
-            }
-            
-            edited_df = st.data_editor(
-                df_edit.drop(columns=["_id"]),
-                key="editor_prospeccao",
-                use_container_width=True,
-                num_rows="fixed",
-                column_config=column_config
-            )
-            
-            if st.button("💾 Salvar Alterações", type="primary"):
-                if isinstance(edited_df, dict):
-                    edited_df = pd.DataFrame(edited_df)
                 
-                df_filtered_reset = df_filtered.reset_index(drop=True)
-                edited_df_reset = edited_df.reset_index(drop=True)
-                 
-                success_count = 0
-                progress_bar = st.progress(0)
+                st.warning("⚠️ Atenção: Ao editar a coluna 'ESTÁGIO', a 'Fase Classificada' será recalculada automaticamente ao salvar.")
                 
-                for i, row in edited_df_reset.iterrows():
-                    if i >= len(df_filtered_reset):
-                        break
+                if st.button("💾 Salvar Alterações Selecionadas", type="primary"):
+                    edited_df = st.session_state["editor_prospeccao"]
                     
-                    original_id = df_filtered_reset.iloc[i]["_id"]
-                    updates = row.to_dict()
+                    if isinstance(edited_df, dict):
+                        edited_df = pd.DataFrame(edited_df)
                     
-                    # Recriar DataFrame temporário para processamento
-                    temp_df = pd.DataFrame([updates])
-                    temp_df = processar_dataframe_prospeccao(temp_df)
-                    updates_processados = temp_df.iloc[0].to_dict()
+                    df_filtered_reset = df_filtered.reset_index(drop=True)
+                    edited_df_reset = edited_df.reset_index(drop=True)
+                     
+                    success_count = 0
+                    error_count = 0
                     
-                    if update_single_record(db, original_id, updates_processados):
-                        success_count += 1
+                    progress_bar = st.progress(0)
                     
-                    progress_bar.progress((i + 1) / len(edited_df_reset))
-                
-                progress_bar.empty()
-                if success_count > 0:
-                    st.success(f"✅ {success_count} registros atualizados!")
-                    st.cache_data.clear()
-                    if "df_prospeccao_cached" in st.session_state:
-                        del st.session_state["df_prospeccao_cached"]
-                    st.rerun()
-        elif not df_filtered.empty:
-            st.error("Erro: ID não encontrado nos dados.")
+                    for i, row in edited_df_reset.iterrows():
+                        if i >= len(df_filtered_reset):
+                            break
+                        
+                        original_id = df_filtered_reset.iloc[i]["_id"]
+                        updates = row.to_dict()
+                        
+                        if "ESTÁGIO" in updates:
+                            # Usar função vetorizada mesmo para um valor
+                            fase_series = pd.Series([updates["ESTÁGIO"]])
+                            updates["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(fase_series).iloc[0]
+                        
+                        if "VIABILIDADE" in updates:
+                            viab_series = pd.Series([updates["VIABILIDADE"]])
+                            updates["PREVISAO_ENTREGA"] = extrair_previsao_entrega_vetorizado(viab_series).iloc[0]
+                        
+                        if "PREVISAO_ENTREGA" in updates:
+                            previsao_series = pd.Series([updates["PREVISAO_ENTREGA"]])
+                            updates["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(previsao_series).iloc[0]
+                        
+                        temp_row = pd.Series(updates)
+                        updates["PRIORIDADE"] = calcular_prioridade_vetorizado(pd.DataFrame([temp_row])).iloc[0]
+                        
+                        if update_single_record(db, original_id, updates):
+                            success_count += 1
+                        else:
+                            error_count += 1
+                        
+                        progress_bar.progress((i + 1) / len(edited_df_reset))
+                    
+                    progress_bar.empty()
+                    if success_count > 0:
+                        st.success(f"✅ {success_count} registros atualizados com sucesso!")
+                        st.cache_data.clear()
+                        if "df_prospeccao_cached" in st.session_state:
+                            del st.session_state["df_prospeccao_cached"]
+                        st.rerun()
+                    if error_count > 0:
+                        st.error(f"❌ {error_count} registros falharam ao atualizar.")
+            else:
+                st.info("Nenhum registro encontrado com esses filtros.")
         else:
-            st.info("Nenhum registro encontrado com esses filtros.")
+            st.warning("Carregue dados primeiro.")
 
-    # ABA: NOVO CADASTRO
+    # --- LÓGICA DA ABA: NOVO CADASTRO ---
     with tab_new:
         st.header("➕ Novo Cadastro Manual")
+        st.markdown("Preencha os dados abaixo para adicionar um novo empreendimento ao banco.")
         
         with st.form("form_novo_empreendimento", clear_on_submit=True):
             c1, c2 = st.columns(2)
@@ -751,15 +823,15 @@ def render_prospeccao_condominios():
                     }
                     
                     if insert_new_record(db, new_data):
-                        st.success("✅ Empreendimento cadastrado!")
+                        st.success("✅ Empreendimento cadastrado com sucesso!")
                         st.cache_data.clear()
                         if "df_prospeccao_cached" in st.session_state:
                             del st.session_state["df_prospeccao_cached"]
                         st.rerun()
                     else:
-                        st.error("❌ Erro ao cadastrar.")
+                        st.error("❌ Erro ao cadastrar. Verifique os logs.")
 
-    # DASHBOARDS (apenas se houver dados)
+    # ==================== DASHBOARD PRINCIPAL ====================
     if df_prospeccao is not None and not df_prospeccao.empty:
         
         with tab_dash1:
@@ -776,133 +848,241 @@ def render_prospeccao_condominios():
                 if construtoras_sel:
                     df_construtoras_filt = df_construtoras[df_construtoras["CONSTRUTORA"].isin(construtoras_sel)]
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        fig1 = px.bar(df_construtoras_filt.head(10), x="total_projetos", y="CONSTRUTORA", orientation="h", 
-                                     title="Top 10 por Projetos", color="total_projetos", color_continuous_scale="Blues")
-                        fig1.update_layout(height=400)
+                    col_chart1, col_chart2 = st.columns(2)
+                    with col_chart1:
+                        fig1 = px.bar(df_construtoras_filt.head(10), x="total_projetos", y="CONSTRUTORA", orientation="h", title="Top 10 por Projetos", color="total_projetos", color_continuous_scale="Blues")
+                        fig1.update_layout(height=400, yaxis={"categoryorder": "total ascending"})
                         st.plotly_chart(fig1, use_container_width=True)
                     
-                    with col2:
-                        fig2 = px.bar(df_construtoras_filt.head(10), x="total_apartamentos", y="CONSTRUTORA", orientation="h", 
-                                     title="Top 10 por APTs", color="total_apartamentos", color_continuous_scale="Greens")
-                        fig2.update_layout(height=400)
+                    with col_chart2:
+                        fig2 = px.bar(df_construtoras_filt.head(10), x="total_apartamentos", y="CONSTRUTORA", orientation="h", title="Top 10 por APTs", color="total_apartamentos", color_continuous_scale="Greens")
+                        fig2.update_layout(height=400, yaxis={"categoryorder": "total ascending"})
                         st.plotly_chart(fig2, use_container_width=True)
                     
-                    st.dataframe(df_construtoras_filt[["CONSTRUTORA", "total_projetos", "total_apartamentos", 
-                                                       "percentual_entregue", "percentual_em_obra", "percentual_oportunidades"]], 
-                                use_container_width=True)
+                    st.markdown("### Composição de Fases por Construtora")
+                    fases_cols = ["projetos_entramos", "projetos_negociacao", "projetos_lancamento", "projetos_inicio_obra", "projetos_andamento", "projetos_final_obra", "projetos_entregue", "projetos_pronto_morar", "projetos_futuro"]
+                    fases_labels = ["✅ Entramos", "💼 Negociação", "📢 Lançam.", "🚧 Início", "🔨 Andamento", "🏁 Final", "🎉 Entregue", "🏡 P/Morar", "📅 Futuro"]
+                    
+                    df_fases_plot = df_construtoras_filt.head(8).copy().set_index("CONSTRUTORA")[fases_cols]
+                    df_fases_plot.columns = fases_labels
+                    
+                    fig3 = px.bar(df_fases_plot, barmode="stack", title="Distribuição de Fases (Top 8)", color_discrete_sequence=px.colors.qualitative.Set3)
+                    fig3.update_layout(height=500)
+                    st.plotly_chart(fig3, use_container_width=True)
+                      
+                    st.markdown("### Tabela Detalhada")
+                    df_display = df_construtoras_filt[["CONSTRUTORA", "total_projetos", "total_apartamentos", "percentual_entregue", "percentual_em_obra", "percentual_oportunidades"]].copy()
+                    df_display["total_apartamentos"] = df_display["total_apartamentos"].apply(lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "0")
+                    df_display["percentual_entregue"] = df_display["percentual_entregue"].apply(lambda x: f"{x:.1f}%")
+                    df_display["percentual_em_obra"] = df_display["percentual_em_obra"].apply(lambda x: f"{x:.1f}%")
+                    df_display["percentual_oportunidades"] = df_display["percentual_oportunidades"].apply(lambda x: f"{x:.1f}%")
+                    df_display.columns = ["Construtora", "Projetos", "Total APTs", "% Entregue", "% Em Obra", "% Oportunidades"]
+                    st.dataframe(df_display, use_container_width=True)
             else:
-                st.warning("Dados insuficientes para análise por construtora")
+                st.warning("⚠️ Dados insuficientes para análise por construtora")
         
         with tab_dash2:
             st.header("🗺️ Análise por Região")
             df_zonas = analisar_por_zona(df_prospeccao)
             if not df_zonas.empty:
                 col_zona = df_zonas.columns[0]
-                fig_zona = px.bar(df_zonas, x=col_zona, y="total_projetos", title="Projetos por Região", 
-                                 color="total_projetos", color_continuous_scale="Reds", text="total_projetos")
-                fig_zona.update_traces(texttemplate='%{text}', textposition='outside')
-                st.plotly_chart(fig_zona, use_container_width=True)
+                col_map1, col_map2 = st.columns(2)
+                  
+                with col_map1:
+                    fig_zona = px.bar(df_zonas, x=col_zona, y="total_projetos", color="total_projetos", color_continuous_scale="Reds", title="Projetos por Região", text="total_projetos")
+                    fig_zona.update_traces(texttemplate='%{text}', textposition='outside')
+                    st.plotly_chart(fig_zona, use_container_width=True)
+                
+                with col_map2:
+                    fig_oport = px.bar(df_zonas, x=col_zona, y="oportunidades", color="percentual_oportunidades", color_continuous_scale="Greens", title="Oportunidades por Região", text="oportunidades")
+                    fig_oport.update_traces(texttemplate='%{text}', textposition='outside')
+                    st.plotly_chart(fig_oport, use_container_width=True)
+                
+                if "BAIRRO" in df_prospeccao.columns:
+                    st.markdown("### Top 15 Bairros")
+                    bairros_stats = df_prospeccao.groupby("BAIRRO").agg(total_projetos=("NOME", "count")).reset_index().sort_values("total_projetos", ascending=False).head(15)
+                    fig_bairro = px.bar(bairros_stats, x="total_projetos", y="BAIRRO", orientation="h", title="Top 15 Bairros", color="total_projetos", color_continuous_scale="Blues")
+                    st.plotly_chart(fig_bairro, use_container_width=True)
+                
                 st.dataframe(df_zonas, use_container_width=True)
             else:
-                st.warning("Dados insuficientes para análise por região")
+                st.warning("⚠️ Dados insuficientes para análise por região")
         
         with tab_dash3:
             st.header("⏱️ Timeline de Entregas")
             df_timeline = timeline_entregas(df_prospeccao)
-            if not df_timeline.empty:
+            if not df_timeline.empty and "PREVISAO_ENTREGA" in df_timeline.columns:
                 anos_disp = sorted(df_timeline["ANO_ENTREGA"].dropna().unique().astype(int))
                 if anos_disp:
-                    ano_sel = st.selectbox("Filtrar por Ano", options=anos_disp, index=len(anos_disp)-1)
+                    ano_sel = st.selectbox("Filtrar por Ano de Entrega", options=anos_disp, index=len(anos_disp)-1)
                     df_timeline_filt = df_timeline[df_timeline["ANO_ENTREGA"] == ano_sel]
                     
+                    st.markdown(f"### 📅 Entregas Previstas para {int(ano_sel)}")
                     if not df_timeline_filt.empty:
-                        st.markdown(f"### Entregas Previstas para {ano_sel}")
-                        entregas_por_mes = df_timeline_filt.groupby("MES_ENTREGA").size().reset_index(name="total")
+                        entregas_por_mes = df_timeline_filt.groupby("MES_ENTREGA").agg(
+                            total_projetos=("NOME", "count"), 
+                            total_apartamentos=("APTO", lambda x: pd.to_numeric(x, errors='coerce').sum())
+                        ).reset_index()
                         entregas_por_mes["MES_ENTREGA"] = entregas_por_mes["MES_ENTREGA"].astype(str)
-                        fig = px.bar(entregas_por_mes, x="MES_ENTREGA", y="total", title=f"Distribuição Mensal ({ano_sel})")
-                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        fig_timeline = px.bar(entregas_por_mes, x="MES_ENTREGA", y="total_projetos", color="total_apartamentos", title=f"Distribuição Mensal ({int(ano_sel)})")
+                        st.plotly_chart(fig_timeline, use_container_width=True)
+                        
+                        st.markdown("### 🚨 Próximos 90 dias")
+                        entregas_proximas = df_timeline[df_timeline["DIAS_RESTANTES"] <= 90].sort_values("DIAS_RESTANTES")
+                        if not entregas_proximas.empty:
+                            for _, row in entregas_proximas.head(10).iterrows():
+                                dias = int(row["DIAS_RESTANTES"]) if pd.notna(row["DIAS_RESTANTES"]) else 0
+                                cor = "🔴" if dias <= 30 else "🟠" if dias <= 60 else "🟡"
+                                st.markdown(f"{cor} **{row['NOME']}** ({row.get('CONSTRUTORA', 'N/A')}) - {row.get('BAIRRO', '')} - {dias} dias")
+                        else:
+                            st.info("ℹ️ Nenhuma entrega nos próximos 90 dias")
+                        
+                        with st.expander("Ver Todas as Entregas de " + str(int(ano_sel))):
+                            cols_disp = ["NOME", "CONSTRUTORA", "BAIRRO", "APTO", "PREVISAO_ENTREGA", "DIAS_RESTANTES"]
+                            cols_existentes = [c for c in cols_disp if c in df_timeline_filt.columns]
+                            df_show = df_timeline_filt[cols_existentes].copy()
+                            if "PREVISAO_ENTREGA" in df_show.columns:
+                                mask_notna = df_show['PREVISAO_ENTREGA'].notna()
+                                df_show.loc[mask_notna, 'PREVISAO_ENTREGA'] = pd.to_datetime(df_show.loc[mask_notna, 'PREVISAO_ENTREGA']).dt.strftime('%d/%m/%Y')
+                                df_show.loc[~mask_notna, 'PREVISAO_ENTREGA'] = ''
+                            st.dataframe(df_show, use_container_width=True)
             else:
-                st.warning("Sem dados de previsão de entrega")
+                st.warning("⚠️ Sem dados de previsão de entrega.")
         
         with tab_dash4:
             st.header("🎯 Priorização de Ações")
             if "PRIORIDADE" in df_prospeccao.columns:
-                fig_pri = px.pie(values=df_prospeccao["PRIORIDADE"].value_counts().values, 
-                                names=df_prospeccao["PRIORIDADE"].value_counts().index, 
-                                title="Distribuição de Prioridades")
-                st.plotly_chart(fig_pri, use_container_width=True)
+                col_pri1, col_pri2 = st.columns(2)
                 
-                prioridades_disp = df_prospeccao["PRIORIDADE"].unique().tolist()
-                # CORREÇÃO: Verificar quais prioridades existem antes de definir defaults
-                default_prioridades = [p for p in ["🟢 Ação Imediata", "🟠 Alta Prioridade", "🔴 Urgente"] if p in prioridades_disp]
-                if not default_prioridades and prioridades_disp:
-                    default_prioridades = [prioridades_disp[0]]
+                with col_pri1:
+                    fig_pri = px.pie(values=df_prospeccao["PRIORIDADE"].value_counts().values, 
+                                    names=df_prospeccao["PRIORIDADE"].value_counts().index, 
+                                    title="Distribuição de Prioridades", 
+                                    color_discrete_map={
+                                        "🟢 Ação Imediata": "#2ecc71",
+                                        "🟠 Alta Prioridade": "#d35400",
+                                        "🔴 Urgente": "#e74c3c",
+                                        "🟠 Alta": "#e67e22",
+                                        "🟡 Média": "#f1c40f",
+                                        "🟡 Acompanhamento": "#9b59b6",
+                                        "🔵 Planejamento": "#3498db",
+                                        "⚪ Arquivado": "#95a5a6",
+                                        "⚪ Baixa": "#bdc3c7"
+                                    })
+                    st.plotly_chart(fig_pri, use_container_width=True)
                 
-                prioridade_sel = st.multiselect("Filtrar por Prioridade", options=prioridades_disp, 
-                                               default=default_prioridades)
-                if prioridade_sel:
-                    df_prioridade = df_prospeccao[df_prospeccao["PRIORIDADE"].isin(prioridade_sel)]
-                    st.dataframe(df_prioridade[["NOME", "CONSTRUTORA", "BAIRRO", "FASE_CLASSIFICADA", "PRIORIDADE"]], 
-                                use_container_width=True)
+                with col_pri2:
+                    prioridades_disp = df_prospeccao["PRIORIDADE"].unique().tolist()
+                    valid_defaults = [p for p in ["🟢 Ação Imediata", "🟠 Alta Prioridade", "🔴 Urgente"] if p in prioridades_disp]
+                    if not valid_defaults and prioridades_disp:
+                        valid_defaults = [prioridades_disp[0]]
+                    
+                    prioridade_sel = st.multiselect("Filtrar por Prioridade", options=prioridades_disp, default=valid_defaults, key="prioridade_filter")
+                    
+                    if prioridade_sel:
+                        df_prioridade = df_prospeccao[df_prospeccao["PRIORIDADE"].isin(prioridade_sel)]
+                        st.metric("Projetos Prioritários", f"{len(df_prioridade):,}".replace(",", "."))
+                        
+                        st.markdown("### 📋 Lista de Ação")
+                        cols_disp = ["NOME", "CONSTRUTORA", "BAIRRO", "FASE_CLASSIFICADA", "PRIORIDADE", "DIAS_RESTANTES"]
+                        cols_existentes = [c for c in cols_disp if c in df_prioridade.columns]
+                        df_show = df_prioridade[cols_existentes].copy()
+                          
+                        if "DIAS_RESTANTES" in df_show.columns:
+                            df_show["DIAS_RESTANTES"] = df_show["DIAS_RESTANTES"].apply(lambda x: f"{int(x)} dias" if pd.notna(x) else "-")
+                        
+                        st.dataframe(df_show, use_container_width=True)
+                        
+                        excel_buffer = io.BytesIO()
+                        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                            df_show.to_excel(writer, index=False, sheet_name='Prioritários')
+                        excel_buffer.seek(0)
+                        st.download_button("📥 Exportar Lista Prioritária", excel_buffer, f"prioritarios_{datetime.now().strftime('%Y%m%d')}.xlsx", 
+                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             else:
-                st.warning("Dados de prioridade indisponíveis")
+                st.warning("⚠️ Dados de prioridade indisponíveis")
         
+        # ==================== ABA LISTA COMPLETA ====================
         with tab_dash5:
             st.header("📋 Lista Completa de Projetos")
             
-            # Filtros
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if "Região" in df_prospeccao.columns:
-                    regioes = st.multiselect("Região", options=df_prospeccao["Região"].dropna().unique())
-                else:
-                    regioes = []
-            with col2:
-                if "CONSTRUTORA" in df_prospeccao.columns:
-                    construtoras = st.multiselect("Construtora", options=df_prospeccao["CONSTRUTORA"].dropna().unique())
-                else:
-                    construtoras = []
-            with col3:
-                if "FASE_CLASSIFICADA" in df_prospeccao.columns:
-                    fases = st.multiselect("Fase", options=df_prospeccao["FASE_CLASSIFICADA"].dropna().unique())
-                else:
-                    fases = []
+            col_f1, col_f2, col_f3 = st.columns(3)
+            
+            col_regiao = "Região" if "Região" in df_prospeccao.columns else "ZONA" if "ZONA" in df_prospeccao.columns else None
+            
+            with col_f1:
+                zonas_disp = df_prospeccao[col_regiao].dropna().unique().tolist() if col_regiao else []
+                zona_sel = st.multiselect("Região", options=zonas_disp, key="lista_zona")
+            with col_f2:
+                construtoras_disp = df_prospeccao["CONSTRUTORA"].dropna().unique().tolist() if "CONSTRUTORA" in df_prospeccao.columns else []
+                construtora_sel = st.multiselect("Construtora", options=construtoras_disp, key="lista_construtora")
+            with col_f3:
+                fases_disp = df_prospeccao["FASE_CLASSIFICADA"].dropna().unique().tolist() if "FASE_CLASSIFICADA" in df_prospeccao.columns else []
+                fase_sel = st.multiselect("Fase", options=fases_disp, key="lista_fase")
             
             df_filt = df_prospeccao.copy()
-            if regioes:
-                df_filt = df_filt[df_filt["Região"].isin(regioes)]
-            if construtoras:
-                df_filt = df_filt[df_filt["CONSTRUTORA"].isin(construtoras)]
-            if fases:
-                df_filt = df_filt[df_filt["FASE_CLASSIFICADA"].isin(fases)]
+            if zona_sel and col_regiao:
+                df_filt = df_filt[df_filt[col_regiao].isin(zona_sel)]
+            if construtora_sel:  
+                df_filt = df_filt[df_filt["CONSTRUTORA"].isin(construtora_sel)]
+            if fase_sel:
+                df_filt = df_filt[df_filt["FASE_CLASSIFICADA"].isin(fase_sel)]
             
-            st.markdown(f"**{len(df_filt)} projetos encontrados**")
+            st.markdown(f"### 📊 {len(df_filt)} projetos encontrados")
             
             colunas_display = ["NOME", "CONSTRUTORA", "BAIRRO", "Região", "FASE_CLASSIFICADA", "APTO", "PRIORIDADE"]
             colunas_existentes = [c for c in colunas_display if c in df_filt.columns]
-            st.dataframe(df_filt[colunas_existentes], use_container_width=True)
+            df_lista = df_filt[colunas_existentes].copy()
             
-            # Exportação
+            if "APTO" in df_lista.columns:
+                df_lista["APTO"] = df_lista["APTO"].apply(lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "N/A")
+            
+            col_names = {"NOME": "Condomínio", "CONSTRUTORA": "Construtora", "BAIRRO": "Bairro", "Região": "Região", "FASE_CLASSIFICADA": "Fase", "APTO": "APTs", "PRIORIDADE": "Prioridade"}
+            df_lista = df_lista.rename(columns={k: v for k, v in col_names.items() if k in df_lista.columns})
+            
+            st.dataframe(df_lista, use_container_width=True)
+              
+            # === BOTÃO DE EXPORTAÇÃO ===
             st.markdown("---")
+            st.subheader("📎 Exportar Dados")
+            
+            df_construtoras_resumo = analisar_por_construtora(df_filt)
+            df_zonas_resumo = analisar_por_zona(df_filt)
+            excel_buffer = exportar_prospeccao_excel(df_filt, df_construtoras_resumo, df_zonas_resumo)
+            
             col_exp1, col_exp2 = st.columns([3, 1])
             with col_exp1:
-                df_construtoras_resumo = analisar_por_construtora(df_filt)
-                df_zonas_resumo = analisar_por_zona(df_filt)
-                excel_buffer = exportar_prospeccao_excel(df_filt, df_construtoras_resumo, df_zonas_resumo)
-                
                 st.download_button(
-                    label="📥 Exportar para Excel",
+                    label="📥 Exportar Lista Completa (Excel com Abas por Fase)",
                     data=excel_buffer,
-                    file_name=f"prospeccao_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    file_name=f"prospeccao_completa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             with col_exp2:
-                st.info("Exporta com abas separadas por fase!")
+                st.info(f"""
+                **Estrutura do Excel:**
+                - 📊 Resumo Executivo
+                - 📋 Completo
+                - 00: ✅ Entramos
+                - 01: 💼 Em Negociação
+                - 02-09: Outras Fases
+                - 10: Por Construtora
+                - 11: Por Região
+                """)
+        
+        st.markdown("---")
+        st.markdown("""
+        ### 💡 Dicas Rápidas:
+        - Use a aba **✏️ Atualizar Empreendimentos** para corrigir fases ou adicionar observações rapidamente.
+        - A fase **✅ Entramos** destaca projetos confirmados com alta prioridade (🟢 Ação Imediata).
+        - A fase **🎉 Entregue** identifica projetos já concluídos.
+        - A exportação gera um Excel com **abas separadas por fase** para facilitar o trabalho de campo.
+        """)
+    else:
+        st.info("👆 Faça upload da planilha para visualizar os dados")
 
 
-# ==================== PONTO DE ENTRADA ====================
 if __name__ == "__main__":
     render_prospeccao_condominios()
