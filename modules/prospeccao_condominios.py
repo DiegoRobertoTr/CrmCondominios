@@ -42,21 +42,51 @@ def classificar_fase_vetorizado(fases_series):
 
 @st.cache_data
 def extrair_previsao_entrega_vetorizado(viabilidade_series):
-    """Versão vetorizada para extrair previsão de entrega"""
+    """Versão vetorizada para extrair previsão de entrega - CORRIGIDA SEM WARNINGS"""
     if viabilidade_series is None:
         return pd.Series([None] * len(viabilidade_series))
     
     viabilidade_str = viabilidade_series.fillna('').astype(str)
-    data_encontrada = viabilidade_str.str.extract(r'(\d{2}/\d{2}/\d{2,4})', expand=False)
     
-    mask_sem_data = data_encontrada.isna()
-    if mask_sem_data.any():
-        data_mes_ano = viabilidade_str[mask_sem_data].str.extract(r'(\d{2}/\d{4})', expand=False)
-        data_encontrada[mask_sem_data] = data_mes_ano
-        mask_so_mes_ano = data_encontrada.notna() & (data_encontrada.str.len() == 7)
-        data_encontrada[mask_so_mes_ano] = '01/' + data_encontrada[mask_so_mes_ano]
+    # Inicializar resultado com None
+    resultado = pd.Series([None] * len(viabilidade_str), index=viabilidade_str.index)
     
-    return pd.to_datetime(data_encontrada, errors='coerce', dayfirst=True)
+    # Tentar extrair data com regex de forma vetorizada
+    # Primeiro: formato DD/MM/YYYY
+    data_encontrada = viabilidade_str.str.extract(r'(\d{2}/\d{2}/\d{4})', expand=False)
+    mask_ddmmyyyy = data_encontrada.notna()
+    if mask_ddmmyyyy.any():
+        resultado[mask_ddmmyyyy] = pd.to_datetime(data_encontrada[mask_ddmmyyyy], format='%d/%m/%Y', errors='coerce')
+    
+    # Segundo: formato DD/MM/YY
+    mask_restante = resultado.isna()
+    if mask_restante.any():
+        data_ddmmyy = viabilidade_str[mask_restante].str.extract(r'(\d{2}/\d{2}/\d{2})', expand=False)
+        mask_ddmmyy = data_ddmmyy.notna()
+        if mask_ddmmyy.any():
+            idx = resultado[mask_restante].index[mask_ddmmyy]
+            resultado.loc[idx] = pd.to_datetime(data_ddmmyy[mask_ddmmyy], format='%d/%m/%y', errors='coerce')
+    
+    # Terceiro: formato YYYY-MM-DD (ISO)
+    mask_restante = resultado.isna()
+    if mask_restante.any():
+        data_iso = viabilidade_str[mask_restante].str.extract(r'(\d{4}-\d{2}-\d{2})', expand=False)
+        mask_iso = data_iso.notna()
+        if mask_iso.any():
+            idx = resultado[mask_restante].index[mask_iso]
+            resultado.loc[idx] = pd.to_datetime(data_iso[mask_iso], format='%Y-%m-%d', errors='coerce')
+    
+    # Quarto: formato MM/YYYY (adiciona dia 01)
+    mask_restante = resultado.isna()
+    if mask_restante.any():
+        data_mes_ano = viabilidade_str[mask_restante].str.extract(r'(\d{2}/\d{4})', expand=False)
+        mask_mes_ano = data_mes_ano.notna()
+        if mask_mes_ano.any():
+            idx = resultado[mask_restante].index[mask_mes_ano]
+            data_com_dia = '01/' + data_mes_ano[mask_mes_ano]
+            resultado.loc[idx] = pd.to_datetime(data_com_dia, format='%d/%m/%Y', errors='coerce')
+    
+    return resultado
 
 
 @st.cache_data
@@ -132,7 +162,7 @@ def init_mongo():
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
 def save_prospeccao_data(db, df_prospeccao, metadata):
-    """Salva dados de prospecção no MongoDB - VERSÃO DEFINITIVAMENTE CORRIGIDA"""
+    """Salva dados de prospecção no MongoDB - VERSÃO ULTRA ROBUSTA SEM WARNINGS"""
     collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
     batch_id = metadata["batch_id"]
@@ -144,36 +174,58 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
     # Preparar dados
     df_para_salvar = df_prospeccao.copy()
     
-    # ✅ REMOVER A COLUNA PROBLEMÁTICA 'Prazo Medio' se existir
-    if 'Prazo Medio' in df_para_salvar.columns:
-        df_para_salvar = df_para_salvar.drop(columns=['Prazo Medio'])
-        print("✅ Coluna 'Prazo Medio' removida")
+    # ✅ REMOVER TODAS AS COLUNAS PROBLEMÁTICAS
+    colunas_para_remover = ['Prazo Medio', 'Prazo_Medio', 'prazo_medio', 'Prazo médio']
+    for col in colunas_para_remover:
+        if col in df_para_salvar.columns:
+            df_para_salvar = df_para_salvar.drop(columns=[col])
     
-    # ✅ CONVERTER APENAS A COLUNA 'Previsão de Entrega' (se existir)
-    if 'Previsão de Entrega' in df_para_salvar.columns:
-        df_para_salvar['Previsão de Entrega'] = pd.to_datetime(df_para_salvar['Previsão de Entrega'], errors='coerce')
-        print("✅ Coluna 'Previsão de Entrega' convertida")
-    
-    if 'PREVISAO_ENTREGA' in df_para_salvar.columns:
-        df_para_salvar['PREVISAO_ENTREGA'] = pd.to_datetime(df_para_salvar['PREVISAO_ENTREGA'], errors='coerce')
-        print("✅ Coluna 'PREVISAO_ENTREGA' convertida")
-    
-    # ✅ CONVERTER 'Data da Atualização' se existir
+    # ✅ CONVERTER APENAS COLUNAS ESPECÍFICAS DE DATA
+    # Coluna 'Data da Atualização'
     if 'Data da Atualização' in df_para_salvar.columns:
-        df_para_salvar['Data da Atualização'] = pd.to_datetime(df_para_salvar['Data da Atualização'], errors='coerce')
+        # Extrair apenas a data (sem hora) e converter
+        data_str = df_para_salvar['Data da Atualização'].astype(str).str[:10]
+        df_para_salvar['Data da Atualização'] = pd.to_datetime(data_str, format='%Y-%m-%d', errors='coerce')
+    
+    # Coluna 'Previsão de Entrega'
+    if 'Previsão de Entrega' in df_para_salvar.columns:
+        previsao_str = df_para_salvar['Previsão de Entrega'].astype(str)
+        # Tentar formato ISO
+        df_para_salvar['Previsão de Entrega'] = pd.to_datetime(previsao_str, format='%Y-%m-%d', errors='coerce')
+        # Se falhou, tentar formato DD/MM/YYYY
+        mask_nat = df_para_salvar['Previsão de Entrega'].isna()
+        if mask_nat.any():
+            df_para_salvar.loc[mask_nat, 'Previsão de Entrega'] = pd.to_datetime(
+                previsao_str[mask_nat], format='%d/%m/%Y', errors='coerce'
+            )
+    
+    # Coluna 'PREVISAO_ENTREGA' (se existir)
+    if 'PREVISAO_ENTREGA' in df_para_salvar.columns:
+        previsao_str = df_para_salvar['PREVISAO_ENTREGA'].astype(str)
+        df_para_salvar['PREVISAO_ENTREGA'] = pd.to_datetime(previsao_str, format='%Y-%m-%d', errors='coerce')
+        mask_nat = df_para_salvar['PREVISAO_ENTREGA'].isna()
+        if mask_nat.any():
+            df_para_salvar.loc[mask_nat, 'PREVISAO_ENTREGA'] = pd.to_datetime(
+                previsao_str[mask_nat], format='%d/%m/%Y', errors='coerce'
+            )
     
     # ✅ GARANTIR QUE COLUNAS DE TEXTO NÃO SEJAM CONVERTIDAS
-    colunas_texto = ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'FASE_CLASSIFICADA', 'PRIORIDADE']
+    colunas_texto = ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'FASE_CLASSIFICADA', 
+                     'PRIORIDADE', 'CONSTRUTORA', 'NOME', 'BAIRRO', 'Região', 'ENDEREÇO', 'BLOCO']
     for col in colunas_texto:
         if col in df_para_salvar.columns:
             df_para_salvar[col] = df_para_salvar[col].astype(str).fillna('')
-            df_para_salvar[col] = df_para_salvar[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN', 'NaT'], '')
+            df_para_salvar[col] = df_para_salvar[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN', 'None', ''], '')
     
     # ✅ TRATAR VALORES NUMÉRICOS
-    colunas_numericas = ['APTO', 'DIAS_RESTANTES', 'BLOCO']
-    for col in colunas_numericas:
-        if col in df_para_salvar.columns:
-            df_para_salvar[col] = pd.to_numeric(df_para_salvar[col], errors='coerce')
+    if 'APTO' in df_para_salvar.columns:
+        df_para_salvar['APTO'] = pd.to_numeric(df_para_salvar['APTO'], errors='coerce').fillna(0).astype(int)
+    
+    if 'DIAS_RESTANTES' in df_para_salvar.columns:
+        df_para_salvar['DIAS_RESTANTES'] = pd.to_numeric(df_para_salvar['DIAS_RESTANTES'], errors='coerce')
+    
+    if 'BLOCO' in df_para_salvar.columns:
+        df_para_salvar['BLOCO'] = pd.to_numeric(df_para_salvar['BLOCO'], errors='coerce').fillna(0).astype(int)
     
     # Adicionar metadados
     df_para_salvar["_import_timestamp"] = datetime.now().replace(tzinfo=None)
@@ -603,10 +655,9 @@ def render_prospeccao_condominios():
                     st.error("❌ Coluna 'ESTÁGIO' não encontrada na planilha!")
                     st.stop()
                 
-                # ⚡ REMOVER A COLUNA 'Prazo Medio' se existir (ANTES DE QUALQUER PROCESSAMENTO)
+                # ⚡ REMOVER A COLUNA 'Prazo Medio' se existir
                 if 'Prazo Medio' in df_prospeccao.columns:
                     df_prospeccao = df_prospeccao.drop(columns=['Prazo Medio'])
-                    st.info("ℹ️ Coluna 'Prazo Medio' removida para evitar erros de conversão")
                 
                 df_prospeccao["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(df_prospeccao["ESTÁGIO"])
                 df_prospeccao["FASE_ORIGINAL"] = df_prospeccao["ESTÁGIO"]
