@@ -42,7 +42,7 @@ def classificar_fase_vetorizado(fases_series):
 
 @st.cache_data
 def extrair_previsao_entrega_vetorizado(viabilidade_series):
-    """Versão vetorizada para extrair previsão de entrega - CORRIGIDA SEM WARNINGS"""
+    """Versão otimizada para extrair previsão de entrega - CORRIGIDA PARA DATA ABREVIADA"""
     if viabilidade_series is None:
         return pd.Series([None] * len(viabilidade_series))
     
@@ -51,40 +51,36 @@ def extrair_previsao_entrega_vetorizado(viabilidade_series):
     # Inicializar resultado com None
     resultado = pd.Series([None] * len(viabilidade_str), index=viabilidade_str.index)
     
-    # Tentar extrair data com regex de forma vetorizada
-    # Primeiro: formato DD/MM/YYYY
-    data_encontrada = viabilidade_str.str.extract(r'(\d{2}/\d{2}/\d{4})', expand=False)
-    mask_ddmmyyyy = data_encontrada.notna()
-    if mask_ddmmyyyy.any():
-        resultado[mask_ddmmyyyy] = pd.to_datetime(data_encontrada[mask_ddmmyyyy], format='%d/%m/%Y', errors='coerce')
+    # Padrões de data suportados
+    padroes = [
+        (r'(\d{2}/\d{2}/\d{4})', '%d/%m/%Y'),      # DD/MM/YYYY
+        (r'(\d{4}-\d{2}-\d{2})', '%Y-%m-%d'),      # YYYY-MM-DD
+        (r'(\d{2}/\d{2}/\d{2})', '%d/%m/%y'),      # DD/MM/YY
+        (r'(\d{2}/\d{4})', '%d/%m/%Y'),            # MM/YYYY (adiciona dia 01)
+        (r'(\d{4})', '%Y'),                        # Apenas ano (usa 01/01)
+    ]
     
-    # Segundo: formato DD/MM/YY
-    mask_restante = resultado.isna()
-    if mask_restante.any():
-        data_ddmmyy = viabilidade_str[mask_restante].str.extract(r'(\d{2}/\d{2}/\d{2})', expand=False)
-        mask_ddmmyy = data_ddmmyy.notna()
-        if mask_ddmmyy.any():
-            idx = resultado[mask_restante].index[mask_ddmmyy]
-            resultado.loc[idx] = pd.to_datetime(data_ddmmyy[mask_ddmmyy], format='%d/%m/%y', errors='coerce')
-    
-    # Terceiro: formato YYYY-MM-DD (ISO)
-    mask_restante = resultado.isna()
-    if mask_restante.any():
-        data_iso = viabilidade_str[mask_restante].str.extract(r'(\d{4}-\d{2}-\d{2})', expand=False)
-        mask_iso = data_iso.notna()
-        if mask_iso.any():
-            idx = resultado[mask_restante].index[mask_iso]
-            resultado.loc[idx] = pd.to_datetime(data_iso[mask_iso], format='%Y-%m-%d', errors='coerce')
-    
-    # Quarto: formato MM/YYYY (adiciona dia 01)
-    mask_restante = resultado.isna()
-    if mask_restante.any():
-        data_mes_ano = viabilidade_str[mask_restante].str.extract(r'(\d{2}/\d{4})', expand=False)
-        mask_mes_ano = data_mes_ano.notna()
-        if mask_mes_ano.any():
-            idx = resultado[mask_restante].index[mask_mes_ano]
-            data_com_dia = '01/' + data_mes_ano[mask_mes_ano]
-            resultado.loc[idx] = pd.to_datetime(data_com_dia, format='%d/%m/%Y', errors='coerce')
+    for padrao, formato in padroes:
+        mask_restante = resultado.isna()
+        if not mask_restante.any():
+            break
+            
+        extraido = viabilidade_str[mask_restante].str.extract(padrao, expand=False)
+        mask_encontrado = extraido.notna()
+        
+        if mask_encontrado.any():
+            idx = resultado[mask_restante].index[mask_encontrado]
+            valores = extraido[mask_encontrado]
+            
+            if padrao == r'(\d{2}/\d{4})':
+                # Adicionar dia 01 para formato MM/YYYY
+                valores = '01/' + valores
+            elif padrao == r'(\d{4})':
+                # Criar data 01/01/AAAA para apenas ano
+                valores = '01/01/' + valores
+                formato = '%d/%m/%Y'
+            
+            resultado.loc[idx] = pd.to_datetime(valores, format=formato, errors='coerce')
     
     return resultado
 
@@ -162,7 +158,7 @@ def init_mongo():
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
 def save_prospeccao_data(db, df_prospeccao, metadata):
-    """Salva dados de prospecção no MongoDB - COM LIMPEZA CORRETA"""
+    """Salva dados de prospecção no MongoDB - COM PRÉ-PROCESSAMENTO DE DATAS"""
     collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
     batch_id = metadata["batch_id"]
@@ -182,34 +178,81 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
     # Preparar dados
     df_para_salvar = df_prospeccao.copy()
     
-    # ✅ REMOVER TODAS AS COLUNAS PROBLEMÁTICAS
+    # ✅ REMOVER COLUNAS PROBLEMÁTICAS
     colunas_para_remover = ['Prazo Medio', 'Prazo_Medio', 'prazo_medio', 'Prazo médio']
     for col in colunas_para_remover:
         if col in df_para_salvar.columns:
             df_para_salvar = df_para_salvar.drop(columns=[col])
     
-    # ✅ CONVERTER APENAS COLUNAS ESPECÍFICAS DE DATA
+    # ✅ PRÉ-PROCESSAMENTO DA COLUNA 'Previsão de Entrega' (DATA ABREVIADA)
+    if 'Previsão de Entrega' in df_para_salvar.columns:
+        # Converter para string e limpar
+        previsao_str = df_para_salvar['Previsão de Entrega'].astype(str).str.strip()
+        
+        # Inicializar coluna como NaT
+        df_para_salvar['Previsão de Entrega'] = pd.NaT
+        
+        # 1. Tentar converter formato ISO (YYYY-MM-DD)
+        mask_iso = previsao_str.str.match(r'^\d{4}-\d{2}-\d{2}', na=False)
+        if mask_iso.any():
+            df_para_salvar.loc[mask_iso, 'Previsão de Entrega'] = pd.to_datetime(
+                previsao_str[mask_iso].str[:10], format='%Y-%m-%d', errors='coerce'
+            )
+        
+        # 2. Tentar converter formato DD/MM/YYYY
+        mask_restante = df_para_salvar['Previsão de Entrega'].isna()
+        if mask_restante.any():
+            mask_ddmmyyyy = previsao_str[mask_restante].str.match(r'^\d{2}/\d{2}/\d{4}', na=False)
+            if mask_ddmmyyyy.any():
+                idx = df_para_salvar[mask_restante].index[mask_ddmmyyyy]
+                df_para_salvar.loc[idx, 'Previsão de Entrega'] = pd.to_datetime(
+                    previsao_str.loc[idx], format='%d/%m/%Y', errors='coerce'
+                )
+        
+        # 3. Tentar converter formato DD/MM/YY
+        mask_restante = df_para_salvar['Previsão de Entrega'].isna()
+        if mask_restante.any():
+            mask_ddmmyy = previsao_str[mask_restante].str.match(r'^\d{2}/\d{2}/\d{2}', na=False)
+            if mask_ddmmyy.any():
+                idx = df_para_salvar[mask_restante].index[mask_ddmmyy]
+                df_para_salvar.loc[idx, 'Previsão de Entrega'] = pd.to_datetime(
+                    previsao_str.loc[idx], format='%d/%m/%y', errors='coerce'
+                )
+        
+        # 4. Tentar converter apenas ano (YYYY)
+        mask_restante = df_para_salvar['Previsão de Entrega'].isna()
+        if mask_restante.any():
+            mask_ano = previsao_str[mask_restante].str.match(r'^\d{4}$', na=False)
+            if mask_ano.any():
+                idx = df_para_salvar[mask_restante].index[mask_ano]
+                df_para_salvar.loc[idx, 'Previsão de Entrega'] = pd.to_datetime(
+                    '01/01/' + previsao_str.loc[idx], format='%d/%m/%Y', errors='coerce'
+                )
+    
+    # ✅ CONVERTER 'Data da Atualização'
     if 'Data da Atualização' in df_para_salvar.columns:
         data_str = df_para_salvar['Data da Atualização'].astype(str).str[:10]
         df_para_salvar['Data da Atualização'] = pd.to_datetime(data_str, format='%Y-%m-%d', errors='coerce')
     
-    if 'Previsão de Entrega' in df_para_salvar.columns:
-        previsao_str = df_para_salvar['Previsão de Entrega'].astype(str)
-        df_para_salvar['Previsão de Entrega'] = pd.to_datetime(previsao_str, format='%Y-%m-%d', errors='coerce')
-        mask_nat = df_para_salvar['Previsão de Entrega'].isna()
-        if mask_nat.any():
-            df_para_salvar.loc[mask_nat, 'Previsão de Entrega'] = pd.to_datetime(
-                previsao_str[mask_nat], format='%d/%m/%Y', errors='coerce'
-            )
-    
+    # ✅ CONVERTER 'PREVISAO_ENTREGA' (se existir)
     if 'PREVISAO_ENTREGA' in df_para_salvar.columns:
-        previsao_str = df_para_salvar['PREVISAO_ENTREGA'].astype(str)
-        df_para_salvar['PREVISAO_ENTREGA'] = pd.to_datetime(previsao_str, format='%Y-%m-%d', errors='coerce')
-        mask_nat = df_para_salvar['PREVISAO_ENTREGA'].isna()
-        if mask_nat.any():
-            df_para_salvar.loc[mask_nat, 'PREVISAO_ENTREGA'] = pd.to_datetime(
-                previsao_str[mask_nat], format='%d/%m/%Y', errors='coerce'
+        previsao_str = df_para_salvar['PREVISAO_ENTREGA'].astype(str).str.strip()
+        df_para_salvar['PREVISAO_ENTREGA'] = pd.NaT
+        
+        mask_iso = previsao_str.str.match(r'^\d{4}-\d{2}-\d{2}', na=False)
+        if mask_iso.any():
+            df_para_salvar.loc[mask_iso, 'PREVISAO_ENTREGA'] = pd.to_datetime(
+                previsao_str[mask_iso].str[:10], format='%Y-%m-%d', errors='coerce'
             )
+        
+        mask_restante = df_para_salvar['PREVISAO_ENTREGA'].isna()
+        if mask_restante.any():
+            mask_ddmmyyyy = previsao_str[mask_restante].str.match(r'^\d{2}/\d{2}/\d{4}', na=False)
+            if mask_ddmmyyyy.any():
+                idx = df_para_salvar[mask_restante].index[mask_ddmmyyyy]
+                df_para_salvar.loc[idx, 'PREVISAO_ENTREGA'] = pd.to_datetime(
+                    previsao_str.loc[idx], format='%d/%m/%Y', errors='coerce'
+                )
     
     # ✅ GARANTIR QUE COLUNAS DE TEXTO NÃO SEJAM CONVERTIDAS
     colunas_texto = ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'FASE_CLASSIFICADA', 
@@ -265,12 +308,10 @@ def clear_prospeccao_data(db, batch_id=None):
     meta_collection = db["prospeccao_meta"]
     
     if batch_id:
-        # Limpar apenas um batch específico
         result = collection.delete_many({"_import_batch": batch_id})
         meta_collection.delete_many({"batch_id": batch_id})
         return result.deleted_count
     else:
-        # Limpar TODOS os dados
         result = collection.delete_many({})
         meta_collection.delete_many({})
         return result.deleted_count
@@ -286,7 +327,6 @@ def limpar_todas_duplicatas(db):
     if total_antes > 0:
         collection.delete_many({})
         meta_collection.delete_many({})
-        
         return total_antes
     return 0
 
@@ -295,7 +335,6 @@ def verificar_duplicatas(db):
     """Verifica se há registros duplicados no banco"""
     collection = db["prospeccao_condominios"]
     
-    # Contar por batch_id
     pipeline = [
         {"$group": {
             "_id": "$_import_batch",
@@ -638,14 +677,13 @@ def render_prospeccao_condominios():
     
     st.markdown("---")
     
-    # ==================== BOTÃO DE LIMPEZA TOTAL (URGENTE) ====================
+    # ==================== BOTÃO DE LIMPEZA TOTAL ====================
     with st.expander("⚠️ FERRAMENTAS DE MANUTENÇÃO (Administrador)", expanded=False):
         st.warning("⚠️ Use estas ferramentas com cuidado! Elas removem dados permanentemente.")
         
         col_limpeza1, col_limpeza2, col_limpeza3 = st.columns(3)
         
         with col_limpeza1:
-            # Botão para verificar duplicatas
             if st.button("🔍 Verificar Duplicatas", key="btn_verificar"):
                 total, num_batches = verificar_duplicatas(db)
                 st.metric("Total de registros no banco", f"{total:,}")
@@ -654,12 +692,10 @@ def render_prospeccao_condominios():
                     st.error(f"⚠️ Atenção! {num_batches} batches encontrados. Isso indica duplicação!")
         
         with col_limpeza2:
-            # Botão para limpar todas as duplicatas (URGENTE)
-            if st.button("🗑️ LIMPAR TODOS OS DADOS (URGENTE)", key="btn_limpar_tudo"):
+            if st.button("🗑️ LIMPAR TODOS OS DADOS", key="btn_limpar_tudo"):
                 st.session_state['confirmar_limpeza_total'] = True
         
         with col_limpeza3:
-            # Botão para limpar apenas dados antigos (manter mais recente)
             if st.button("🧹 Manter Apenas Último Lote", key="btn_manter_ultimo"):
                 st.session_state['confirmar_manter_ultimo'] = True
         
@@ -694,11 +730,9 @@ def render_prospeccao_condominios():
                     collection = db["prospeccao_condominios"]
                     meta_collection = db["prospeccao_meta"]
                     
-                    # Buscar último batch
                     ultimo_meta = meta_collection.find_one(sort=[("timestamp", -1)])
                     if ultimo_meta:
                         ultimo_batch = ultimo_meta.get("batch_id")
-                        # Remover todos os outros batches
                         resultado = collection.delete_many({"_import_batch": {"$ne": ultimo_batch}})
                         meta_collection.delete_many({"batch_id": {"$ne": ultimo_batch}})
                         st.success(f"✅ Removidos {resultado.deleted_count:,} registros antigos. Mantido apenas o batch mais recente.")
