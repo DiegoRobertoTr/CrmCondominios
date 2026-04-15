@@ -49,6 +49,29 @@ def update_lead_status(lead_id, novo_status, convertido=False):
         st.error(f"Erro ao atualizar: {e}")
         return False
 
+def delete_lead(lead_id):
+    """Exclui um lead do banco de dados"""
+    try:
+        collection = get_leads_collection()
+        result = collection.delete_one({"_id": ObjectId(lead_id)})
+        return result.deleted_count > 0
+    except Exception as e:
+        st.error(f"Erro ao excluir: {e}")
+        return False
+
+def update_lead_observacoes(lead_id, novas_observacoes):
+    """Atualiza apenas as observações de um lead"""
+    try:
+        collection = get_leads_collection()
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)}, 
+            {"$set": {"observacoes": novas_observacoes}}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar observações: {e}")
+        return False
+
 def get_eventos_existentes():
     """Busca todos os nomes de eventos já cadastrados no banco"""
     try:
@@ -63,7 +86,7 @@ def get_eventos_existentes():
         eventos = [r["_id"] for r in resultados if r["_id"]]
         return sorted(eventos)
     except Exception as e:
-        st.warning(f"️ Não foi possível carregar eventos anteriores: {e}")
+        st.warning(f"⚠️ Não foi possível carregar eventos anteriores: {e}")
         return []
 
 # --- Módulo de Registro de Leads ---
@@ -84,11 +107,15 @@ def render_registro_lead():
     # Busca eventos existentes para autocomplete
     eventos_existentes = get_eventos_existentes()
     
-    with st.form("form_lead_evento"):
+    # Inicializa session_state para controle do formulário
+    if "form_cleared" not in st.session_state:
+        st.session_state.form_cleared = False
+    
+    with st.form("form_lead_evento", clear_on_submit=True):
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📋 Dados do Contato")
+            st.subheader(" Dados do Contato")
             tipo_contato = st.selectbox("Tipo de Contato *", ["Síndico / Cliente", "Parceiro Comercial", "Outros"])
             nome_contato = st.text_input("Nome do Contato *", max_chars=100)
             nome_condominio = st.text_input("Nome do Condomínio (Se houver)", max_chars=100)
@@ -96,7 +123,7 @@ def render_registro_lead():
             email = st.text_input("E-mail", max_chars=100)
             
         with col2:
-            st.subheader("📍 Dados do Evento & Agenda")
+            st.subheader(" Dados do Evento & Agenda")
             
             # ✅ NOVO: Campo de evento com autocomplete/sugestão
             st.markdown("**Nome do Evento / Origem ***")
@@ -134,12 +161,12 @@ def render_registro_lead():
             
             # NOVO: Data para Próximo Contato (Touch)
             data_proximo_contato = st.date_input(
-                "📅 Data para Próximo Contato (Touch)", 
+                " Data para Próximo Contato (Touch)", 
                 value=datetime.now(),
                 help="Defina quando você deve entrar em contato novamente."
             )
             
-            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", " Morno", "❄️ Frio"])
+            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "⚡ Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
         st.subheader("🛒 Interesse em Produtos")
@@ -149,14 +176,20 @@ def render_registro_lead():
             help="Selecione um ou mais produtos discutidos"
         )
         
-        st.subheader("📝 Observações da Conversa")
+        st.subheader(" Observações da Conversa")
         observacoes = st.text_area(
             "Detalhes da evolução da conversa", 
             height=100, 
             placeholder="Ex: Síndico reclamou da internet atual. Quer orçamento para 10 câmeras. Decisão até dia 30..."
         )
         
-        submitted = st.form_submit_button("💾 Salvar Lead", type="primary")
+        col_submit, col_novo = st.columns([1, 1])
+        
+        with col_submit:
+            submitted = st.form_submit_button("💾 Salvar Lead", type="primary", use_container_width=True)
+        
+        with col_novo:
+            novo_cadastro = st.form_submit_button(" Novo Cadastro", use_container_width=True)
         
         if submitted:
             # Validação simples
@@ -188,6 +221,10 @@ def render_registro_lead():
                     st.balloons()
                 except Exception as e:
                     st.error(f"❌ Erro ao salvar: {e}")
+        
+        if novo_cadastro:
+            st.info("🔄 Formulário limpo para novo cadastro!")
+            st.rerun()
 
 # --- Visualização e Gestão de Leads (Agenda) ---
 def render_agenda_leads():
@@ -237,25 +274,63 @@ def render_agenda_leads():
                 data_evento_str = "N/A"
             
             hoje = datetime.now().date()
-            icono_data = "🔴" if data_contato and data_contato.date() < hoje else "🟢"
+            icono_data = "🔴" if data_contato and data_contato.date() < hoje else ""
             
             label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')})"
             
             with st.expander(label_expander):
-                col_info, col_action = st.columns([2, 1])
+                col_info, col_actions = st.columns([2, 1])
                 
                 with col_info:
                     st.write(f"**📞 Telefone:** {lead.get('telefone')}")
-                    st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio', 'N/A')}")
+                    st.write(f"** Condomínio:** {lead.get('nome_condominio', 'N/A')}")
                     st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
-                    st.write(f"**📝 Obs:** {lead.get('observacoes', 'Sem observações')}")
-                    st.write(f"** Evento:** {lead.get('evento')} em {data_evento_str}")
+                    
+                    # ✅ NOVO: Campo de observações editável
+                    st.write("**📝 Observações:**")
+                    observacoes_atuais = lead.get('observacoes', 'Sem observações')
+                    
+                    with st.form(key=f"form_obs_{lead['_id']}"):
+                        novas_observacoes = st.text_area(
+                            "Editar observações:",
+                            value=observacoes_atuais,
+                            height=80,
+                            key=f"obs_textarea_{lead['_id']}"
+                        )
+                        
+                        col_upd, col_del = st.columns([1, 1])
+                        
+                        with col_upd:
+                            submit_obs = st.form_submit_button("🔄 Atualizar Obs", use_container_width=True)
+                            
+                            if submit_obs:
+                                if update_lead_observacoes(lead['_id'], novas_observacoes.strip()):
+                                    st.success("✅ Observações atualizadas!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Falha ao atualizar observações.")
+                        
+                        with col_del:
+                            pass  # Botão de exclusão será adicionado abaixo
+                    
+                    st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
                     st.write(f"**🔄 Status Atual:** {lead.get('status')}")
                     if lead.get('convertido'):
-                        st.success("**🎉 CLIENTE CONVERTIDO**")
+                        st.success("** CLIENTE CONVERTIDO**")
 
-                with col_action:
+                with col_actions:
                     st.markdown("### Ações")
+                    
+                    # ✅ NOVO: Botão de exclusão
+                    if st.button("️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
+                        if delete_lead(lead['_id']):
+                            st.success("✅ Lead excluído com sucesso!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Falha ao excluir lead.")
+                    
+                    st.divider()
+                    
                     with st.form(key=f"form_update_{lead['_id']}"):
                         is_convertido = st.checkbox("✅ Cliente Convertido", value=lead.get('convertido', False))
                         
@@ -274,7 +349,7 @@ def render_agenda_leads():
                             index=status_index
                         )
                         
-                        submit_update = st.form_submit_button("Atualizar", use_container_width=True)
+                        submit_update = st.form_submit_button("Atualizar Status", use_container_width=True)
                         
                         if submit_update:
                             status_final = novo_status
@@ -283,16 +358,16 @@ def render_agenda_leads():
                                 status_final = "✅ Convertido"
                             
                             if update_lead_status(lead['_id'], status_final, flag_convertido):
-                                st.success("Atualizado!")
+                                st.success("✅ Status atualizado!")
                                 st.rerun()
                             else:
-                                st.error("Falha ao atualizar.")
+                                st.error("❌ Falha ao atualizar status.")
 
 # --- Execução Principal ---
 if __name__ == "__main__":
     # ✅ CORREÇÃO: Removido st.set_page_config daqui - já está no topo!
     # Criação de Abas
-    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
+    tab1, tab2 = st.tabs([" Cadastro de Leads", " Agenda & Lista"])
 
     with tab1:
         render_registro_lead()
