@@ -39,7 +39,7 @@ def update_lead_status(lead_id, novo_status, convertido=False):
         if convertido:
             update_data["convertido"] = True
             update_data["status"] = "✅ Convertido"
-            
+        
         result = collection.update_one(
             {"_id": ObjectId(lead_id)}, 
             {"$set": update_data}
@@ -49,12 +49,29 @@ def update_lead_status(lead_id, novo_status, convertido=False):
         st.error(f"Erro ao atualizar: {e}")
         return False
 
+def get_eventos_existentes():
+    """Busca todos os nomes de eventos já cadastrados no banco"""
+    try:
+        collection = get_leads_collection()
+        # Aggregation para obter nomes únicos de eventos
+        pipeline = [
+            {"$group": {"_id": "$evento"}},
+            {"$sort": {"_id": 1}},
+            {"$limit": 100}  # Limita a 100 eventos mais recentes
+        ]
+        resultados = list(collection.aggregate(pipeline))
+        eventos = [r["_id"] for r in resultados if r["_id"]]
+        return sorted(eventos)
+    except Exception as e:
+        st.warning(f"️ Não foi possível carregar eventos anteriores: {e}")
+        return []
+
 # --- Módulo de Registro de Leads ---
 def render_registro_lead():
     """Renderiza formulário de captura de leads em eventos"""
-    st.title("🤝 Captura de Leads & Eventos")
+    st.title(" Captura de Leads & Eventos")
     st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
-
+    
     PRODUTOS = [
         "Conecta e Protege (Câmeras + Internet + Bônus)",
         "Câmeras de Segurança",
@@ -64,6 +81,9 @@ def render_registro_lead():
         "Automação Predial"
     ]
 
+    # Busca eventos existentes para autocomplete
+    eventos_existentes = get_eventos_existentes()
+    
     with st.form("form_lead_evento"):
         col1, col2 = st.columns(2)
         
@@ -77,7 +97,39 @@ def render_registro_lead():
             
         with col2:
             st.subheader("📍 Dados do Evento & Agenda")
-            nome_evento = st.text_input("Nome do Evento / Origem *", value="Feira de Condomínios", max_chars=100)
+            
+            # ✅ NOVO: Campo de evento com autocomplete/sugestão
+            st.markdown("**Nome do Evento / Origem ***")
+            st.caption("💡 Comece a digitar para ver sugestões de eventos já cadastrados")
+            
+            if eventos_existentes:
+                # Opção 1: Selectbox com filtro manual (mais simples)
+                opcoes_evento = ["✨ Novo Evento..."] + eventos_existentes
+                nome_evento_selecionado = st.selectbox(
+                    "Selecione ou digite o evento:",
+                    opcoes_evento,
+                    index=0,
+                    key="selectbox_evento"
+                )
+                
+                if nome_evento_selecionado == "✨ Novo Evento...":
+                    nome_evento = st.text_input(
+                        "Digite o nome do novo evento:",
+                        max_chars=100,
+                        placeholder="Ex: Conferência de Síndicos RJ",
+                        key="novo_evento_input"
+                    )
+                else:
+                    nome_evento = nome_evento_selecionado
+            else:
+                # Fallback se não houver eventos anteriores
+                nome_evento = st.text_input(
+                    "Nome do Evento / Origem *",
+                    value="Feira de Condomínios",
+                    max_chars=100,
+                    key="fallback_evento"
+                )
+            
             data_evento = st.date_input("Data do Contato", value=datetime.now())
             
             # NOVO: Data para Próximo Contato (Touch)
@@ -87,8 +139,8 @@ def render_registro_lead():
                 help="Defina quando você deve entrar em contato novamente."
             )
             
-            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "⚡ Morno", "❄️ Frio"])
-            status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parcia"])
+            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", " Morno", "❄️ Frio"])
+            status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
         st.subheader("🛒 Interesse em Produtos")
         produtos_interesse = st.multiselect(
@@ -141,14 +193,14 @@ def render_registro_lead():
 def render_agenda_leads():
     """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
     st.title("📋 Agenda & Acompanhamento de Leads")
-    st.markdown("Lista organizada por **data do próximo contato** (mais urgentes no topo).")
-
+    st.markdown("Lista organizada por data do próximo contato (mais urgentes no topo).")
+    
     try:
         collection = get_leads_collection()
     except Exception as e:
         st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
         return
-    
+
     # Filtro opcional de status
     filtro_status = st.multiselect(
         "Filtrar por Status:", 
@@ -197,7 +249,7 @@ def render_agenda_leads():
                     st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio', 'N/A')}")
                     st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     st.write(f"**📝 Obs:** {lead.get('observacoes', 'Sem observações')}")
-                    st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")  # ✅ USANDO data_evento_str
+                    st.write(f"** Evento:** {lead.get('evento')} em {data_evento_str}")
                     st.write(f"**🔄 Status Atual:** {lead.get('status')}")
                     if lead.get('convertido'):
                         st.success("**🎉 CLIENTE CONVERTIDO**")
@@ -239,10 +291,9 @@ def render_agenda_leads():
 # --- Execução Principal ---
 if __name__ == "__main__":
     # ✅ CORREÇÃO: Removido st.set_page_config daqui - já está no topo!
-    
     # Criação de Abas
     tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
-    
+
     with tab1:
         render_registro_lead()
         
