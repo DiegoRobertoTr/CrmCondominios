@@ -162,15 +162,23 @@ def init_mongo():
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
 def save_prospeccao_data(db, df_prospeccao, metadata):
-    """Salva dados de prospecção no MongoDB - VERSÃO ULTRA ROBUSTA SEM WARNINGS"""
+    """Salva dados de prospecção no MongoDB - COM LIMPEZA CORRETA"""
     collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
     batch_id = metadata["batch_id"]
     
-    # Limpeza em lote
-    collection.delete_many({"_import_batch": batch_id})
-    meta_collection.delete_many({"batch_id": batch_id})
-
+    # ✅ Limpar APENAS dados do batch anterior
+    ultimo_meta = meta_collection.find_one(sort=[("timestamp", -1)])
+    if ultimo_meta:
+        batch_anterior = ultimo_meta.get("batch_id")
+        if batch_anterior:
+            removidos = collection.delete_many({"_import_batch": batch_anterior})
+            if removidos.deleted_count > 0:
+                st.info(f"🗑️ Removidos {removidos.deleted_count} registros do batch anterior")
+    
+    # Remover metadados antigos
+    meta_collection.delete_many({})
+    
     # Preparar dados
     df_para_salvar = df_prospeccao.copy()
     
@@ -181,25 +189,19 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
             df_para_salvar = df_para_salvar.drop(columns=[col])
     
     # ✅ CONVERTER APENAS COLUNAS ESPECÍFICAS DE DATA
-    # Coluna 'Data da Atualização'
     if 'Data da Atualização' in df_para_salvar.columns:
-        # Extrair apenas a data (sem hora) e converter
         data_str = df_para_salvar['Data da Atualização'].astype(str).str[:10]
         df_para_salvar['Data da Atualização'] = pd.to_datetime(data_str, format='%Y-%m-%d', errors='coerce')
     
-    # Coluna 'Previsão de Entrega'
     if 'Previsão de Entrega' in df_para_salvar.columns:
         previsao_str = df_para_salvar['Previsão de Entrega'].astype(str)
-        # Tentar formato ISO
         df_para_salvar['Previsão de Entrega'] = pd.to_datetime(previsao_str, format='%Y-%m-%d', errors='coerce')
-        # Se falhou, tentar formato DD/MM/YYYY
         mask_nat = df_para_salvar['Previsão de Entrega'].isna()
         if mask_nat.any():
             df_para_salvar.loc[mask_nat, 'Previsão de Entrega'] = pd.to_datetime(
                 previsao_str[mask_nat], format='%d/%m/%Y', errors='coerce'
             )
     
-    # Coluna 'PREVISAO_ENTREGA' (se existir)
     if 'PREVISAO_ENTREGA' in df_para_salvar.columns:
         previsao_str = df_para_salvar['PREVISAO_ENTREGA'].astype(str)
         df_para_salvar['PREVISAO_ENTREGA'] = pd.to_datetime(previsao_str, format='%Y-%m-%d', errors='coerce')
@@ -237,7 +239,7 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
     # Converter para lista de dicionários
     docs = df_para_salvar.to_dict('records')
     
-    # Inserir em lotes
+    # Inserir novos dados
     if docs:
         batch_size = 500
         total = len(docs)
@@ -255,6 +257,64 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
     })
     
     return True
+
+
+def clear_prospeccao_data(db, batch_id=None):
+    """Limpa dados de prospecção - VERSÃO CORRIGIDA"""
+    collection = db["prospeccao_condominios"]
+    meta_collection = db["prospeccao_meta"]
+    
+    if batch_id:
+        # Limpar apenas um batch específico
+        result = collection.delete_many({"_import_batch": batch_id})
+        meta_collection.delete_many({"batch_id": batch_id})
+        return result.deleted_count
+    else:
+        # Limpar TODOS os dados
+        result = collection.delete_many({})
+        meta_collection.delete_many({})
+        return result.deleted_count
+
+
+def limpar_todas_duplicatas(db):
+    """LIMPEZA TOTAL - Remove TODOS os registros do banco"""
+    collection = db["prospeccao_condominios"]
+    meta_collection = db["prospeccao_meta"]
+    
+    total_antes = collection.count_documents({})
+    
+    if total_antes > 0:
+        collection.delete_many({})
+        meta_collection.delete_many({})
+        
+        return total_antes
+    return 0
+
+
+def verificar_duplicatas(db):
+    """Verifica se há registros duplicados no banco"""
+    collection = db["prospeccao_condominios"]
+    
+    # Contar por batch_id
+    pipeline = [
+        {"$group": {
+            "_id": "$_import_batch",
+            "count": {"$sum": 1},
+            "timestamp": {"$max": "$_import_timestamp"}
+        }},
+        {"$sort": {"timestamp": -1}}
+    ]
+    
+    batches = list(collection.aggregate(pipeline))
+    
+    if batches:
+        st.subheader("📊 Status dos Batches no Banco")
+        for batch in batches:
+            batch_id_str = str(batch['_id'])[:30] if batch['_id'] else "Sem batch"
+            st.write(f"- Batch: {batch_id_str}... | Registros: {batch['count']} | Data: {batch['timestamp']}")
+    
+    total = collection.count_documents({})
+    return total, len(batches)
 
 
 def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_comparar):
@@ -369,18 +429,6 @@ def load_latest_prospeccao(_db):
         df_prospeccao["_id"] = [str(i) for i in range(len(df_prospeccao))]
 
     return df_prospeccao, meta
-
-
-def clear_prospeccao_data(db, batch_id=None):
-    """Limpa dados de prospecção"""
-    collection = db["prospeccao_condominios"]
-    if batch_id:
-        result = collection.delete_many({"_import_batch": batch_id})
-        db["prospeccao_meta"].delete_many({"batch_id": batch_id})
-    else:
-        result = collection.delete_many({})
-        db["prospeccao_meta"].delete_many({})
-    return result.deleted_count
 
 
 def insert_new_record(db, new_data):
@@ -587,6 +635,86 @@ def render_prospeccao_condominios():
     st.markdown("Acompanhamento de fases de construção por construtora e oportunidades de mercado")
     
     db = init_mongo()
+    
+    st.markdown("---")
+    
+    # ==================== BOTÃO DE LIMPEZA TOTAL (URGENTE) ====================
+    with st.expander("⚠️ FERRAMENTAS DE MANUTENÇÃO (Administrador)", expanded=False):
+        st.warning("⚠️ Use estas ferramentas com cuidado! Elas removem dados permanentemente.")
+        
+        col_limpeza1, col_limpeza2, col_limpeza3 = st.columns(3)
+        
+        with col_limpeza1:
+            # Botão para verificar duplicatas
+            if st.button("🔍 Verificar Duplicatas", key="btn_verificar"):
+                total, num_batches = verificar_duplicatas(db)
+                st.metric("Total de registros no banco", f"{total:,}")
+                st.metric("Número de batches", num_batches)
+                if num_batches > 1:
+                    st.error(f"⚠️ Atenção! {num_batches} batches encontrados. Isso indica duplicação!")
+        
+        with col_limpeza2:
+            # Botão para limpar todas as duplicatas (URGENTE)
+            if st.button("🗑️ LIMPAR TODOS OS DADOS (URGENTE)", key="btn_limpar_tudo"):
+                st.session_state['confirmar_limpeza_total'] = True
+        
+        with col_limpeza3:
+            # Botão para limpar apenas dados antigos (manter mais recente)
+            if st.button("🧹 Manter Apenas Último Lote", key="btn_manter_ultimo"):
+                st.session_state['confirmar_manter_ultimo'] = True
+        
+        # Confirmação de limpeza total
+        if st.session_state.get('confirmar_limpeza_total', False):
+            st.error("🔴 CONFIRMAÇÃO NECESSÁRIA!")
+            st.warning(f"Isso irá remover TODOS os {verificar_duplicatas(db)[0]:,} registros do banco. Esta ação NÃO pode ser desfeita!")
+            
+            col_confirm1, col_confirm2 = st.columns(2)
+            with col_confirm1:
+                if st.button("✅ SIM, REMOVER TUDO", key="confirmar_sim"):
+                    removidos = limpar_todas_duplicatas(db)
+                    st.success(f"✅ {removidos:,} registros removidos com sucesso!")
+                    st.session_state['confirmar_limpeza_total'] = False
+                    st.cache_data.clear()
+                    if "df_prospeccao_cached" in st.session_state:
+                        del st.session_state["df_prospeccao_cached"]
+                    time.sleep(2)
+                    st.rerun()
+            with col_confirm2:
+                if st.button("❌ Cancelar", key="confirmar_nao"):
+                    st.session_state['confirmar_limpeza_total'] = False
+                    st.rerun()
+        
+        # Confirmação de manter apenas último lote
+        if st.session_state.get('confirmar_manter_ultimo', False):
+            st.info("ℹ️ Isso irá manter apenas o batch mais recente e remover os antigos.")
+            
+            col_confirm3, col_confirm4 = st.columns(2)
+            with col_confirm3:
+                if st.button("✅ Sim, manter apenas último", key="manter_sim"):
+                    collection = db["prospeccao_condominios"]
+                    meta_collection = db["prospeccao_meta"]
+                    
+                    # Buscar último batch
+                    ultimo_meta = meta_collection.find_one(sort=[("timestamp", -1)])
+                    if ultimo_meta:
+                        ultimo_batch = ultimo_meta.get("batch_id")
+                        # Remover todos os outros batches
+                        resultado = collection.delete_many({"_import_batch": {"$ne": ultimo_batch}})
+                        meta_collection.delete_many({"batch_id": {"$ne": ultimo_batch}})
+                        st.success(f"✅ Removidos {resultado.deleted_count:,} registros antigos. Mantido apenas o batch mais recente.")
+                    else:
+                        st.warning("Nenhum batch encontrado para manter.")
+                    
+                    st.session_state['confirmar_manter_ultimo'] = False
+                    st.cache_data.clear()
+                    if "df_prospeccao_cached" in st.session_state:
+                        del st.session_state["df_prospeccao_cached"]
+                    time.sleep(2)
+                    st.rerun()
+            with col_confirm4:
+                if st.button("❌ Cancelar", key="manter_nao"):
+                    st.session_state['confirmar_manter_ultimo'] = False
+                    st.rerun()
     
     st.markdown("---")
 
