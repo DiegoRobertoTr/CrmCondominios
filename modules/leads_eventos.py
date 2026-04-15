@@ -4,6 +4,9 @@ from pymongo import MongoClient
 import urllib.parse
 from bson.objectid import ObjectId
 
+# ✅ CORREÇÃO: st.set_page_config() DEVE ser a primeira chamada Streamlit
+st.set_page_config(page_title="CRM Eventos", layout="wide")
+
 # --- Funções de Conexão (Padrão MongoDB) ---
 def get_db_client():
     """Retorna o cliente MongoDB configurado"""
@@ -36,7 +39,7 @@ def update_lead_status(lead_id, novo_status, convertido=False):
         if convertido:
             update_data["convertido"] = True
             update_data["status"] = "✅ Convertido"
-        
+            
         result = collection.update_one(
             {"_id": ObjectId(lead_id)}, 
             {"$set": update_data}
@@ -51,7 +54,7 @@ def render_registro_lead():
     """Renderiza formulário de captura de leads em eventos"""
     st.title("🤝 Captura de Leads & Eventos")
     st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
-    
+
     PRODUTOS = [
         "Conecta e Protege (Câmeras + Internet + Bônus)",
         "Câmeras de Segurança",
@@ -85,7 +88,7 @@ def render_registro_lead():
             )
             
             nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "⚡ Morno", "❄️ Frio"])
-            status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
+            status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parcia"])
         
         st.subheader("🛒 Interesse em Produtos")
         produtos_interesse = st.multiselect(
@@ -130,7 +133,7 @@ def render_registro_lead():
                     collection = get_leads_collection()
                     result = collection.insert_one(lead_data)
                     st.success(f"✅ Lead '{nome_contato}' registrado com sucesso! ID: {result.inserted_id}")
-                    # st.balloons() # Removido pois pode causar erro em versões recentes, use st.toast se quiser
+                    st.balloons()
                 except Exception as e:
                     st.error(f"❌ Erro ao salvar: {e}")
 
@@ -138,13 +141,14 @@ def render_registro_lead():
 def render_agenda_leads():
     """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
     st.title("📋 Agenda & Acompanhamento de Leads")
-    st.markdown("Lista organizada por data do próximo contato (mais urgentes no topo).")
+    st.markdown("Lista organizada por **data do próximo contato** (mais urgentes no topo).")
+
     try:
         collection = get_leads_collection()
     except Exception as e:
         st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
         return
-
+    
     # Filtro opcional de status
     filtro_status = st.multiselect(
         "Filtrar por Status:", 
@@ -193,7 +197,7 @@ def render_agenda_leads():
                     st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio', 'N/A')}")
                     st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     st.write(f"**📝 Obs:** {lead.get('observacoes', 'Sem observações')}")
-                    st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
+                    st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")  # ✅ USANDO data_evento_str
                     st.write(f"**🔄 Status Atual:** {lead.get('status')}")
                     if lead.get('convertido'):
                         st.success("**🎉 CLIENTE CONVERTIDO**")
@@ -234,12 +238,11 @@ def render_agenda_leads():
 
 # --- Execução Principal ---
 if __name__ == "__main__":
-    # Configuração da Página
-    st.set_page_config(page_title="CRM Eventos", layout="wide")
+    # ✅ CORREÇÃO: Removido st.set_page_config daqui - já está no topo!
     
     # Criação de Abas
     tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
-
+    
     with tab1:
         render_registro_lead()
         
