@@ -20,10 +20,8 @@ def get_base64_image(image_path):
         st.warning(f"⚠️ Não foi possível carregar a imagem de fundo: {e}")
         return None
 
-# Carrega a imagem de fundo
 img_base64 = get_base64_image("assets/condominio.jpg")
 
-# CSS personalizado com imagem de fundo e overlay
 if img_base64:
     st.markdown(f"""
     <style>
@@ -84,11 +82,10 @@ st.set_page_config(
 )
 
 # ============================================================================
-# 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO
+# 🔹 ROTAS PÚBLICAS
 # ============================================================================
 query_params = st.query_params.to_dict()
 
-# ✅ Rota para pesquisa de satisfação
 if query_params.get("page") == ["satisfacao"]:
     id_cliente = query_params.get("id", [""])[0]
     tipo = query_params.get("tipo", [""])[0]
@@ -108,7 +105,6 @@ if query_params.get("page") == ["satisfacao"]:
     ''', unsafe_allow_html=True)
     st.stop()
 
-# ✅ HotSpots WiFi — ROTA PÚBLICA (portal captive)
 if query_params.get("page") == ["hotspots/captive"]:
     try:
         from modules.hotspots.captive_portal import render_captive_portal
@@ -118,7 +114,6 @@ if query_params.get("page") == ["hotspots/captive"]:
         st.exception(e)
     st.stop()
 
-# ✅ HotSpots — Confirmação de acesso (pública)
 if query_params.get("page") == ["hotspots/confirmar"]:
     try:
         from modules.hotspots.confirmar_acesso import confirmar_acesso
@@ -128,7 +123,7 @@ if query_params.get("page") == ["hotspots/confirmar"]:
     st.stop()
 
 # ============================================================================
-# --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
+# --- 🧩 Código privado (requer login) ---
 # ============================================================================
 def get_usuarios_collection():
     try:
@@ -144,12 +139,10 @@ def get_usuarios_collection():
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
     return MongoClient(uri).crm_db.usuarios
 
-# --- Conexão com clientes ---
 if "clientes_collection" not in st.session_state:
     st.session_state["clientes_collection"] = auth.get_db_connection()
 clientes_collection = st.session_state["clientes_collection"]
 
-# Garante índices
 try:
     clientes_collection.create_index("celular", unique=True)
     clientes_collection.create_index("nome_completo")
@@ -157,7 +150,7 @@ except Exception:
     pass
 
 # ============================================================================
-# --- 🔐 Verificação automática de login ---
+# --- 🔐 Verificação de login ---
 # ============================================================================
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
@@ -202,9 +195,6 @@ if not st.session_state["logado"]:
             st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
 
-# ============================================================================
-# --- 🚪 Redireciona para login se não autenticado ---
-# ============================================================================
 if not st.session_state["logado"]:
     st.title("🔐 Condomínios Tracecom - Login")
     auth.login()
@@ -240,45 +230,38 @@ except ImportError:
         "pap": ["Cadastro Porta a Porta"],
         "revenda": ["Painel Revenda"],
         "admin": [
-            "Cadastro", "Follow-up", "Agendamentos",
+            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+            "Endereços Bloqueados", "Leads & Eventos", "Condomínios", 
+            "Prospecção Condomínios", "Relatórios Condomínios",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
-            "Acompanhamento Técnicos", "Relatórios",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
+            "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios"
         ],
-        "recepcao": [
-            "Cadastro", "Follow-up", "Agendamentos",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
-        ],
-        "atendente_n1": [
-            "Cadastro", "Follow-up", "Agendamentos",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
-        ],
-        "supervisao_n1": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"
-        ],
-        "supervisao_n2": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-            "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"
-        ],
-        "supervisao_n3": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-            "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"
-        ],
-        "diretoria": [
-            "Relatórios Condomínios", "Prospecção Condomínios"
-        ],
+        "recepcao": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"],
+        "atendente_n1": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"],
+        "supervisao_n1": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"],
+        "supervisao_n2": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos", "Admin Embaixadores", "Admin PaP", "Admin Revendas"],
+        "supervisao_n3": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos", "Relatórios Condomínios", "Prospecção Condomínios", "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Relatórios"],
+        "diretoria": ["Leads & Eventos", "Relatórios Condomínios", "Prospecção Condomínios"],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-if perfil == "admin":
-    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"]
-    for mod in extras_admin:
-        if mod not in opcoes_modulos:
-            opcoes_modulos.append(mod)
+# ✅ Lógica para exibir a linha divisória no menu
+modulo_selecionado = None
+for i, modulo in enumerate(opcoes_modulos):
+    # Verifica se é o primeiro módulo do grupo "Condomínios & Leads"
+    if modulo in ["Leads & Eventos", "Condomínios", "Prospecção Condomínios", "Relatórios Condomínios"]:
+        # Se o item anterior NÃO for deste grupo, desenha a linha
+        if i > 0 and opcoes_modulos[i-1] not in ["Leads & Eventos", "Condomínios", "Prospecção Condomínios", "Relatórios Condomínios"]:
+            st.sidebar.divider()
+            st.sidebar.markdown("**🏢 Condomínios & Leads**")
+    
+    if st.sidebar.radio("Selecione o módulo:", [modulo], index=0, key=f"modulo_{i}", label_visibility="collapsed"):
+        modulo_selecionado = modulo
 
-modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
+if modulo_selecionado:
+    modulo = modulo_selecionado
+else:
+    modulo = opcoes_modulos[0] if opcoes_modulos else ""
 
 # ============================================================================
 # --- 🔒 Logout ---
