@@ -92,7 +92,7 @@ def get_eventos_existentes():
 # --- Módulo de Registro de Leads ---
 def render_registro_lead():
     """Renderiza formulário de captura de leads em eventos"""
-    st.title(" Captura de Leads & Eventos")
+    st.title("🤝 Captura de Leads & Eventos")
     st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
     
     PRODUTOS = [
@@ -115,10 +115,18 @@ def render_registro_lead():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader(" Dados do Contato")
+            st.subheader("📋 Dados do Contato")
             tipo_contato = st.selectbox("Tipo de Contato *", ["Síndico / Cliente", "Parceiro Comercial", "Outros"])
             nome_contato = st.text_input("Nome do Contato *", max_chars=100)
-            nome_condominio = st.text_input("Nome do Condomínio (Se houver)", max_chars=100)
+            
+            # ✅ NOVO: Campo específico para Condomínio
+            nome_condominio = st.text_input("🏢 Nome do Condomínio (Se houver)", max_chars=100, 
+                                          help="Preencha apenas se for um condomínio residencial")
+            
+            # ✅ NOVO: Campo específico para Empresa
+            nome_empresa = st.text_input(" Nome da Empresa (Se houver)", max_chars=100,
+                                       help="Preencha apenas se for uma empresa parceira/comercial")
+            
             telefone = st.text_input("Telefone / WhatsApp *", max_chars=20, placeholder="(00) 00000-0000")
             email = st.text_input("E-mail", max_chars=100)
             
@@ -161,7 +169,7 @@ def render_registro_lead():
             
             # NOVO: Data para Próximo Contato (Touch)
             data_proximo_contato = st.date_input(
-                " Data para Próximo Contato (Touch)", 
+                "📅 Data para Próximo Contato (Touch)", 
                 value=datetime.now(),
                 help="Defina quando você deve entrar em contato novamente."
             )
@@ -176,7 +184,7 @@ def render_registro_lead():
             help="Selecione um ou mais produtos discutidos"
         )
         
-        st.subheader(" Observações da Conversa")
+        st.subheader("📝 Observações da Conversa")
         observacoes = st.text_area(
             "Detalhes da evolução da conversa", 
             height=100, 
@@ -189,7 +197,7 @@ def render_registro_lead():
             submitted = st.form_submit_button("💾 Salvar Lead", type="primary", use_container_width=True)
         
         with col_novo:
-            novo_cadastro = st.form_submit_button(" Novo Cadastro", use_container_width=True)
+            novo_cadastro = st.form_submit_button("🆕 Novo Cadastro", use_container_width=True)
         
         if submitted:
             # Validação simples
@@ -200,6 +208,7 @@ def render_registro_lead():
                     "tipo_contato": tipo_contato,
                     "nome_contato": nome_contato.strip().upper(),
                     "nome_condominio": nome_condominio.strip().upper() if nome_condominio else None,
+                    "nome_empresa": nome_empresa.strip().upper() if nome_empresa else None,
                     "telefone": telefone.strip(),
                     "email": email.strip() if email else None,
                     "evento": nome_evento.strip(),
@@ -283,11 +292,19 @@ def render_agenda_leads():
                 
                 with col_info:
                     st.write(f"**📞 Telefone:** {lead.get('telefone')}")
-                    st.write(f"** Condomínio:** {lead.get('nome_condominio', 'N/A')}")
+                    
+                    # ✅ NOVO: Exibir Condomínio ou Empresa conforme o caso
+                    if lead.get('nome_condominio'):
+                        st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio')}")
+                    if lead.get('nome_empresa'):
+                        st.write(f"**🏢 Empresa:** {lead.get('nome_empresa')}")
+                    if not lead.get('nome_condominio') and not lead.get('nome_empresa'):
+                        st.write(f"** Organização:** N/A")
+                    
                     st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     
                     # ✅ NOVO: Campo de observações editável
-                    st.write("**📝 Observações:**")
+                    st.write("** Observações:**")
                     observacoes_atuais = lead.get('observacoes', 'Sem observações')
                     
                     with st.form(key=f"form_obs_{lead['_id']}"):
@@ -316,13 +333,13 @@ def render_agenda_leads():
                     st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
                     st.write(f"**🔄 Status Atual:** {lead.get('status')}")
                     if lead.get('convertido'):
-                        st.success("** CLIENTE CONVERTIDO**")
+                        st.success("**🎉 CLIENTE CONVERTIDO**")
 
                 with col_actions:
                     st.markdown("### Ações")
                     
                     # ✅ NOVO: Botão de exclusão
-                    if st.button("️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
+                    if st.button("🗑️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
                         if delete_lead(lead['_id']):
                             st.success("✅ Lead excluído com sucesso!")
                             st.rerun()
@@ -367,7 +384,7 @@ def render_agenda_leads():
 if __name__ == "__main__":
     # ✅ CORREÇÃO: Removido st.set_page_config daqui - já está no topo!
     # Criação de Abas
-    tab1, tab2 = st.tabs([" Cadastro de Leads", " Agenda & Lista"])
+    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
 
     with tab1:
         render_registro_lead()
