@@ -107,10 +107,6 @@ def render_registro_lead():
     # Busca eventos existentes para autocomplete
     eventos_existentes = get_eventos_existentes()
     
-    # Inicializa session_state para controle do formulário
-    if "form_cleared" not in st.session_state:
-        st.session_state.form_cleared = False
-    
     with st.form("form_lead_evento", clear_on_submit=True):
         col1, col2 = st.columns(2)
         
@@ -124,7 +120,7 @@ def render_registro_lead():
                                           help="Preencha apenas se for um condomínio residencial")
             
             # ✅ NOVO: Campo específico para Empresa
-            nome_empresa = st.text_input(" Nome da Empresa (Se houver)", max_chars=100,
+            nome_empresa = st.text_input("🏢 Nome da Empresa (Se houver)", max_chars=100,
                                        help="Preencha apenas se for uma empresa parceira/comercial")
             
             telefone = st.text_input("Telefone / WhatsApp *", max_chars=20, placeholder="(00) 00000-0000")
@@ -167,14 +163,22 @@ def render_registro_lead():
             
             data_evento = st.date_input("Data do Contato", value=datetime.now())
             
-            # NOVO: Data para Próximo Contato (Touch)
-            data_proximo_contato = st.date_input(
-                "📅 Data para Próximo Contato (Touch)", 
-                value=datetime.now(),
-                help="Defina quando você deve entrar em contato novamente."
-            )
+            # ✅ ALTERADO: Data para Próximo Contato agora é OPCIONAL
+            st.markdown("**📅 Data para Próximo Contato (Touch)**")
+            st.caption("⚠️ Deixe em branco se não houver necessidade de contato imediato (ex: parceiros)")
             
-            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "⚡ Morno", "❄️ Frio"])
+            usar_data_proximo = st.checkbox("Definir data para próximo contato", value=True)
+            
+            if usar_data_proximo:
+                data_proximo_contato = st.date_input(
+                    "Selecione a data:", 
+                    value=datetime.now(),
+                    key="data_proximo_input"
+                )
+            else:
+                data_proximo_contato = None
+            
+            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", " Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
         st.subheader("🛒 Interesse em Produtos")
@@ -213,7 +217,7 @@ def render_registro_lead():
                     "email": email.strip() if email else None,
                     "evento": nome_evento.strip(),
                     "data_evento": datetime.combine(data_evento, datetime.min.time()),
-                    "data_proximo_contato": datetime.combine(data_proximo_contato, datetime.min.time()),
+                    "data_proximo_contato": datetime.combine(data_proximo_contato, datetime.min.time()) if data_proximo_contato else None,
                     "nivel_interesse": nivel_interesse,
                     "status": status_lead,
                     "produtos_interesse": produtos_interesse,
@@ -259,7 +263,11 @@ def render_agenda_leads():
         query["status"] = {"$in": filtro_status}
 
     try:
-        leads = list(collection.find(query).sort("data_proximo_contato", 1).limit(50))
+        # ✅ ALTERADO: Ordenação considerando leads sem data (eles vão para o final)
+        leads = list(collection.find(query).sort([
+            ("data_proximo_contato", 1),  # Primeiro ordena por data (ascendente)
+            ("nome_contato", 1)           # Depois por nome (para organizar os sem data)
+        ]).limit(50))
     except Exception as e:
         st.error(f"❌ Erro ao buscar leads: {e}")
         return
@@ -272,8 +280,13 @@ def render_agenda_leads():
             data_contato = lead.get("data_proximo_contato")
             if data_contato:
                 data_str = data_contato.strftime("%d/%m/%Y")
+                hoje = datetime.now().date()
+                icono_data = "" if data_contato.date() < hoje else "🟢"
+                urgency_badge = "⚠️ URGENTE" if data_contato.date() < hoje else ""
             else:
-                data_str = "Não agendado"
+                data_str = "Sem data agendada"
+                icono_data = ""
+                urgency_badge = ""
             
             # ✅ CORREÇÃO CRÍTICA: data_evento pode ser None!
             data_evento = lead.get("data_evento")
@@ -282,10 +295,7 @@ def render_agenda_leads():
             else:
                 data_evento_str = "N/A"
             
-            hoje = datetime.now().date()
-            icono_data = "🔴" if data_contato and data_contato.date() < hoje else ""
-            
-            label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')})"
+            label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')}) {urgency_badge}"
             
             with st.expander(label_expander):
                 col_info, col_actions = st.columns([2, 1])
@@ -299,12 +309,12 @@ def render_agenda_leads():
                     if lead.get('nome_empresa'):
                         st.write(f"**🏢 Empresa:** {lead.get('nome_empresa')}")
                     if not lead.get('nome_condominio') and not lead.get('nome_empresa'):
-                        st.write(f"** Organização:** N/A")
+                        st.write(f"**🏢 Organização:** N/A")
                     
                     st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     
                     # ✅ NOVO: Campo de observações editável
-                    st.write("** Observações:**")
+                    st.write("**📝 Observações:**")
                     observacoes_atuais = lead.get('observacoes', 'Sem observações')
                     
                     with st.form(key=f"form_obs_{lead['_id']}"):
@@ -337,6 +347,45 @@ def render_agenda_leads():
 
                 with col_actions:
                     st.markdown("### Ações")
+                    
+                    # ✅ NOVO: Botão para definir/editar data de próximo contato
+                    if not lead.get('data_proximo_contato'):
+                        if st.button("📅 Definir Data de Contato", key=f"set_date_{lead['_id']}", use_container_width=True):
+                            st.session_state[f"edit_date_{lead['_id']}"] = True
+                            st.rerun()
+                    else:
+                        if st.button("✏️ Editar Data", key=f"edit_date_{lead['_id']}", use_container_width=True):
+                            st.session_state[f"edit_date_{lead['_id']}"] = True
+                            st.rerun()
+                    
+                    # Mostrar editor de data se ativado
+                    if st.session_state.get(f"edit_date_{lead['_id']}", False):
+                        with st.form(key=f"form_date_{lead['_id']}"):
+                            nova_data = st.date_input(
+                                "Nova data para contato:",
+                                value=lead.get('data_proximo_contato', datetime.now()).date() if lead.get('data_proximo_contato') else datetime.now(),
+                                key=f"date_input_{lead['_id']}"
+                            )
+                            
+                            col_save, col_cancel = st.columns([1, 1])
+                            with col_save:
+                                if st.form_submit_button("💾 Salvar Data", use_container_width=True):
+                                    try:
+                                        collection = get_leads_collection()
+                                        collection.update_one(
+                                            {"_id": ObjectId(lead['_id'])},
+                                            {"$set": {"data_proximo_contato": datetime.combine(nova_data, datetime.min.time())}}
+                                        )
+                                        st.success("✅ Data atualizada!")
+                                        st.session_state[f"edit_date_{lead['_id']}"] = False
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Erro: {e}")
+                            
+                            with col_cancel:
+                                if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                                    st.session_state[f"edit_date_{lead['_id']}"] = False
+                                    st.rerun()
                     
                     # ✅ NOVO: Botão de exclusão
                     if st.button("🗑️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
