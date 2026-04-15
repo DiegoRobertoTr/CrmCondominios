@@ -26,6 +26,7 @@ img_base64 = get_base64_image("assets/condominio.jpg")
 # CSS personalizado com imagem de fundo e overlay
 if img_base64:
     st.markdown(f"""
+    <style>
     /* Imagem de fundo com overlay semi-transparente */
     .main {{
         background-image: url("data:image/jpeg;base64,{img_base64}");
@@ -64,16 +65,19 @@ if img_base64:
     h1, h2, h3 {{
         text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
     }}
+    </style>
     """, unsafe_allow_html=True)
 else:
     # Fallback sem imagem
     st.markdown("""
+    <style>
     .main {
         background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
     }
     [data-testid="stSidebar"] {
         background: rgba(255, 255, 255, 0.95);
     }
+    </style>
     """, unsafe_allow_html=True)
 
 # ============================================================================
@@ -104,7 +108,6 @@ if query_params.get("page") == ["satisfacao"]:
     redirect_url = link_base
     if params:
         redirect_url += "?" + urlencode(params)
-
     st.markdown(f'''
     <meta http-equiv="refresh" content="0;url={redirect_url}" />
     Redirecionando para pesquisa de satisfação...
@@ -133,6 +136,7 @@ if query_params.get("page") == ["hotspots/confirmar"]:
 # ============================================================================
 # --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
 # ============================================================================
+
 # Função auxiliar: coleção de usuários
 def get_usuarios_collection():
     try:
@@ -143,6 +147,7 @@ def get_usuarios_collection():
         username = st.secrets.get("MONGO_USERNAME", "")
         password = st.secrets.get("MONGO_PASSWORD", "")
         cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "cluster0.6eywlbl.mongodb.net")
+    
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
@@ -175,13 +180,13 @@ if not st.session_state["logado"]:
         )
     except Exception:
         pass
-
+    
     if token:
         try:
             usuarios_coll = get_usuarios_collection()
             usuario = usuarios_coll.find_one({
                 "token_autologin": token,
-                "token_expira_em": { "$gt": datetime.utcnow()}
+                "token_expira_em": {"$gt": datetime.utcnow()}
             })
             if usuario:
                 perfil = usuario["perfil"]
@@ -218,6 +223,7 @@ if not st.session_state["logado"]:
 # --- ✅ Interface principal ---
 # ============================================================================
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
+
 if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     chaves_para_deletar = [k for k in st.session_state.keys() if not k.startswith("__")]
     for k in chaves_para_deletar:
@@ -363,17 +369,14 @@ try:
     elif modulo == "Roteiro de Vendas" and perfil in ["admin", "recepcao", "atendente_n1", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
-    
     # ✅ NOVO MÓDULO: LEADS & EVENTOS
     elif modulo == "Leads & Eventos":
         leads_eventos.render_registro_lead()
-        
     elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao", "atendente_n1"]:
         from modules import enderecos_bloqueados
         enderecos_bloqueados.render_enderecos_bloqueados(clientes_collection)
     else:
         st.info("Selecione um módulo no menu lateral.")
-
 except ImportError as e:
     st.error(f"⚠️ Módulo não encontrado ou importação falhou: `{e}`")
     st.info("Verifique se o arquivo está na pasta correta (`modules/`) e se o nome da função `render` está correto.")
