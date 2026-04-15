@@ -63,7 +63,7 @@ def processar_dataframe_prospeccao(df_raw):
         df['FASE_CLASSIFICADA'] = np.select(conditions, choices, default='💼 Em Negociação')
         df['FASE_ORIGINAL'] = df['ESTÁGIO']
     
-    # 4. Extrair previsão de entrega (vetorizado com regex)
+    # 4. Extrair previsão de entrega (vetorizado com regex - CORRIGIDO)
     if 'VIABILIDADE' in df.columns:
         viab_str = df['VIABILIDADE'].fillna('').astype(str)
         
@@ -74,12 +74,17 @@ def processar_dataframe_prospeccao(df_raw):
         mask_no_data = datas.isna()
         if mask_no_data.any():
             mes_ano = viab_str[mask_no_data].str.extract(r'(\d{2}/\d{4})', expand=False)
-            datas.loc[mask_no_data] = mes_ano
+            datas_copy = datas.copy()
+            datas_copy[mask_no_data] = mes_ano
+            datas = datas_copy
             # Adicionar dia 01 para conversão
             mask_mes_ano = datas.notna() & (datas.str.len() == 7)
             if mask_mes_ano.any():
-                datas.loc[mask_mes_ano] = '01/' + datas.loc[mask_mes_ano]
+                datas_updated = datas.copy()
+                datas_updated[mask_mes_ano] = '01/' + datas[mask_mes_ano]
+                datas = datas_updated
         
+        # Converter para datetime com tratamento de erro
         df['PREVISAO_ENTREGA'] = pd.to_datetime(datas, errors='coerce', dayfirst=True)
     
     # 5. Se houver coluna específica de previsão, usar ela como優先
@@ -90,15 +95,24 @@ def processar_dataframe_prospeccao(df_raw):
         else:
             df['PREVISAO_ENTREGA'] = previsao_direta
     
-    # 6. Calcular dias restantes (vetorizado)
+    # 6. Calcular dias restantes (vetorizado - CORRIGIDO)
     if 'PREVISAO_ENTREGA' in df.columns:
-        hoje = pd.Timestamp.now().normalize()
-        df['DIAS_RESTANTES'] = (df['PREVISAO_ENTREGA'] - hoje).dt.days
+        hoje = datetime.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        # Converter para datetime sem timezone
+        previsao_clean = pd.to_datetime(df['PREVISAO_ENTREGA'], errors='coerce')
+        # Remover timezone se existir
+        if previsao_clean.dt.tz is not None:
+            previsao_clean = previsao_clean.dt.tz_localize(None)
+        # Calcular diferença
+        df['DIAS_RESTANTES'] = (previsao_clean - pd.Timestamp(hoje)).dt.days
     
     # 7. Calcular prioridade (vetorizado com numpy.select)
     if 'FASE_CLASSIFICADA' in df.columns:
         fase = df['FASE_CLASSIFICADA']
         dias = df.get('DIAS_RESTANTES', pd.Series([np.nan] * len(df)))
+        
+        # Tratar valores nulos
+        dias = dias.fillna(9999)
         
         priority_conditions = [
             fase == '✅ Entramos',
@@ -173,9 +187,12 @@ def save_prospeccao_data_super_rapido(db, df_prospeccao, metadata):
     # PREPARAÇÃO SUPER RÁPIDA - TUDO VETORIZADO
     df = df_prospeccao.copy()
     
-    # Converter todas as datas de uma vez
+    # Converter todas as datas de uma vez (sem timezone)
     date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
     for col in date_cols:
+        # Remover timezone se existir
+        if df[col].dt.tz is not None:
+            df[col] = df[col].dt.tz_localize(None)
         df[col] = df[col].where(df[col].notna(), None)
     
     # Adicionar metadados (vetorizado)
@@ -354,8 +371,8 @@ def timeline_entregas(df_prospeccao):
     if df_timeline.empty:
         return df_timeline
 
-    hoje = pd.Timestamp.now().normalize()
-    df_timeline["DIAS_RESTANTES"] = (df_timeline["PREVISAO_ENTREGA"] - hoje).dt.days
+    hoje = datetime.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+    df_timeline["DIAS_RESTANTES"] = (df_timeline["PREVISAO_ENTREGA"] - pd.Timestamp(hoje)).dt.days
     df_timeline["ANO_ENTREGA"] = df_timeline["PREVISAO_ENTREGA"].dt.year
     df_timeline["MES_ENTREGA"] = df_timeline["PREVISAO_ENTREGA"].dt.to_period('M')
     
@@ -818,8 +835,13 @@ def render_prospeccao_condominios():
                 st.plotly_chart(fig_pri, use_container_width=True)
                 
                 prioridades_disp = df_prospeccao["PRIORIDADE"].unique().tolist()
+                # CORREÇÃO: Verificar quais prioridades existem antes de definir defaults
+                default_prioridades = [p for p in ["🟢 Ação Imediata", "🟠 Alta Prioridade", "🔴 Urgente"] if p in prioridades_disp]
+                if not default_prioridades and prioridades_disp:
+                    default_prioridades = [prioridades_disp[0]]
+                
                 prioridade_sel = st.multiselect("Filtrar por Prioridade", options=prioridades_disp, 
-                                               default=["🟢 Ação Imediata", "🟠 Alta Prioridade", "🔴 Urgente"])
+                                               default=default_prioridades)
                 if prioridade_sel:
                     df_prioridade = df_prospeccao[df_prospeccao["PRIORIDADE"].isin(prioridade_sel)]
                     st.dataframe(df_prioridade[["NOME", "CONSTRUTORA", "BAIRRO", "FASE_CLASSIFICADA", "PRIORIDADE"]], 
