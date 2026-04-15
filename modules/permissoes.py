@@ -1,41 +1,38 @@
-# modules/permissoes.py
 """
 Configuração central de permissões por perfil
 """
-
 PERMISSOES_POR_PERFIL = {
     # --- Equipe Interna ---
     "admin": [
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
         "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
         "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios",
-        "HotSpots WiFi", "Satisfação", "Monitoramento de E-mails",
-        "Teste de Integração", "Endereços Bloqueados",
-        "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"
+        "Endereços Bloqueados", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
+        "Leads & Eventos"  # ✅ NOVO
     ],
     "recepcao": [
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-        "HotSpots WiFi", "Satisfação", "Endereços Bloqueados"
+        "Endereços Bloqueados", "Leads & Eventos"  # ✅ NOVO
     ],
     "atendente_n1": [
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-        "HotSpots WiFi", "Satisfação", "Endereços Bloqueados"
+        "Endereços Bloqueados", "Leads & Eventos"  # ✅ NOVO
     ],
-    "supervisao_n1": [  # ← Nível 1: Operacional
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas"
+    "supervisao_n1": [
+        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"  # ✅ NOVO
     ],
-    "supervisao_n2": [  # ← Nível 2: Admin Parcial
+    "supervisao_n2": [
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-        "Admin Embaixadores", "Admin PaP", "Admin Revendas"
+        "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"  # ✅ NOVO
     ],
-    "supervisao_n3": [  # ← Nível 3: Admin + Relatórios
+    "supervisao_n3": [
         "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-        "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios"
+        "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"  # ✅ NOVO
     ],
     # --- NOVO PERFIL: DIRETORIA ---
     "diretoria": [
-        "Relatórios Condomínios", 
+        "Relatórios Condomínios",
         "Prospecção Condomínios"
     ],
     # --- Parceiros Externos ---
@@ -58,5 +55,5 @@ def get_perfis_internos():
     return [
         "admin", "recepcao", "atendente_n1",
         "supervisao_n1", "supervisao_n2", "supervisao_n3",
-        "diretoria"  # <--- Adicionado aqui
+        "diretoria"
     ]
