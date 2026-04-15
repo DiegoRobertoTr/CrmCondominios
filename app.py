@@ -1,5 +1,5 @@
 import streamlit as st
-from modules import auth, cadastro, followup, agendamentos, leads_eventos  # ✅ Adicionado leads_eventos
+from modules import auth, cadastro, followup, agendamentos, leads_eventos
 from pymongo import MongoClient
 import urllib.parse
 from datetime import datetime
@@ -20,13 +20,13 @@ def get_base64_image(image_path):
         st.warning(f"⚠️ Não foi possível carregar a imagem de fundo: {e}")
         return None
 
-# Carrega a imagem de fundo (ajuste o caminho conforme necessário)
+# Carrega a imagem de fundo
 img_base64 = get_base64_image("assets/condominio.jpg")
 
 # CSS personalizado com imagem de fundo e overlay
 if img_base64:
     st.markdown(f"""
-    /* Imagem de fundo com overlay semi-transparente */
+    <style>
     .main {{
         background-image: url("data:image/jpeg;base64,{img_base64}");
         background-size: cover;
@@ -34,7 +34,6 @@ if img_base64:
         background-attachment: fixed;
         position: relative;
     }}
-    /* Overlay branco semi-transparente para melhorar legibilidade */
     .main::before {{
         content: "";
         position: fixed;
@@ -45,35 +44,33 @@ if img_base64:
         background: rgba(255, 255, 255, 0.88);
         z-index: -1;
     }}
-    /* Sidebar com leve transparência */
     [data-testid="stSidebar"] {{
         background: rgba(255, 255, 255, 0.95);
         backdrop-filter: blur(10px);
     }}
-    /* Melhorar contraste dos elementos principais */
     .stTextInput, .stSelectbox, .stNumberInput, .stTextArea {{
         background-color: rgba(255, 255, 255, 0.95);
         border-radius: 8px;
     }}
-    /* Cards e containers com fundo mais sólido */
     .stExpander, .stContainer {{
         background-color: rgba(255, 255, 255, 0.9);
         border-radius: 10px;
     }}
-    /* Títulos com mais destaque */
     h1, h2, h3 {{
         text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
     }}
+    </style>
     """, unsafe_allow_html=True)
 else:
-    # Fallback sem imagem
     st.markdown("""
+    <style>
     .main {
         background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
     }
     [data-testid="stSidebar"] {
         background: rgba(255, 255, 255, 0.95);
     }
+    </style>
     """, unsafe_allow_html=True)
 
 # ============================================================================
@@ -133,7 +130,6 @@ if query_params.get("page") == ["hotspots/confirmar"]:
 # ============================================================================
 # --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
 # ============================================================================
-# Função auxiliar: coleção de usuários
 def get_usuarios_collection():
     try:
         username = st.secrets["mongo"]["MONGO_USERNAME"]
@@ -158,10 +154,10 @@ try:
     clientes_collection.create_index("celular", unique=True)
     clientes_collection.create_index("nome_completo")
 except Exception:
-    pass  # Índices já podem existir
+    pass
 
 # ============================================================================
-# --- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
+# --- 🔐 Verificação automática de login ---
 # ============================================================================
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
@@ -234,12 +230,10 @@ st.sidebar.header("📂 Módulos")
 # ============================================================================
 perfil = st.session_state["perfil"]
 
-# ✅ Importa permissões centralizadas
 try:
     from modules.permissoes import get_modulos_permitidos
     opcoes_modulos = get_modulos_permitidos(perfil)
 except ImportError:
-    # Fallback se módulo não existir ainda
     modulo_map = {
         "embaixador": ["Painel Embaixador"],
         "tecnico": ["Painel Técnico"],
@@ -250,27 +244,27 @@ except ImportError:
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
             "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"  # ✅ Atualizado
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"  # ✅ Atualizado
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "atendente_n1": [
             "Cadastro", "Follow-up", "Agendamentos",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"  # ✅ Atualizado
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "supervisao_n1": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"  # ✅ Atualizado
+            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"
         ],
         "supervisao_n2": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-            "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"  # ✅ Atualizado
+            "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"
         ],
         "supervisao_n3": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"  # ✅ Atualizado
+            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"
         ],
         "diretoria": [
             "Relatórios Condomínios", "Prospecção Condomínios"
@@ -278,7 +272,6 @@ except ImportError:
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Adiciona módulos extras apenas para admin (caso precise de ajustes finos no fallback)
 if perfil == "admin":
     extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"]
     for mod in extras_admin:
