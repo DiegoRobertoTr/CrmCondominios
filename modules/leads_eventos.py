@@ -72,6 +72,19 @@ def update_lead_observacoes(lead_id, novas_observacoes):
         st.error(f"Erro ao atualizar observações: {e}")
         return False
 
+def update_lead_data_proximo_contato(lead_id, nova_data):
+    """Atualiza apenas a data de próximo contato"""
+    try:
+        collection = get_leads_collection()
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)}, 
+            {"$set": {"data_proximo_contato": datetime.combine(nova_data, datetime.min.time())}}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar data: {e}")
+        return False
+
 def get_eventos_existentes():
     """Busca todos os nomes de eventos já cadastrados no banco"""
     try:
@@ -127,7 +140,7 @@ def render_registro_lead():
             email = st.text_input("E-mail", max_chars=100)
             
         with col2:
-            st.subheader(" Dados do Evento & Agenda")
+            st.subheader("📍 Dados do Evento & Agenda")
             
             # ✅ NOVO: Campo de evento com autocomplete/sugestão
             st.markdown("**Nome do Evento / Origem ***")
@@ -181,7 +194,7 @@ def render_registro_lead():
             nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", " Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
-        st.subheader("🛒 Interesse em Produtos")
+        st.subheader(" Interesse em Produtos")
         produtos_interesse = st.multiselect(
             "Quais produtos despertaram interesse?", 
             PRODUTOS,
@@ -242,7 +255,7 @@ def render_registro_lead():
 # --- Visualização e Gestão de Leads (Agenda) ---
 def render_agenda_leads():
     """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
-    st.title("📋 Agenda & Acompanhamento de Leads")
+    st.title(" Agenda & Acompanhamento de Leads")
     st.markdown("Lista organizada por data do próximo contato (mais urgentes no topo).")
     
     try:
@@ -281,11 +294,11 @@ def render_agenda_leads():
             if data_contato:
                 data_str = data_contato.strftime("%d/%m/%Y")
                 hoje = datetime.now().date()
-                icono_data = "" if data_contato.date() < hoje else "🟢"
-                urgency_badge = "⚠️ URGENTE" if data_contato.date() < hoje else ""
+                icono_data = "🔴" if data_contato.date() < hoje else "🟢"
+                urgency_badge = " ⚠️ URGENTE" if data_contato.date() < hoje else ""
             else:
                 data_str = "Sem data agendada"
-                icono_data = ""
+                icono_data = "⚪"
                 urgency_badge = ""
             
             # ✅ CORREÇÃO CRÍTICA: data_evento pode ser None!
@@ -309,12 +322,12 @@ def render_agenda_leads():
                     if lead.get('nome_empresa'):
                         st.write(f"**🏢 Empresa:** {lead.get('nome_empresa')}")
                     if not lead.get('nome_condominio') and not lead.get('nome_empresa'):
-                        st.write(f"**🏢 Organização:** N/A")
+                        st.write(f"** Organização:** N/A")
                     
-                    st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+                    st.write(f"** Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     
                     # ✅ NOVO: Campo de observações editável
-                    st.write("**📝 Observações:**")
+                    st.write("** Observações:**")
                     observacoes_atuais = lead.get('observacoes', 'Sem observações')
                     
                     with st.form(key=f"form_obs_{lead['_id']}"):
@@ -340,7 +353,7 @@ def render_agenda_leads():
                         with col_del:
                             pass  # Botão de exclusão será adicionado abaixo
                     
-                    st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
+                    st.write(f"** Evento:** {lead.get('evento')} em {data_evento_str}")
                     st.write(f"**🔄 Status Atual:** {lead.get('status')}")
                     if lead.get('convertido'):
                         st.success("**🎉 CLIENTE CONVERTIDO**")
@@ -351,15 +364,19 @@ def render_agenda_leads():
                     # ✅ NOVO: Botão para definir/editar data de próximo contato
                     if not lead.get('data_proximo_contato'):
                         if st.button("📅 Definir Data de Contato", key=f"set_date_{lead['_id']}", use_container_width=True):
-                            st.session_state[f"edit_date_{lead['_id']}"] = True
+                            # Usar session_state de forma segura
+                            if "editing_date_lead" not in st.session_state:
+                                st.session_state.editing_date_lead = str(lead['_id'])
                             st.rerun()
                     else:
                         if st.button("✏️ Editar Data", key=f"edit_date_{lead['_id']}", use_container_width=True):
-                            st.session_state[f"edit_date_{lead['_id']}"] = True
+                            # Usar session_state de forma segura
+                            if "editing_date_lead" not in st.session_state:
+                                st.session_state.editing_date_lead = str(lead['_id'])
                             st.rerun()
                     
                     # Mostrar editor de data se ativado
-                    if st.session_state.get(f"edit_date_{lead['_id']}", False):
+                    if "editing_date_lead" in st.session_state and st.session_state.editing_date_lead == str(lead['_id']):
                         with st.form(key=f"form_date_{lead['_id']}"):
                             nova_data = st.date_input(
                                 "Nova data para contato:",
@@ -370,25 +387,22 @@ def render_agenda_leads():
                             col_save, col_cancel = st.columns([1, 1])
                             with col_save:
                                 if st.form_submit_button("💾 Salvar Data", use_container_width=True):
-                                    try:
-                                        collection = get_leads_collection()
-                                        collection.update_one(
-                                            {"_id": ObjectId(lead['_id'])},
-                                            {"$set": {"data_proximo_contato": datetime.combine(nova_data, datetime.min.time())}}
-                                        )
+                                    if update_lead_data_proximo_contato(lead['_id'], nova_data):
                                         st.success("✅ Data atualizada!")
-                                        st.session_state[f"edit_date_{lead['_id']}"] = False
+                                        # Limpar o estado de edição
+                                        del st.session_state.editing_date_lead
                                         st.rerun()
-                                    except Exception as e:
-                                        st.error(f"❌ Erro: {e}")
+                                    else:
+                                        st.error("❌ Falha ao atualizar data.")
                             
                             with col_cancel:
-                                if st.form_submit_button("❌ Cancelar", use_container_width=True):
-                                    st.session_state[f"edit_date_{lead['_id']}"] = False
+                                if st.form_submit_button(" Cancelar", use_container_width=True):
+                                    # Limpar o estado de edição
+                                    del st.session_state.editing_date_lead
                                     st.rerun()
                     
                     # ✅ NOVO: Botão de exclusão
-                    if st.button("🗑️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
+                    if st.button("️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
                         if delete_lead(lead['_id']):
                             st.success("✅ Lead excluído com sucesso!")
                             st.rerun()
@@ -433,7 +447,7 @@ def render_agenda_leads():
 if __name__ == "__main__":
     # ✅ CORREÇÃO: Removido st.set_page_config daqui - já está no topo!
     # Criação de Abas
-    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
+    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", " Agenda & Lista"])
 
     with tab1:
         render_registro_lead()
