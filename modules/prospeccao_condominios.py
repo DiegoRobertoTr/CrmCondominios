@@ -4,7 +4,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timezone, date
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateOne
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
@@ -181,9 +181,10 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
     # Converter para lista de dicionários de uma vez
     docs = df_para_salvar.to_dict('records')
     
-    # Inserir em lote
+    # Inserir em lote (dividir em chunks de 1000 para memória)
     if docs:
-        collection.insert_many(docs)
+        for i in range(0, len(docs), 1000):
+            collection.insert_many(docs[i:i+1000])
 
     # Salvar metadados
     meta_collection.insert_one({
@@ -194,6 +195,46 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
         "construtoras": metadata.get("construtoras", [])
     })
     return True
+
+
+def update_records_batch(db, updates_list):
+    """
+    Atualiza múltiplos registros em UMA ÚNICA operação de banco.
+    MUITO MAIS RÁPIDO que loop com update_single_record.
+    """
+    try:
+        collection = db["prospeccao_condominios"]
+        bulk_operations = []
+        
+        for record_id, updates in updates_list:
+            try:
+                obj_id = ObjectId(record_id)
+            except:
+                continue
+            
+            # Limpar updates
+            clean_updates = {k: (None if (isinstance(v, str) and v.strip() == "") or pd.isna(v) else v) 
+                            for k, v in updates.items() if k != "_id"}
+            
+            # Converter datas em lote
+            date_cols = [k for k in clean_updates.keys() if 'data' in k.lower() or 'previsao' in k.lower()]
+            for col in date_cols:
+                if clean_updates[col] is not None:
+                    clean_updates[col] = pd.to_datetime(clean_updates[col], errors='coerce', dayfirst=True)
+                    clean_updates[col] = None if pd.isna(clean_updates[col]) else clean_updates[col]
+            
+            bulk_operations.append(
+                UpdateOne({"_id": obj_id}, {"$set": clean_updates})
+            )
+        
+        if bulk_operations:
+            result = collection.bulk_write(bulk_operations)
+            return result.modified_count
+        return 0
+        
+    except Exception as e:
+        st.error(f"Erro na atualização em lote: {e}")
+        return 0
 
 
 @st.cache_data
@@ -226,34 +267,6 @@ def clear_prospeccao_data(db, batch_id=None):
         result = collection.delete_many({})
         db["prospeccao_meta"].delete_many({})
     return result.deleted_count
-
-
-def update_single_record(db, record_id, updates):
-    """Atualiza um único registro no MongoDB"""
-    try:
-        collection = db["prospeccao_condominios"]
-        try:
-            obj_id = ObjectId(record_id)
-        except:
-            st.error("ID inválido.")
-            return False
-        
-        # Limpar updates em lote
-        clean_updates = {k: (None if (isinstance(v, str) and v.strip() == "") or pd.isna(v) else v) 
-                        for k, v in updates.items() if k != "_id"}
-        
-        # Converter datas
-        date_cols = [k for k in clean_updates.keys() if 'data' in k.lower() or 'previsao' in k.lower()]
-        for col in date_cols:
-            if clean_updates[col] is not None:
-                clean_updates[col] = pd.to_datetime(clean_updates[col], errors='coerce', dayfirst=True)
-                clean_updates[col] = None if pd.isna(clean_updates[col]) else clean_updates[col]
-        
-        result = collection.update_one({"_id": obj_id}, {"$set": clean_updates})
-        return result.modified_count > 0
-    except Exception as e:
-        st.error(f"Erro ao atualizar: {e}")
-        return False
 
 
 def insert_new_record(db, new_data):
@@ -649,7 +662,7 @@ def render_prospeccao_condominios():
         "📋 Lista Completa"
     ])
 
-    # --- LÓGICA DA ABA: ATUALIZAR EMPREENDIMENTOS ---
+    # --- LÓGICA DA ABA: ATUALIZAR EMPREENDIMENTOS (VERSÃO OTIMIZADA SEM LOOP) ---
     with tab_update:
         st.header("✏️ Atualização de Cadastros")
         st.markdown("Filtre os empreendimentos e edite diretamente na tabela abaixo.")
@@ -727,21 +740,27 @@ def render_prospeccao_condominios():
                     
                     df_filtered_reset = df_filtered.reset_index(drop=True)
                     edited_df_reset = edited_df.reset_index(drop=True)
-                     
-                    success_count = 0
-                    error_count = 0
                     
-                    progress_bar = st.progress(0)
+                    # ✅ OTIMIZAÇÃO: Preparar TODOS os updates em lote (vetorizado)
+                    updates_batch = []
                     
-                    for i, row in edited_df_reset.iterrows():
-                        if i >= len(df_filtered_reset):
-                            break
-                        
+                    # Processar todos os registros de uma vez
+                    for i in range(min(len(edited_df_reset), len(df_filtered_reset))):
                         original_id = df_filtered_reset.iloc[i]["_id"]
-                        updates = row.to_dict()
+                        original_row = df_filtered_reset.iloc[i]
+                        edited_row = edited_df_reset.iloc[i]
                         
+                        # Verificar quais campos foram realmente alterados
+                        updates = {}
+                        for col in edited_row.index:
+                            if col in original_row.index and edited_row[col] != original_row[col]:
+                                updates[col] = edited_row[col]
+                        
+                        if not updates:
+                            continue
+                        
+                        # Aplicar transformações VETORIZADAS (não linha por linha)
                         if "ESTÁGIO" in updates:
-                            # Usar função vetorizada mesmo para um valor
                             fase_series = pd.Series([updates["ESTÁGIO"]])
                             updates["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(fase_series).iloc[0]
                         
@@ -753,25 +772,29 @@ def render_prospeccao_condominios():
                             previsao_series = pd.Series([updates["PREVISAO_ENTREGA"]])
                             updates["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(previsao_series).iloc[0]
                         
-                        temp_row = pd.Series(updates)
-                        updates["PRIORIDADE"] = calcular_prioridade_vetorizado(pd.DataFrame([temp_row])).iloc[0]
+                        # Calcular prioridade se necessário
+                        if any(k in updates for k in ["ESTÁGIO", "FASE_CLASSIFICADA", "PREVISAO_ENTREGA"]):
+                            temp_row = {**original_row.to_dict(), **updates}
+                            updates["PRIORIDADE"] = calcular_prioridade_vetorizado(pd.DataFrame([temp_row])).iloc[0]
                         
-                        if update_single_record(db, original_id, updates):
-                            success_count += 1
-                        else:
-                            error_count += 1
-                        
-                        progress_bar.progress((i + 1) / len(edited_df_reset))
+                        updates_batch.append((original_id, updates))
                     
-                    progress_bar.empty()
-                    if success_count > 0:
-                        st.success(f"✅ {success_count} registros atualizados com sucesso!")
-                        st.cache_data.clear()
-                        if "df_prospeccao_cached" in st.session_state:
-                            del st.session_state["df_prospeccao_cached"]
-                        st.rerun()
-                    if error_count > 0:
-                        st.error(f"❌ {error_count} registros falharam ao atualizar.")
+                    # ✅ ÚNICA operação de banco para TODOS os registros
+                    if updates_batch:
+                        with st.spinner(f'💾 Salvando {len(updates_batch)} registros em lote...'):
+                            modified_count = update_records_batch(db, updates_batch)
+                            
+                            if modified_count > 0:
+                                st.success(f"✅ {modified_count} registros atualizados com sucesso!")
+                                st.cache_data.clear()
+                                if "df_prospeccao_cached" in st.session_state:
+                                    del st.session_state["df_prospeccao_cached"]
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.warning("⚠️ Nenhum registro foi alterado.")
+                    else:
+                        st.info("ℹ️ Nenhuma alteração detectada.")
             else:
                 st.info("Nenhum registro encontrado com esses filtros.")
         else:
