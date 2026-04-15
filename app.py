@@ -231,10 +231,10 @@ except ImportError:
         "revenda": ["Painel Revenda"],
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-            "Endereços Bloqueados", "Leads & Eventos", "Condomínios", 
-            "Prospecção Condomínios", "Relatórios Condomínios",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios"
+            "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios",
+            "Endereços Bloqueados", "Leads & Eventos", "Condomínios", 
+            "Relatórios Condomínios", "Prospecção Condomínios"
         ],
         "recepcao": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"],
         "atendente_n1": ["Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"],
@@ -245,15 +245,17 @@ except ImportError:
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Lógica para exibir a linha divisória no menu
-modulo_selecionado = None
+# ✅ Lógica para exibir a linha divisória com label
+grupo_condominios = ["Leads & Eventos", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"]
+
 for i, modulo in enumerate(opcoes_modulos):
     # Verifica se é o primeiro módulo do grupo "Condomínios & Leads"
-    if modulo in ["Leads & Eventos", "Condomínios", "Prospecção Condomínios", "Relatórios Condomínios"]:
-        # Se o item anterior NÃO for deste grupo, desenha a linha
-        if i > 0 and opcoes_modulos[i-1] not in ["Leads & Eventos", "Condomínios", "Prospecção Condomínios", "Relatórios Condomínios"]:
-            st.sidebar.divider()
+    if modulo in grupo_condominios:
+        # Se o item anterior NÃO for deste grupo, desenha a linha + label
+        if i > 0 and opcoes_modulos[i-1] not in grupo_condominios:
+            st.sidebar.markdown("<br>", unsafe_allow_html=True)
             st.sidebar.markdown("**🏢 Condomínios & Leads**")
+            st.sidebar.divider()
     
     if st.sidebar.radio("Selecione o módulo:", [modulo], index=0, key=f"modulo_{i}", label_visibility="collapsed"):
         modulo_selecionado = modulo
