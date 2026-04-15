@@ -36,7 +36,7 @@ def update_lead_status(lead_id, novo_status, convertido=False):
         if convertido:
             update_data["convertido"] = True
             update_data["status"] = "✅ Convertido"
-        
+            
         result = collection.update_one(
             {"_id": ObjectId(lead_id)}, 
             {"$set": update_data}
@@ -51,7 +51,7 @@ def render_registro_lead():
     """Renderiza formulário de captura de leads em eventos"""
     st.title("🤝 Captura de Leads & Eventos")
     st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
-    
+
     PRODUTOS = [
         "Conecta e Protege (Câmeras + Internet + Bônus)",
         "Câmeras de Segurança",
@@ -138,10 +138,14 @@ def render_registro_lead():
 def render_agenda_leads():
     """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
     st.title("📋 Agenda & Acompanhamento de Leads")
-    st.markdown("Lista organizada por data do próximo contato (mais urgentes no topo).")
-    
-    collection = get_leads_collection()
+    st.markdown("Lista organizada por **data do próximo contato** (mais urgentes no topo).")
 
+    try:
+        collection = get_leads_collection()
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
+        return
+    
     # Filtro opcional de status
     filtro_status = st.multiselect(
         "Filtrar por Status:", 
@@ -149,7 +153,6 @@ def render_agenda_leads():
         default=["Novo", "Em Negociação", "Aguardando Retorno"]
     )
 
-    # Query com ordenação por data_proximo_contato (ascendente)
     query = {}
     if filtro_status:
         query["status"] = {"$in": filtro_status}
@@ -157,21 +160,27 @@ def render_agenda_leads():
     try:
         leads = list(collection.find(query).sort("data_proximo_contato", 1).limit(50))
     except Exception as e:
-        st.error(f"Erro ao buscar leads: {e}")
-        leads = []
+        st.error(f"❌ Erro ao buscar leads: {e}")
+        return
 
     if not leads:
         st.info("Nenhum lead encontrado com os filtros selecionados.")
     else:
         for lead in leads:
-            # Formatação de datas
+            # Formatação de datas com segurança
             data_contato = lead.get("data_proximo_contato")
             if data_contato:
                 data_str = data_contato.strftime("%d/%m/%Y")
             else:
                 data_str = "Não agendado"
             
-            # Cor ou ícone baseado na urgência
+            # ✅ CORREÇÃO CRÍTICA: data_evento pode ser None!
+            data_evento = lead.get("data_evento")
+            if data_evento:
+                data_evento_str = data_evento.strftime("%d/%m/%Y")
+            else:
+                data_evento_str = "N/A"
+            
             hoje = datetime.now().date()
             icono_data = "🔴" if data_contato and data_contato.date() < hoje else "🟢"
             
@@ -185,7 +194,7 @@ def render_agenda_leads():
                     st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio', 'N/A')}")
                     st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     st.write(f"**📝 Obs:** {lead.get('observacoes', 'Sem observações')}")
-                    st.write(f"**📅 Evento:** {lead.get('evento')} em {lead.get('data_evento').strftime('%d/%m/%Y')}")
+                    st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")  # ✅ USANDO data_evento_str
                     st.write(f"**🔄 Status Atual:** {lead.get('status')}")
                     if lead.get('convertido'):
                         st.success("**🎉 CLIENTE CONVERTIDO**")
@@ -197,12 +206,17 @@ def render_agenda_leads():
                         
                         status_options = ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"]
                         current_status = lead.get('status', 'Novo')
-                        index_status = status_options.index(current_status) if current_status in status_options else 0
+                        
+                        # ✅ Segurança no index
+                        try:
+                            status_index = status_options.index(current_status)
+                        except ValueError:
+                            status_index = 0
                         
                         novo_status = st.selectbox(
                             "Alterar Status",
                             status_options,
-                            index=index_status
+                            index=status_index
                         )
                         
                         submit_update = st.form_submit_button("Atualizar", use_container_width=True)
