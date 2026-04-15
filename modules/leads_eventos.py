@@ -36,7 +36,7 @@ def update_lead_status(lead_id, novo_status, convertido=False):
         if convertido:
             update_data["convertido"] = True
             update_data["status"] = "✅ Convertido"
-            
+        
         result = collection.update_one(
             {"_id": ObjectId(lead_id)}, 
             {"$set": update_data}
@@ -51,7 +51,7 @@ def render_registro_lead():
     """Renderiza formulário de captura de leads em eventos"""
     st.title("🤝 Captura de Leads & Eventos")
     st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
-
+    
     PRODUTOS = [
         "Conecta e Protege (Câmeras + Internet + Bônus)",
         "Câmeras de Segurança",
@@ -123,7 +123,7 @@ def render_registro_lead():
                     "observacoes": observacoes.strip(),
                     "data_cadastro": datetime.now(),
                     "ativo": True,
-                    "convertido": False # Campo novo para controle de conversão
+                    "convertido": False
                 }
                 
                 try:
@@ -138,10 +138,10 @@ def render_registro_lead():
 def render_agenda_leads():
     """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
     st.title("📋 Agenda & Acompanhamento de Leads")
-    st.markdown("Lista organizada por **data do próximo contato** (mais urgentes no topo).")
-
-    collection = get_leads_collection()
+    st.markdown("Lista organizada por data do próximo contato (mais urgentes no topo).")
     
+    collection = get_leads_collection()
+
     # Filtro opcional de status
     filtro_status = st.multiselect(
         "Filtrar por Status:", 
@@ -150,14 +150,11 @@ def render_agenda_leads():
     )
 
     # Query com ordenação por data_proximo_contato (ascendente)
-    # Se não tiver data, usa data_cadastro como fallback na lógica de exibição
     query = {}
     if filtro_status:
         query["status"] = {"$in": filtro_status}
 
     try:
-        # Tenta ordenar por data_proximo_contato. 
-        # Nota: Campos nulos podem variar dependendo da versão do Mongo, mas geralmente vão para o fim/inicio.
         leads = list(collection.find(query).sort("data_proximo_contato", 1).limit(50))
     except Exception as e:
         st.error(f"Erro ao buscar leads: {e}")
@@ -166,7 +163,6 @@ def render_agenda_leads():
     if not leads:
         st.info("Nenhum lead encontrado com os filtros selecionados.")
     else:
-        # Agrupamento visual por data (opcional, mas bom para agenda)
         for lead in leads:
             # Formatação de datas
             data_contato = lead.get("data_proximo_contato")
@@ -175,7 +171,7 @@ def render_agenda_leads():
             else:
                 data_str = "Não agendado"
             
-            # Cor ou ícone baseado na urgência (simples)
+            # Cor ou ícone baseado na urgência
             hoje = datetime.now().date()
             icono_data = "🔴" if data_contato and data_contato.date() < hoje else "🟢"
             
@@ -196,20 +192,22 @@ def render_agenda_leads():
 
                 with col_action:
                     st.markdown("### Ações")
-                    # Formulário único para atualização deste lead
                     with st.form(key=f"form_update_{lead['_id']}"):
                         is_convertido = st.checkbox("✅ Cliente Convertido", value=lead.get('convertido', False))
                         
+                        status_options = ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"]
+                        current_status = lead.get('status', 'Novo')
+                        index_status = status_options.index(current_status) if current_status in status_options else 0
+                        
                         novo_status = st.selectbox(
                             "Alterar Status",
-                            ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
-                            index=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"].index(lead.get('status', 'Novo')) if lead.get('status') in ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"] else 0
+                            status_options,
+                            index=index_status
                         )
                         
                         submit_update = st.form_submit_button("Atualizar", use_container_width=True)
                         
                         if submit_update:
-                            # Se marcou convertido, força o status para convertido também
                             status_final = novo_status
                             flag_convertido = is_convertido
                             if is_convertido:
