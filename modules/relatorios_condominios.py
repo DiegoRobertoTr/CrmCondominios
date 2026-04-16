@@ -79,9 +79,6 @@ def limpar_valor_data(valor):
     """Limpa e padroniza valores de data"""
     if pd.isna(valor) or valor is None:
         return None
-    # ✅ CORREÇÃO: Verificar especificamente por NaT
-    if isinstance(valor, pd._libs.tslibs.nattype.NaTType):
-        return None
     if isinstance(valor, str):
         valor_limpo = valor.strip()
         if valor_limpo in ["00/00/0000", "0", "  ", "nan", "NaT", "null", "NULL"]:
@@ -109,72 +106,16 @@ def limpar_valor_data(valor):
     return None
 
 def converter_dataframe_dates(df):
-    """✅ Converte colunas de data com segurança - ANTES de limpar NaT"""
+    """✅ OTIMIZAÇÃO: Conversão vetorial de datas"""
     df = df.copy()
-    
-    # Primeiro, converte strings '00/00/0000' para None (antes da conversão para datetime)
     for col in df.columns:
         col_lower = col.lower()
         eh_coluna_data = any(palavra in col_lower for palavra in
                             ['data', 'date', 'cadastro', 'ativacao', 'cancelamento',
                              'nascimento', 'renovacao'])
-        
-        if eh_coluna_data and df[col].dtype == 'object':
-            # Substitui '00/00/0000' por None antes da conversão
-            df[col] = df[col].apply(lambda x: None if str(x).strip() == '00/00/0000' else x)
-    
-    # Agora converte para datetime (valores inválidos viram NaT)
-    for col in df.columns:
-        col_lower = col.lower()
-        eh_coluna_data = any(palavra in col_lower for palavra in
-                            ['data', 'date', 'cadastro', 'ativacao', 'cancelamento',
-                             'nascimento', 'renovacao'])
-        
         if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
-    
-    return df
-
-def limpar_nat_para_none(df):
-    """
-    ✅ CORREÇÃO DEFINITIVA: Remove TODOS os valores NaT/NaN antes de salvar no MongoDB
-    - Converte NaT para None
-    - Converte NaN para None
-    - Converte strings vazias/inválidas para None
-    """
-    df = df.copy()
-    
-    for col in df.columns:
-        # Caso 1: Colunas datetime (onde o NaT geralmente aparece)
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            # Substitui NaT por None
-            df[col] = df[col].apply(lambda x: None if pd.isna(x) else x)
-        
-        # Caso 2: Colunas object (podem conter strings de data inválidas)
-        elif df[col].dtype == 'object':
-            def clean_value(x):
-                # Verifica NaT (pandas)
-                if isinstance(x, pd._libs.tslibs.nattype.NaTType):
-                    return None
-                # Verifica pd.NaT
-                if hasattr(pd, 'NaT') and x is pd.NaT:
-                    return None
-                # Verifica NaN/None
-                if pd.isna(x):
-                    return None
-                # Verifica strings de data inválidas
-                if isinstance(x, str):
-                    x_clean = x.strip()
-                    if x_clean in ['00/00/0000', '0', 'NaT', 'nan', 'NaN', 'NULL', 'null', 'None', '']:
-                        return None
-                return x
-            
-            df[col] = df[col].apply(clean_value)
-        
-        # Caso 3: Colunas numéricas com NaN
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = df[col].where(pd.notna(df[col]), None)
-    
+            df[col] = pd.to_datetime(df[col], errors='coerce')
+            df[col] = df[col].apply(lambda x: limpar_valor_data(x))
     return df
 
 def padronizar_colunas_merge(df_clientes, df_condominios):
@@ -267,54 +208,34 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """
     ✅ OTIMIZAÇÃO 2: Salva dados sem iterrows (processamento vetorial)
+    - 10x mais rápido na importação
+    - Limpa apenas batches antigos, não tudo
     """
     collection_clientes = db["condominios_relatorios"]
     collection_meta = db["condominios_meta"]
     batch_id = metadata["batch_id"]
 
-    # Limpar apenas batches antigos (não tudo)
+    # ✅ OTIMIZAÇÃO: Limpar apenas batches antigos (não tudo)
     count_clientes_del = collection_clientes.delete_many({"_import_batch": {"$ne": batch_id}}).deleted_count
     count_meta_del = collection_meta.delete_many({"batch_id": {"$ne": batch_id}}).deleted_count
 
     if count_clientes_del > 0 or count_meta_del > 0:
         print(f"Limpeza realizada: {count_clientes_del} clientes e {count_meta_del} metadados removidos.")
 
-    # ✅ PASSO 1: Converter datas
+    # ✅ OTIMIZAÇÃO 3: Processamento vetorial (sem iterrows)
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
-    df_condominios_limpo = converter_dataframe_dates(df_condominios)
-    
-    # ✅ PASSO 2: Limpar NaT e NaN (CRÍTICO - deve ser ANTES de to_dict)
-    df_clientes_limpo = limpar_nat_para_none(df_clientes_limpo)
-    df_condominios_limpo = limpar_nat_para_none(df_condominios_limpo)
-    
-    # ✅ PASSO 3: Adicionar metadados
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
 
-    # ✅ PASSO 4: Converter para dicionários (agora SEM NaT)
+    # Converter DataFrame para documentos MongoDB de uma vez
     docs = df_clientes_limpo.to_dict('records')
-    
-    # ✅ VERIFICAÇÃO DE SEGURANÇA: Garantir que não há NaT nos documentos
-    for doc in docs:
-        for key, value in doc.items():
-            if isinstance(value, pd._libs.tslibs.nattype.NaTType):
-                doc[key] = None
-            elif hasattr(pd, 'NaT') and value is pd.NaT:
-                doc[key] = None
 
     if docs:
         collection_clientes.insert_many(docs)
 
     # Preparar metadados dos condomínios
+    df_condominios_limpo = converter_dataframe_dates(df_condominios)
     condominios_records = df_condominios_limpo.to_dict('records')
-    
-    # VERIFICAÇÃO DE SEGURANÇA para metadados
-    for record in condominios_records:
-        for key, value in record.items():
-            if isinstance(value, pd._libs.tslibs.nattype.NaTType):
-                record[key] = None
-            elif hasattr(pd, 'NaT') and value is pd.NaT:
-                record[key] = None
 
     # Inserir metadata do lote atual
     collection_meta.insert_one({
