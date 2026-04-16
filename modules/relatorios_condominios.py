@@ -321,8 +321,8 @@ def clear_condominio_data(db, batch_id=None):
 @st.cache_data(ttl=600)  # ✅ OTIMIZAÇÃO: Cache de 10 minutos
 def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo_ativos):
     """Versão em cache da geração do dashboard principal"""
-    df_clientes = pd.read_json(df_clientes_json, orient='split')
-    df_condominios = pd.read_json(df_condominios_json, orient='split')
+    df_clientes = pd.read_json(io.StringIO(df_clientes_json), orient='split')
+    df_condominios = pd.read_json(io.StringIO(df_condominios_json), orient='split')
     
     if "CONDOMANIO" not in df_clientes.columns or "ID" not in df_condominios.columns:
         return pd.DataFrame()
@@ -402,8 +402,8 @@ def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo
 @st.cache_data(ttl=600)  # ✅ OTIMIZAÇÃO: Cache de 10 minutos
 def calcular_penetracao_cached(df_clientes_json, df_condominios_json):
     """Calcula taxa de penetração com cache"""
-    df_clientes = pd.read_json(df_clientes_json, orient='split')
-    df_condominios = pd.read_json(df_condominios_json, orient='split')
+    df_clientes = pd.read_json(io.StringIO(df_clientes_json), orient='split')
+    df_condominios = pd.read_json(io.StringIO(df_condominios_json), orient='split')
     
     # ✅ CORREÇÃO: Padronizar tipos antes do merge
     df_clientes, df_condominios = padronizar_colunas_merge(df_clientes, df_condominios)
@@ -442,8 +442,8 @@ def calcular_penetracao_cached(df_clientes_json, df_condominios_json):
 @st.cache_data(ttl=600)
 def analisar_inadimplencia_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Análise de inadimplência com cache"""
-    df_clientes = pd.read_json(df_clientes_json, orient='split')
-    df_condominios = pd.read_json(df_condominios_json, orient='split')
+    df_clientes = pd.read_json(io.StringIO(df_clientes_json), orient='split')
+    df_condominios = pd.read_json(io.StringIO(df_condominios_json), orient='split')
     
     # ✅ CORREÇÃO: Padronizar tipos antes do merge
     df_clientes, df_condominios = padronizar_colunas_merge(df_clientes, df_condominios)
@@ -473,8 +473,8 @@ def analisar_inadimplencia_cached(df_clientes_json, df_condominios_json):
 @st.cache_data(ttl=600)
 def analisar_churn_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Análise de churn com cache"""
-    df_clientes = pd.read_json(df_clientes_json, orient='split')
-    df_condominios = pd.read_json(df_condominios_json, orient='split')
+    df_clientes = pd.read_json(io.StringIO(df_clientes_json), orient='split')
+    df_condominios = pd.read_json(io.StringIO(df_condominios_json), orient='split')
     
     # ✅ CORREÇÃO: Padronizar tipos antes do merge
     df_clientes, df_condominios = padronizar_colunas_merge(df_clientes, df_condominios)
@@ -641,8 +641,8 @@ def classificar_maturidade(row, meses_limite=18):
 @st.cache_data(ttl=600)
 def preparar_dados_maturidade_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Preparação de dados de maturidade com cache"""
-    df_clientes = pd.read_json(df_clientes_json, orient='split')
-    df_condominios = pd.read_json(df_condominios_json, orient='split')
+    df_clientes = pd.read_json(io.StringIO(df_clientes_json), orient='split')
+    df_condominios = pd.read_json(io.StringIO(df_condominios_json), orient='split')
     
     # ✅ CORREÇÃO: Padronizar tipos antes do merge
     df_clientes, df_condominios = padronizar_colunas_merge(df_clientes, df_condominios)
