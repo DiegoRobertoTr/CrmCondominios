@@ -64,7 +64,7 @@ def update_lead_observacoes(lead_id, novas_observacoes):
     try:
         collection = get_leads_collection()
         result = collection.update_one(
-            {"_id": ObjectId(lead_id)}, 
+            {"_id": ObjectId(lead_id)},
             {"$set": {"observacoes": novas_observacoes}}
         )
         return result.modified_count > 0
@@ -79,12 +79,12 @@ def update_lead_data_proximo_contato(lead_id, nova_data):
         if nova_data is None:
             # Remover data de próximo contato
             result = collection.update_one(
-                {"_id": ObjectId(lead_id)}, 
+                {"_id": ObjectId(lead_id)},
                 {"$unset": {"data_proximo_contato": ""}}
             )
         else:
             result = collection.update_one(
-                {"_id": ObjectId(lead_id)}, 
+                {"_id": ObjectId(lead_id)},
                 {"$set": {"data_proximo_contato": datetime.combine(nova_data, datetime.min.time())}}
             )
         return result.modified_count > 0
@@ -126,7 +126,7 @@ def render_registro_lead():
 
     # Busca eventos existentes para autocomplete
     eventos_existentes = get_eventos_existentes()
-    
+
     with st.form("form_lead_evento", clear_on_submit=True):
         col1, col2 = st.columns(2)
         
@@ -136,7 +136,7 @@ def render_registro_lead():
             nome_contato = st.text_input("Nome do Contato *", max_chars=100)
             
             # ✅ NOVO: Campo específico para Condomínio
-            nome_condominio = st.text_input("🏢 Nome do Condomínio (Se houver)", max_chars=100, 
+            nome_condominio = st.text_input(" Nome do Condomínio (Se houver)", max_chars=100, 
                                           help="Preencha apenas se for um condomínio residencial")
             
             # ✅ NOVO: Campo específico para Empresa
@@ -147,7 +147,7 @@ def render_registro_lead():
             email = st.text_input("E-mail", max_chars=100)
             
         with col2:
-            st.subheader("📍 Dados do Evento & Agenda")
+            st.subheader(" Dados do Evento & Agenda")
             
             # ✅ NOVO: Campo de evento com autocomplete/sugestão
             st.markdown("**Nome do Evento / Origem ***")
@@ -185,7 +185,7 @@ def render_registro_lead():
             
             # ✅ ALTERADO: Data para Próximo Contato agora é OPCIONAL
             st.markdown("**📅 Data para Próximo Contato (Touch)**")
-            st.caption("⚠️ Deixe em branco se não houver necessidade de contato imediato (ex: parceiros)")
+            st.caption("️ Deixe em branco se não houver necessidade de contato imediato (ex: parceiros)")
             
             usar_data_proximo = st.checkbox("Definir data para próximo contato", value=True)
             
@@ -198,7 +198,7 @@ def render_registro_lead():
             else:
                 data_proximo_contato = None
             
-            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", " Morno", "❄️ Frio"])
+            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
         st.subheader("🛒 Interesse em Produtos")
@@ -221,7 +221,7 @@ def render_registro_lead():
             submitted = st.form_submit_button("💾 Salvar Lead", type="primary", use_container_width=True)
         
         with col_novo:
-            novo_cadastro = st.form_submit_button("🆕 Novo Cadastro", use_container_width=True)
+            novo_cadastro = st.form_submit_button(" Novo Cadastro", use_container_width=True)
         
         if submitted:
             # Validação simples
@@ -261,41 +261,87 @@ def render_registro_lead():
 
 # --- Visualização e Gestão de Leads (Agenda) ---
 def render_agenda_leads():
-    """Exibe lista de leads ordenada por prioridade de contato e permite atualização"""
+    """Exibe lista de leads com barra de pesquisa e permite atualização"""
     st.title("📋 Agenda & Acompanhamento de Leads")
-    st.markdown("Lista organizada por data do próximo contato (mais urgentes no topo).")
-    
+    st.markdown("Pesquise e gerencie seus contatos. Use os filtros abaixo para encontrar leads específicos.")
+
     try:
         collection = get_leads_collection()
     except Exception as e:
         st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
         return
 
-    # Filtro opcional de status
+    # --- NOVO: Barra de Pesquisa ---
+    with st.expander("🔍 Opções de Busca Avançada", expanded=True):
+        col_search1, col_search2 = st.columns(2)
+        
+        with col_search1:
+            search_nome = st.text_input("👤 Nome do Contato", placeholder="Digite parte do nome...")
+            search_condo_emp = st.text_input("🏢 Condomínio ou Empresa", placeholder="Ex: Residencial Sol, Tech Solutions...")
+        
+        with col_search2:
+            search_telefone = st.text_input(" Telefone", placeholder="Ex: 99999-0000")
+            search_evento = st.text_input("📅 Evento/Origem", placeholder="Ex: Feira de Síndicos...")
+
+    # Filtro de Status (Mantido)
     filtro_status = st.multiselect(
         "Filtrar por Status:", 
         options=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
         default=["Novo", "Em Negociação", "Aguardando Retorno"]
     )
 
+    # --- Construção da Query Dinâmica ---
     query = {}
+    
+    # 1. Filtro de Status
     if filtro_status:
         query["status"] = {"$in": filtro_status}
 
+    # 2. Filtros de Texto (Regex case-insensitive)
+    # Nota: MongoDB usa regex. Se o campo for None, ignoramos o filtro nesse campo.
+    if search_nome:
+        query["nome_contato"] = {"$regex": search_nome, "$options": "i"}
+    
+    if search_telefone:
+        query["telefone"] = {"$regex": search_telefone, "$options": "i"}
+        
+    if search_evento:
+        query["evento"] = {"$regex": search_evento, "$options": "i"}
+        
+    if search_condo_emp:
+        # Busca tanto no campo condomínio quanto no campo empresa
+        or_condition = [
+            {"nome_condominio": {"$regex": search_condo_emp, "$options": "i"}},
+            {"nome_empresa": {"$regex": search_condo_emp, "$options": "i"}}
+        ]
+        
+        # Se já existia outro filtro (como status), precisamos usar $and
+        if query:
+            query = {"$and": [query, {"$or": or_condition}]}
+        else:
+            query["$or"] = or_condition
+
     try:
-        # ✅ ALTERADO: Ordenação considerando leads sem data (eles vão para o final)
-        leads = list(collection.find(query).sort([
-            ("data_proximo_contato", 1),  # Primeiro ordena por data (ascendente)
-            ("nome_contato", 1)           # Depois por nome (para organizar os sem data)
-        ]).limit(50))
+        # Ordenação: Data primeiro (ascendente), depois Nome
+        # Limitado a 100 resultados para performance na busca
+        leads_cursor = collection.find(query).sort([
+            ("data_proximo_contato", 1), 
+            ("nome_contato", 1)
+        ]).limit(100)
+        
+        leads = list(leads_cursor)
+        
     except Exception as e:
         st.error(f"❌ Erro ao buscar leads: {e}")
+        st.write(f"Detalhe do erro (possível conflito de query): {e}")
         return
 
     if not leads:
-        st.info("Nenhum lead encontrado com os filtros selecionados.")
+        st.warning("️ Nenhum lead encontrado com os critérios selecionados.")
     else:
-        # Separar leads com e sem data
+        st.info(f"🔎 Encontrados {len(leads)} registro(s).")
+        
+        # Separar leads com e sem data para visualização
         leads_com_data = []
         leads_sem_data = []
         
@@ -313,8 +359,8 @@ def render_agenda_leads():
         
         # Exibir pool de leads sem data
         if leads_sem_data:
-            st.subheader("️ Pool - Leads Sem Data Agendada")
-            st.caption("Contatos que não possuem follow-up agendido ou foram desistidos")
+            st.subheader("🗄️ Pool - Leads Sem Data Agendada")
+            st.caption("Contatos que não possuem follow-up agendido.")
             for lead in leads_sem_data:
                 display_lead_card(lead, collection, is_pool=True)
 
@@ -325,8 +371,8 @@ def display_lead_card(lead, collection, is_pool=False):
     if data_contato:
         data_str = data_contato.strftime("%d/%m/%Y")
         hoje = datetime.now().date()
-        icono_data = "" if data_contato.date() < hoje else ""
-        urgency_badge = " ⚠️ URGENTE" if data_contato.date() < hoje else ""
+        icono_data = "📅" if data_contato.date() >= hoje else "⏰"
+        urgency_badge = " ️ URGENTE" if data_contato.date() < hoje else ""
     else:
         data_str = "Sem data agendada"
         icono_data = "⚪"
@@ -338,9 +384,9 @@ def display_lead_card(lead, collection, is_pool=False):
         data_evento_str = data_evento.strftime("%d/%m/%Y")
     else:
         data_evento_str = "N/A"
-    
+
     label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')}) {urgency_badge}"
-    
+
     with st.expander(label_expander):
         col_info, col_actions = st.columns([2, 1])
         
@@ -349,13 +395,13 @@ def display_lead_card(lead, collection, is_pool=False):
             
             # ✅ NOVO: Exibir Condomínio ou Empresa conforme o caso
             if lead.get('nome_condominio'):
-                st.write(f"** Condomínio:** {lead.get('nome_condominio')}")
+                st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio')}")
             if lead.get('nome_empresa'):
-                st.write(f"**🏢 Empresa:** {lead.get('nome_empresa')}")
+                st.write(f"**🏭 Empresa:** {lead.get('nome_empresa')}")
             if not lead.get('nome_condominio') and not lead.get('nome_empresa'):
                 st.write(f"**🏢 Organização:** N/A")
             
-            st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+            st.write(f"** Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
             
             # ✅ NOVO: Campo de observações editável
             st.write("**📝 Observações:**")
@@ -387,7 +433,7 @@ def display_lead_card(lead, collection, is_pool=False):
             st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
             st.write(f"**🔄 Status Atual:** {lead.get('status')}")
             if lead.get('convertido'):
-                st.success("**🎉 CLIENTE CONVERTIDO**")
+                st.success("** CLIENTE CONVERTIDO**")
 
         with col_actions:
             st.markdown("### Ações")
@@ -409,7 +455,7 @@ def display_lead_card(lead, collection, is_pool=False):
                         st.rerun()
                 
                 with col_remove:
-                    if st.button(" Remover Data", key=f"remove_date_{lead['_id']}", use_container_width=True, type="secondary"):
+                    if st.button("🚫 Remover Data", key=f"remove_date_{lead['_id']}", use_container_width=True, type="secondary"):
                         if update_lead_data_proximo_contato(lead['_id'], None):
                             st.success("✅ Data removida! Lead movido para o Pool.")
                             st.rerun()
@@ -441,9 +487,9 @@ def display_lead_card(lead, collection, is_pool=False):
                             # Limpar o estado de edição
                             del st.session_state.editing_date_lead
                             st.rerun()
-            
+             
             # ✅ NOVO: Botão de exclusão
-            if st.button("🗑️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
+            if st.button("️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
                 if delete_lead(lead['_id']):
                     st.success("✅ Lead excluído com sucesso!")
                     st.rerun()
@@ -486,10 +532,9 @@ def display_lead_card(lead, collection, is_pool=False):
 
 # --- Execução Principal ---
 if __name__ == "__main__":
-    # ✅ CORREÇÃO: Removido st.set_page_config daqui - já está no topo!
     # Criação de Abas
-    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
-
+    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", " Agenda & Lista"])
+    
     with tab1:
         render_registro_lead()
         
