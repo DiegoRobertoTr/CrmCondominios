@@ -360,7 +360,7 @@ def render_agenda_leads():
         # Exibir pool de leads sem data
         if leads_sem_data:
             st.subheader("🗄️ Pool - Leads Sem Data Agendada")
-            st.caption("Contatos que não possuem follow-up agendido.")
+            st.caption("Contatos que não possuem follow-up agendado.")
             for lead in leads_sem_data:
                 display_lead_card(lead, collection, is_pool=True)
 
