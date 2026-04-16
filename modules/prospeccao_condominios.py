@@ -37,6 +37,10 @@ DESTINATARIOS_BACKUP = [
     "myjobtracecomnet@gmail.com",
 ]
 
+# Horário a partir do qual o backup diário será disparado (hora local do servidor)
+HORARIO_BACKUP_HORA = 18   # 18h00
+HORARIO_BACKUP_MIN  = 0
+
 # ==================== FUNÇÕES UTILITÁRIAS VETORIZADAS ====================
 
 @st.cache_data
@@ -245,9 +249,12 @@ def gerar_excel_reimportavel(df_prospeccao):
 
 
 def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
-                        total_projetos: int, nome_arquivo_original: str) -> tuple[bool, str]:
+                        total_projetos: int, nome_arquivo_original: str,
+                        motivo: str = "importação de planilha") -> tuple[bool, str]:
     """
     Envia os dois arquivos de backup por email via SSL (porta 465).
+    motivo: texto curto que aparece no corpo do email (ex: 'importação de planilha',
+            'backup diário automático', 'envio manual pelo administrador').
     Retorna (sucesso: bool, mensagem: str).
     """
     timestamp_str = datetime.now().strftime('%d/%m/%Y às %H:%M')
@@ -257,10 +264,11 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
 
     corpo_html = f"""
     <html><body style="font-family: Arial, sans-serif; color: #333;">
-      <h2 style="color: #1a5276;">🏢 Backup Automático — Prospecção de Condomínios</h2>
+      <h2 style="color: #1a5276;">🏢 Backup — Prospecção de Condomínios</h2>
       <p>Olá,</p>
-      <p>Uma nova planilha foi importada no sistema em <strong>{timestamp_str}</strong>.</p>
-      <p>Seguem em anexo os dois arquivos de backup gerados automaticamente:</p>
+      <p>Este backup foi gerado automaticamente em <strong>{timestamp_str}</strong>
+         por <strong>{motivo}</strong>.</p>
+      <p>Seguem em anexo os dois arquivos de backup:</p>
       <table style="border-collapse:collapse; width:100%; margin:16px 0;">
         <tr style="background:#1a5276; color:#fff;">
           <th style="padding:8px 12px; text-align:left;">Arquivo</th>
@@ -275,7 +283,7 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
           <td style="padding:8px 12px;">Formato original — pode ser reimportado diretamente pelo sistema</td>
         </tr>
       </table>
-      <p><strong>Arquivo importado:</strong> {nome_arquivo_original}<br>
+      <p><strong>Referência:</strong> {nome_arquivo_original}<br>
          <strong>Total de projetos:</strong> {total_projetos:,}</p>
       <hr style="border:none; border-top:1px solid #ddd; margin:24px 0;">
       <p style="font-size:12px; color:#888;">Mensagem automática — Sistema de Prospecção Tracecom</p>
@@ -324,6 +332,131 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
         return False, f"❌ Erro de conexão SMTP: {e}"
     except Exception as e:
         return False, f"❌ Erro ao enviar email: {type(e).__name__}: {e}"
+
+
+# ==================== FUNÇÕES DE CONTROLE DE BACKUP DIÁRIO ====================
+
+def marcar_backup_pendente(db, motivo: str = "edição de registros"):
+    """
+    Grava (ou atualiza) a flag de backup pendente no MongoDB.
+    Também registra o timestamp da primeira edição do dia e o motivo.
+    Usa upsert para não criar duplicatas.
+    """
+    col = db["prospeccao_backup_flags"]
+    now = datetime.now().replace(tzinfo=None)
+    col.update_one(
+        {"_id": "backup_flag"},
+        {"$set": {
+            "pending":          True,
+            "ultimo_motivo":    motivo,
+            "ultima_edicao_em": now,
+        },
+         "$setOnInsert": {
+            "primeira_edicao_em": now,
+         }},
+        upsert=True,
+    )
+
+
+def obter_flag_backup(db) -> dict:
+    """
+    Retorna o documento da flag de backup, ou {} se não existir.
+    Campos relevantes:
+      - pending (bool)
+      - ultima_edicao_em (datetime)
+      - ultimo_backup_em (datetime | None)
+      - ultimo_motivo (str)
+    """
+    col = db["prospeccao_backup_flags"]
+    doc = col.find_one({"_id": "backup_flag"})
+    return doc or {}
+
+
+def registrar_backup_enviado(db):
+    """
+    Marca que o backup foi enviado: limpa a flag pending e registra o timestamp.
+    """
+    col = db["prospeccao_backup_flags"]
+    col.update_one(
+        {"_id": "backup_flag"},
+        {"$set": {
+            "pending":         False,
+            "ultimo_backup_em": datetime.now().replace(tzinfo=None),
+        }},
+        upsert=True,
+    )
+
+
+def verificar_e_disparar_backup_diario(db, df_prospeccao) -> tuple[bool, str]:
+    """
+    Verifica se há backup pendente E se já passou do horário configurado.
+    Se sim, gera os arquivos, envia o email e limpa a flag.
+    Retorna (enviou: bool, mensagem: str).
+    """
+    flag = obter_flag_backup(db)
+
+    if not flag.get("pending", False):
+        return False, ""
+
+    agora = datetime.now()
+    hora_limite = agora.replace(hour=HORARIO_BACKUP_HORA, minute=HORARIO_BACKUP_MIN,
+                                second=0, microsecond=0)
+
+    # Só dispara se já passou do horário E não foi enviado hoje ainda
+    ultimo_backup = flag.get("ultimo_backup_em")
+    ja_enviou_hoje = (
+        ultimo_backup is not None
+        and ultimo_backup.date() == agora.date()
+    ) if ultimo_backup else False
+
+    if agora < hora_limite or ja_enviou_hoje:
+        return False, ""
+
+    # Dispara o backup
+    motivo = flag.get("ultimo_motivo", "backup diário automático")
+    try:
+        excel_tratado      = gerar_excel_tratado(df_prospeccao)
+        excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
+
+        sucesso, msg = enviar_email_backup(
+            arquivo_tratado      = excel_tratado.getvalue(),
+            arquivo_reimportavel = excel_reimportavel.getvalue(),
+            total_projetos       = len(df_prospeccao),
+            nome_arquivo_original= "backup_diario",
+            motivo               = motivo,
+        )
+
+        if sucesso:
+            registrar_backup_enviado(db)
+            return True, f"📧 Backup diário enviado automaticamente ({motivo})."
+        else:
+            return False, msg
+    except Exception as e:
+        return False, f"❌ Erro no backup diário: {e}"
+
+
+def executar_backup_manual(db, df_prospeccao, motivo: str = "envio manual pelo administrador") -> tuple[bool, str]:
+    """
+    Gera e envia o backup imediatamente, independente de horário ou flag.
+    Após envio com sucesso limpa a flag pendente.
+    """
+    try:
+        excel_tratado      = gerar_excel_tratado(df_prospeccao)
+        excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
+
+        sucesso, msg = enviar_email_backup(
+            arquivo_tratado      = excel_tratado.getvalue(),
+            arquivo_reimportavel = excel_reimportavel.getvalue(),
+            total_projetos       = len(df_prospeccao),
+            nome_arquivo_original= "backup_manual",
+            motivo               = motivo,
+        )
+
+        if sucesso:
+            registrar_backup_enviado(db)
+        return sucesso, msg
+    except Exception as e:
+        return False, f"❌ Erro no backup manual: {e}"
 
 
 # ==================== FUNÇÕES DE BANCO DE DADOS ====================
@@ -784,6 +917,71 @@ def render_prospeccao_condominios():
                         st.session_state['confirmar_manter_ultimo'] = False
                         st.rerun()
 
+            # ==================== BACKUP MANUAL + STATUS ====================
+            st.markdown("---")
+            st.markdown("#### 📧 Backup Manual por E-mail")
+
+            # Painel de status da flag de backup
+            flag_info = obter_flag_backup(db)
+            col_st1, col_st2, col_st3 = st.columns(3)
+            with col_st1:
+                pending = flag_info.get("pending", False)
+                st.metric("Status", "⏳ Pendente" if pending else "✅ Em dia")
+            with col_st2:
+                ult_edicao = flag_info.get("ultima_edicao_em")
+                st.metric("Última edição",
+                          ult_edicao.strftime("%d/%m %H:%M") if ult_edicao else "—")
+            with col_st3:
+                ult_backup = flag_info.get("ultimo_backup_em")
+                st.metric("Último backup enviado",
+                          ult_backup.strftime("%d/%m %H:%M") if ult_backup else "—")
+
+            if flag_info.get("ultimo_motivo"):
+                st.caption(f"📝 Motivo pendente: *{flag_info['ultimo_motivo']}*")
+
+            st.info(
+                f"ℹ️ O backup diário automático é disparado todos os dias a partir das "
+                f"**{HORARIO_BACKUP_HORA:02d}h{HORARIO_BACKUP_MIN:02d}** quando há edições pendentes."
+            )
+
+            # Botão de envio manual imediato
+            df_adm = st.session_state.get("df_prospeccao_cached")
+            if df_adm is not None and not df_adm.empty:
+                if st.button("📤 Enviar Backup Agora (manual)", key="btn_backup_manual",
+                             use_container_width=True, type="primary"):
+                    with st.spinner("📦 Gerando e enviando backup..."):
+                        ok, msg_bkp = executar_backup_manual(
+                            db, df_adm,
+                            motivo="envio manual pelo administrador"
+                        )
+                    if ok:
+                        st.success(msg_bkp if msg_bkp else "✅ Backup enviado com sucesso!")
+                    else:
+                        st.error(msg_bkp)
+
+                    # Botões de download como fallback
+                    try:
+                        excel_trat = gerar_excel_tratado(df_adm)
+                        excel_reim = gerar_excel_reimportavel(df_adm)
+                        data_str   = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        col_dl1, col_dl2 = st.columns(2)
+                        with col_dl1:
+                            st.download_button("📊 Download — Tratado",
+                                               data=excel_trat,
+                                               file_name=f"backup_tratado_{data_str}.xlsx",
+                                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                               use_container_width=True)
+                        with col_dl2:
+                            st.download_button("📋 Download — Reimportável",
+                                               data=excel_reim,
+                                               file_name=f"backup_reimportavel_{data_str}.xlsx",
+                                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                               use_container_width=True)
+                    except Exception:
+                        pass
+            else:
+                st.warning("⚠️ Carregue os dados primeiro para habilitar o backup manual.")
+
     st.markdown("---")
 
     # ==================== GERENCIAMENTO DE DADOS ====================
@@ -1012,6 +1210,16 @@ def render_prospeccao_condominios():
         st.info("📂 Faça upload da planilha para visualizar os dados")
         return
 
+    # ==================== VERIFICAÇÃO DE BACKUP DIÁRIO AUTOMÁTICO ====================
+    # Executa silenciosamente a cada carregamento de página.
+    # Só envia email se: (1) há flag pendente E (2) passou do horário configurado
+    # e ainda não foi enviado hoje.
+    _backup_enviou, _backup_msg = verificar_e_disparar_backup_diario(db, df_prospeccao)
+    if _backup_enviou:
+        st.toast(_backup_msg, icon="📧")
+    elif _backup_msg:  # houve erro
+        st.toast(f"⚠️ {_backup_msg}", icon="⚠️")
+
     # ==================== ABAS PRINCIPAIS ====================
     tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5 = st.tabs([
         "✏️ Atualizar Empreendimentos",
@@ -1082,6 +1290,8 @@ def render_prospeccao_condominios():
                     modified = update_records_batch_vectorized(db, df_original_edit, edited_df, cols_existing)
                     if modified > 0:
                         st.success(f"✅ {modified} registros atualizados!")
+                        # ✅ Marca flag de backup pendente no MongoDB
+                        marcar_backup_pendente(db, motivo=f"edição de {modified} registro(s) na aba Atualizar Empreendimentos")
                         st.cache_data.clear()
                         st.session_state.pop("df_prospeccao_cached", None)
                         st.rerun()
