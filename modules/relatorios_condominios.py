@@ -121,31 +121,26 @@ def converter_dataframe_dates(df):
 def padronizar_colunas_merge(df_clientes, df_condominios):
     """
     ✅ CORREÇÃO PRINCIPAL: Padroniza tipos de dados para merge correto
-    - Converte ID e CONDOMANIO para o mesmo tipo (string limpa)
-    - Remove espaços em branco
+    - Converte ID e CONDOMANIO via float → int → str (evita "83.0" vs "83")
     - Trata valores NaN
     """
     df_clientes = df_clientes.copy()
     df_condominios = df_condominios.copy()
-    
-    # Padronizar CONDOMANIO para string limpa
+
+    # Padronizar CONDOMANIO: float64 → int → str (ex: 83.0 → "83")
     if "CONDOMANIO" in df_clientes.columns:
         df_clientes["CONDOMANIO"] = (
-            df_clientes["CONDOMANIO"]
-            .astype(str)
-            .str.strip()
-            .replace(["nan", "None", "0", ""], np.nan)
+            pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce")
+            .apply(lambda x: str(int(x)) if pd.notna(x) else np.nan)
         )
-    
-    # Padronizar ID para string limpa
+
+    # Padronizar ID: float64 → int → str (ex: 83.0 → "83")
     if "ID" in df_condominios.columns:
         df_condominios["ID"] = (
-            df_condominios["ID"]
-            .astype(str)
-            .str.strip()
-            .replace(["nan", "None", "0", ""], np.nan)
+            pd.to_numeric(df_condominios["ID"], errors="coerce")
+            .apply(lambda x: str(int(x)) if pd.notna(x) else np.nan)
         )
-    
+
     return df_clientes, df_condominios
 
 def validar_merge(df_clientes, df_condominios):
@@ -375,8 +370,12 @@ def calcular_penetracao_cached(df_clientes_json, df_condominios_json):
     
     # ✅ CORREÇÃO: Padronizar tipos antes do merge
     df_clientes, df_condominios = padronizar_colunas_merge(df_clientes, df_condominios)
-    
-    ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
+
+    # ✅ CORREÇÃO 2: usar classificar_status para não contar "Desativado" como ativo
+    # str.contains("ativo") capturava "Desativado" — agora usamos a classificação canônica
+    df_clientes = df_clientes.copy()
+    df_clientes["_status_cls"] = df_clientes["STATUS ACESSO"].apply(classificar_status)
+    ativos = df_clientes[df_clientes["_status_cls"] == "Ativo"]
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
 
     df_merged = clientes_por_cond.merge(
