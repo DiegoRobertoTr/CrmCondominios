@@ -199,6 +199,25 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
             return ""
     return str(value)
 
+def classificar_status(status):
+    """
+    ✅ GLOBAL: Classifica o status do cliente em categorias canônicas.
+    Definida no escopo global para ser acessível por todas as funções
+    cached (@st.cache_data), que não enxergam funções internas de outras funções.
+    """
+    if pd.isna(status):
+        return "Outros"
+    status_lower = str(status).lower().strip()
+    if "ativo" in status_lower and "atraso" not in status_lower and "bloqueio" not in status_lower:
+        return "Ativo"
+    elif "atraso" in status_lower or "financeiro" in status_lower:
+        return "Em Atraso"
+    elif "bloqueio" in status_lower or "automático" in status_lower or "automatico" in status_lower:
+        return "Bloqueio Automático"
+    elif "desativado" in status_lower or "cancelado" in status_lower:
+        return "Desativado"
+    return "Outros"
+
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
 def sanitizar_doc_para_mongo(doc):
     """
@@ -332,20 +351,6 @@ def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo
 
     df_condominios = df_condominios.copy()
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
-
-    def classificar_status(status):
-        if pd.isna(status):
-            return "Outros"
-        status_lower = str(status).lower().strip()
-        if "ativo" in status_lower and "atraso" not in status_lower and "bloqueio" not in status_lower:
-            return "Ativo"
-        elif "atraso" in status_lower or "financeiro" in status_lower:
-            return "Em Atraso"
-        elif "bloqueio" in status_lower or "automático" in status_lower or "automatico" in status_lower:
-            return "Bloqueio Automático"
-        elif "desativado" in status_lower or "cancelado" in status_lower:
-            return "Desativado"
-        return "Outros"
 
     df_clientes = df_clientes.copy()
     df_clientes["status_classificacao"] = df_clientes["STATUS ACESSO"].apply(classificar_status)
@@ -652,20 +657,6 @@ def preparar_dados_maturidade_cached(df_clientes_json, df_condominios_json):
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
         errors="coerce").fillna(0).astype(int)
     df_condominios["Data cadastro"] = df_condominios["Data cadastro"].apply(limpar_valor_data)
-
-    def classificar_status(status):
-        if pd.isna(status):
-            return "Outros"
-        status_lower = str(status).lower().strip()
-        if "ativo" in status_lower and "atraso" not in status_lower and "bloqueio" not in status_lower:
-            return "Ativo"
-        elif "atraso" in status_lower or "financeiro" in status_lower:
-            return "Em Atraso"
-        elif "bloqueio" in status_lower or "automático" in status_lower or "automatico" in status_lower:
-            return "Bloqueio Automático"
-        elif "desativado" in status_lower or "cancelado" in status_lower:
-            return "Desativado"
-        return "Outros"
 
     df_clientes = df_clientes.copy()
     df_clientes["status_classificacao"] = df_clientes["STATUS ACESSO"].apply(classificar_status)
