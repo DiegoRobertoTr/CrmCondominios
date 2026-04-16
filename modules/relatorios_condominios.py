@@ -200,6 +200,41 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     return str(value)
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
+def sanitizar_doc_para_mongo(doc):
+    """
+    ✅ CORREÇÃO NaT/NaN: Percorre um dict e converte NaT, NaN e tipos
+    incompatíveis com MongoDB para None ou tipos nativos do Python.
+    Necessário porque to_dict('records') preserva pd.NaT que o driver
+    do pymongo não consegue serializar (NaTType does not support utcoffset).
+    """
+    resultado = {}
+    for k, v in doc.items():
+        # NaT (Not a Time) — causa o erro "NaTType does not support utcoffset"
+        if isinstance(v, type(pd.NaT)) or v is pd.NaT:
+            resultado[k] = None
+        # pd.Timestamp válido → datetime Python sem timezone
+        elif isinstance(v, pd.Timestamp):
+            if pd.isna(v):
+                resultado[k] = None
+            else:
+                try:
+                    resultado[k] = v.to_pydatetime().replace(tzinfo=None)
+                except Exception:
+                    resultado[k] = None
+        # float NaN → None
+        elif isinstance(v, float) and np.isnan(v):
+            resultado[k] = None
+        # numpy int/float → Python nativo
+        elif isinstance(v, (np.integer,)):
+            resultado[k] = int(v)
+        elif isinstance(v, (np.floating,)):
+            resultado[k] = None if np.isnan(v) else float(v)
+        elif isinstance(v, np.bool_):
+            resultado[k] = bool(v)
+        else:
+            resultado[k] = v
+    return resultado
+
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """
     ✅ OTIMIZAÇÃO 2: Salva dados sem iterrows (processamento vetorial)
@@ -222,15 +257,17 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
 
-    # Converter DataFrame para documentos MongoDB de uma vez
-    docs = df_clientes_limpo.to_dict('records')
+    # ✅ CORREÇÃO NaT: Sanitizar cada documento antes de enviar ao MongoDB
+    # to_dict('records') preserva pd.NaT, que causa "NaTType does not support utcoffset"
+    docs = [sanitizar_doc_para_mongo(d) for d in df_clientes_limpo.to_dict('records')]
 
     if docs:
         collection_clientes.insert_many(docs)
 
     # Preparar metadados dos condomínios
     df_condominios_limpo = converter_dataframe_dates(df_condominios)
-    condominios_records = df_condominios_limpo.to_dict('records')
+    # ✅ CORREÇÃO NaT: Sanitizar registros dos condomínios também
+    condominios_records = [sanitizar_doc_para_mongo(d) for d in df_condominios_limpo.to_dict('records')]
 
     # Inserir metadata do lote atual
     collection_meta.insert_one({
@@ -758,6 +795,10 @@ def render_relatorios_condominios():
             st.expander("Detalhes técnicos do erro").code(traceback.format_exc())
             
     elif st.session_state.get("reload_data") or "df_clientes_cached" not in st.session_state:
+        # ✅ CORREÇÃO pré-carregamento: limpar flag antes de carregar para evitar
+        # loop infinito e garantir que a próxima renderização use o cache da session
+        st.session_state["reload_data"] = False
+
         result = load_latest_data(db)
         if result[0] is not None:
             df_clientes, df_condominios, meta = result
@@ -776,12 +817,14 @@ def render_relatorios_condominios():
             st.info("Faça upload da planilha para começar")
             return
     else:
-        df_clientes = st.session_state["df_clientes_cached"]
-        df_condominios = st.session_state["df_condominios_cached"]
-        meta = st.session_state["meta_cached"]
-
-    if "reload_data" in st.session_state:
-        del st.session_state["reload_data"]
+        # ✅ CORREÇÃO pré-carregamento: recuperar dados do cache da session_state
+        df_clientes = st.session_state.get("df_clientes_cached")
+        df_condominios = st.session_state.get("df_condominios_cached")
+        meta = st.session_state.get("meta_cached")
+        # Segurança: se cache estiver vazio por qualquer razão, forçar recarregamento do banco
+        if df_clientes is None or df_condominios is None:
+            st.session_state.pop("df_clientes_cached", None)
+            st.rerun()
 
     # ==================== DEBUG DE VALIDAÇÃO ====================
     with st.expander("🔍 Debug de Validação de Merge"):
