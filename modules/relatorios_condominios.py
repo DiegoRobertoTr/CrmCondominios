@@ -79,6 +79,9 @@ def limpar_valor_data(valor):
     """Limpa e padroniza valores de data"""
     if pd.isna(valor) or valor is None:
         return None
+    # ✅ CORREÇÃO: Verificar especificamente por NaT
+    if isinstance(valor, pd._libs.tslibs.nattype.NaTType):
+        return None
     if isinstance(valor, str):
         valor_limpo = valor.strip()
         if valor_limpo in ["00/00/0000", "0", "  ", "nan", "NaT", "null", "NULL"]:
@@ -116,6 +119,19 @@ def converter_dataframe_dates(df):
         if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = pd.to_datetime(df[col], errors='coerce')
             df[col] = df[col].apply(lambda x: limpar_valor_data(x))
+    return df
+
+def limpar_nat_para_none(df):
+    """
+    ✅ CORREÇÃO CRÍTICA: Converte todos os valores NaT para None antes de salvar no MongoDB
+    - Previne erro: ValueError: NaTType does not support utcoffset
+    """
+    df = df.copy()
+    for col in df.columns:
+        # Verifica se a coluna tem tipo datetime
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            # Converte NaT para None
+            df[col] = df[col].apply(lambda x: None if pd.isna(x) or isinstance(x, pd._libs.tslibs.nattype.NaTType) else x)
     return df
 
 def padronizar_colunas_merge(df_clientes, df_condominios):
@@ -224,6 +240,10 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
 
     # ✅ OTIMIZAÇÃO 3: Processamento vetorial (sem iterrows)
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
+    
+    # ✅ CORREÇÃO CRÍTICA: Limpar NaT antes de converter para dict
+    df_clientes_limpo = limpar_nat_para_none(df_clientes_limpo)
+    
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
 
@@ -235,6 +255,10 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
 
     # Preparar metadados dos condomínios
     df_condominios_limpo = converter_dataframe_dates(df_condominios)
+    
+    # ✅ CORREÇÃO CRÍTICA: Limpar NaT antes de converter para dict
+    df_condominios_limpo = limpar_nat_para_none(df_condominios_limpo)
+    
     condominios_records = df_condominios_limpo.to_dict('records')
 
     # Inserir metadata do lote atual
