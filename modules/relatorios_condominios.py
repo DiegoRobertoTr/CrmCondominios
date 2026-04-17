@@ -4,7 +4,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timezone
-from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo import MongoClient, ASCENDING
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
@@ -72,6 +72,8 @@ def criar_indices_mongodb(db):
     except Exception as e:
         print(f"⚠️ Aviso ao criar índices: {e}")
 
+from pymongo import DESCENDING
+
 # ==================== FUNÇÕES UTILITÁRIAS OTIMIZADAS ====================
 def limpar_valor_data(valor):
     """Limpa e padroniza valores de data"""
@@ -79,7 +81,7 @@ def limpar_valor_data(valor):
         return None
     if isinstance(valor, str):
         valor_limpo = valor.strip()
-        if valor_limpo in ["00/00/0000", "0", " ", "nan", "NaT", "null", "NULL", ""]:
+        if valor_limpo in ["00/00/0000", "0", " ", "nan", "NaT", "null", "NULL"]:
             return None
         try:
             valor = pd.to_datetime(valor_limpo, errors='coerce')
@@ -104,22 +106,16 @@ def limpar_valor_data(valor):
     return None
 
 def converter_dataframe_dates(df):
-    """✅ OTIMIZAÇÃO: Conversão vetorial de datas com tratamento robusto de NaT"""
+    """✅ OTIMIZAÇÃO: Conversão vetorial de datas"""
     df = df.copy()
     for col in df.columns:
         col_lower = col.lower()
         eh_coluna_data = any(palavra in col_lower for palavra in 
                            ['data', 'date', 'cadastro', 'ativacao', 'cancelamento', 
-                            'nascimento', 'renovacao', 'timestamp'])
-        
-        # Tenta converter se é coluna de data ou já é datetime
+                            'nascimento', 'renovacao'])
         if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
-            # Converte para datetime, forçando erros para NaT
             df[col] = pd.to_datetime(df[col], errors='coerce')
-            
-            # ✅ CRÍTICO: Aplicar limpar_valor_data em cada valor para remover NaT
             df[col] = df[col].apply(lambda x: limpar_valor_data(x))
-    
     return df
 
 def formatar_numero_br(valor, decimais=0):
@@ -214,130 +210,78 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """
     collection_clientes = db["condominios_relatorios"]
     collection_meta = db["condominios_meta"]
-    batch_id = metadata["batch_id"]
-
-    # ✅ SEGURANÇA: Validar batch_id e DataFrames não vazios
-    if not batch_id:
-        st.error("Erro interno: Batch ID não gerado.")
-        return False
     
-    if df_clientes.empty:
-        st.error("Erro: DataFrame de clientes está vazio.")
-        return False
-
-    try:
-        # Remove apenas batches antigos (diferentes do atual)
-        count_clientes_del = collection_clientes.delete_many(
-            {"_import_batch": {"$ne": batch_id}}
-        ).deleted_count
-        count_meta_del = collection_meta.delete_many(
-            {"batch_id": {"$ne": batch_id}}
-        ).deleted_count
-        
-        if count_clientes_del > 0 or count_meta_del > 0:
-            print(f"Limpeza realizada: {count_clientes_del} clientes e {count_meta_del} metadados removidos.")
-            
-    except Exception as e:
-        st.error(f"Erro ao limpar dados antigos: {e}")
-        return False
-
-    # ✅ PROCESSAMENTO: Cópias explícitas para evitar SettingWithCopyWarning
-    df_clientes_limpo = converter_dataframe_dates(df_clientes.copy())
+    batch_id = metadata["batch_id"]
+    
+    # ✅ OTIMIZAÇÃO: Limpar apenas batches antigos (não tudo)
+    count_clientes_del = collection_clientes.delete_many({"_import_batch": {"$ne": batch_id}}).deleted_count
+    count_meta_del = collection_meta.delete_many({"batch_id": {"$ne": batch_id}}).deleted_count
+    
+    if count_clientes_del > 0 or count_meta_del > 0:
+        print(f"Limpeza realizada: {count_clientes_del} clientes e {count_meta_del} metadados removidos.")
+    
+    # ✅ OTIMIZAÇÃO 3: Processamento vetorial (sem iterrows)
+    df_clientes_limpo = converter_dataframe_dates(df_clientes)
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
-
-    # ✅ CRÍTICO: safe_mongo_docs elimina NaT/NaN/inf antes do insert
+    
+    # ✅ CORREÇÃO: Usar safe_mongo_docs para eliminar NaT/NaN antes do insert
     docs = safe_mongo_docs(df_clientes_limpo)
-
+    
     if docs:
-        try:
-            collection_clientes.insert_many(docs)
-        except Exception as e:
-            st.error(f"Erro ao inserir clientes: {e}")
-            return False
-
+        collection_clientes.insert_many(docs)
+    
     # Preparar metadados dos condomínios
-    df_condominios_limpo = converter_dataframe_dates(df_condominios.copy())
+    df_condominios_limpo = converter_dataframe_dates(df_condominios)
     # ✅ CORREÇÃO: Usar safe_mongo_docs nos condomínios também
     condominios_records = safe_mongo_docs(df_condominios_limpo)
-
+    
     # Inserir metadata do lote atual
-    meta_doc = {
+    collection_meta.insert_one({
         "batch_id": batch_id,
         "timestamp": datetime.now().replace(tzinfo=None),
         "total_clientes": len(df_clientes),
         "total_condominios": len(df_condominios),
         "condominios": condominios_records
-    }
+    })
     
-    try:
-        collection_meta.insert_one(meta_doc)
-        return True
-    except Exception as e:
-        st.error(f"Erro ao salvar metadados: {e}")
-        return False
+    return True
 
 def load_latest_data(db, limit=10000):
     """
-    ✅ OTIMIZAÇÃO FINAL: Carregamento robusto com tratamento de tipos e fallback.
+    ✅ OTIMIZAÇÃO 4: Carregamento com paginação (limit)
+    - Não trava com >10k registros
+    - Carrega apenas o necessário
     """
-    try:
-        collection_meta = db["condominios_meta"]
-        # Busca o metadado mais recente
-        meta = collection_meta.find_one(sort=[("timestamp", DESCENDING)])
-        
-        if not meta:
-            return None, None, None
-            
-        batch_id = meta.get("batch_id")
-        if not batch_id:
-            return None, None, None
-
-        collection_clientes = db["condominios_relatorios"]
-        
-        # Busca apenas os documentos do último batch
-        cursor = collection_clientes.find({"_import_batch": batch_id}).limit(limit)
-        docs = list(cursor)
-        
-        if not docs:
-            return None, None, None
-
-        df_clientes = pd.DataFrame(docs)
-        
-        # Limpeza crítica de IDs e Chaves
-        if "_id" in df_clientes.columns:
-            df_clientes.drop(columns=["_id"], inplace=True)
-            
-        # ✅ CRÍTICO: Garante que CONDOMANIO seja inteiro (evita float 1.0 -> 1)
-        if "CONDOMANIO" in df_clientes.columns:
-            df_clientes["CONDOMANIO"] = pd.to_numeric(
-                df_clientes["CONDOMANIO"], errors='coerce'
-            ).fillna(0).astype(int)
-
-        # ✅ IMPORTANTE: Chamar converter_dataframe_dates APÓS garantir tipos numéricos
-        df_clientes = converter_dataframe_dates(df_clientes)
-
-        # Recupera dados dos condomínios do metadado
-        df_condominios = pd.DataFrame(meta.get("condominios", []))
-        if not df_condominios.empty:
-            if "ID" in df_condominios.columns:
-                df_condominios["ID"] = pd.to_numeric(
-                    df_condominios["ID"], errors='coerce'
-                ).fillna(0).astype(int)
-            if "Apartamentos" in df_condominios.columns:
-                df_condominios["Apartamentos"] = pd.to_numeric(
-                    df_condominios["Apartamentos"], errors='coerce'
-                ).fillna(0).astype(int)
-            df_condominios = converter_dataframe_dates(df_condominios)
-        else:
-            df_condominios = pd.DataFrame()
-
-        return df_clientes, df_condominios, meta
-
-    except Exception as e:
-        st.error(f"❌ Erro crítico ao carregar dados do MongoDB: {e}")
-        st.write(traceback.format_exc())
+    meta = db["condominios_meta"].find_one(sort=[("timestamp", DESCENDING)])
+    if not meta:
         return None, None, None
+    
+    collection = db["condominios_relatorios"]
+    
+    # ✅ OTIMIZAÇÃO: LIMITAR quantidade de registros carregados
+    df_clientes = pd.DataFrame(list(
+        collection.find({"_import_batch": meta["batch_id"]}).limit(limit)
+    ))
+    
+    if "_id" in df_clientes.columns:
+        df_clientes = df_clientes.drop(columns=["_id"])
+    
+    df_clientes = converter_dataframe_dates(df_clientes)
+    
+    # ✅ CORREÇÃO: Garantir tipos corretos das chaves de join após carregar do MongoDB
+    if "CONDOMANIO" in df_clientes.columns:
+        df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+    
+    df_condominios = pd.DataFrame(meta.get("condominios", []))
+    df_condominios = converter_dataframe_dates(df_condominios)
+    
+    if "ID" in df_condominios.columns:
+        df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    if "Apartamentos" in df_condominios.columns:
+        df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
+    
+    return df_clientes, df_condominios, meta
 
 def clear_condominio_data(db, batch_id=None):
     """Limpa dados do banco"""
@@ -482,7 +426,7 @@ def analisar_inadimplencia_cached(df_clientes_json, df_condominios_json):
     
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
         lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in 
-        ["00/00/0000", "  ", "0", "nan", "nat", ""] else "Em Dia"
+        ["00/00/0000", "  ", "0", "nan", "nat"] else "Em Dia"
     )
     
     inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
@@ -800,30 +744,23 @@ def render_relatorios_condominios():
         st.warning("⚠️ Nenhum dado importado ainda")
     
     st.markdown("---")
-    
-    # ✅ CORREÇÃO: Lógica de carregamento reestruturada para garantir persistência
     df_clientes, df_condominios, meta = None, None, None
-
-    # 1. PRIORIDADE MÁXIMA: Upload de novo arquivo
+    
     if uploaded_file:
         try:
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
-            # ✅ CORREÇÃO: Normalização imediata e explícita
+            # ✅ CORREÇÃO: Normalizar chaves de join para int, evitando mismatch float/int
             if "CONDOMANIO" in df_clientes.columns:
-                df_clientes["CONDOMANIO"] = pd.to_numeric(
-                    df_clientes["CONDOMANIO"], errors='coerce'
-                ).fillna(0).astype(int)
+                df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
             if "ID" in df_condominios.columns:
-                df_condominios["ID"] = pd.to_numeric(
-                    df_condominios["ID"], errors='coerce'
-                ).fillna(0).astype(int)
-            if "Apartamentos" in df_condominios.columns:
-                df_condominios["Apartamentos"] = pd.to_numeric(
-                    df_condominios["Apartamentos"], errors='coerce'
-                ).fillna(0).astype(int)
+                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
 
+            if "Apartamentos" in df_condominios.columns:
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
+                    errors="coerce").fillna(0).astype(int)
+            
             df_clientes = converter_dataframe_dates(df_clientes)
             df_condominios = converter_dataframe_dates(df_condominios)
             
@@ -834,42 +771,38 @@ def render_relatorios_condominios():
             }
             
             if save_condominio_data(db, df_clientes, df_condominios, metadata):
-                st.success(f"✅ Dados importados e salvos! {len(df_clientes)} clientes.")
-                # ✅ IMPORTANTE: Limpar cache antes do rerun para forçar recálculo
+                st.success(f"✅ Dados importados! {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
                 st.cache_data.clear()
                 st.rerun()
-                
         except Exception as e:
             st.error(f"❌ Erro ao processar planilha: {str(e)}")
-            st.expander("Detalhes técnicos").code(traceback.format_exc())
-
-    # 2. SEGUNDA OPÇÃO: Carregar do banco (persistência)
-    else:
-        # Força recarga se clicou no botão OU se não há dados em cache
-        if st.session_state.get("reload_data") or "df_clientes_cached" not in st.session_state:
-            with st.spinner('🔄 Recuperando últimos dados do servidor...'):
-                result = load_latest_data(db)
-                
-                if result[0] is not None:
-                    df_clientes, df_condominios, meta = result
-                    
-                    # ✅ PERSISTÊNCIA: Salvar na sessão para evitar reconsultas desnecessárias
-                    st.session_state["df_clientes_cached"] = df_clientes
-                    st.session_state["df_condominios_cached"] = df_condominios
-                    st.session_state["meta_cached"] = meta
-                    
-                    st.success("📦 Dados recuperados do MongoDB.")
-                else:
-                    st.warning("⚠️ Nenhum dado encontrado no banco. Faça upload de uma planilha.")
-                    return  # Interrompe execução
-        
-        # 3. TERCEIRA OPÇÃO: Usar cache da sessão (mais rápido)
+            st.expander("Detalhes técnicos do erro").code(traceback.format_exc())
+            
+    elif st.session_state.get("reload_data") or "df_clientes_cached" not in st.session_state:
+        result = load_latest_data(db)
+        if result[0] is not None:
+            df_clientes, df_condominios, meta = result
+            if "Apartamentos" in df_condominios.columns:
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
+                    errors="coerce").fillna(0).astype(int)
+            # ✅ CORREÇÃO: Garantir normalização das chaves ao recarregar
+            if "CONDOMANIO" in df_clientes.columns:
+                df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+            if "ID" in df_condominios.columns:
+                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+            
+            st.session_state["df_clientes_cached"] = df_clientes
+            st.session_state["df_condominios_cached"] = df_condominios
+            st.session_state["meta_cached"] = meta
+            st.success("📦 Dados pré-carregados da última importação")
         else:
-            df_clientes = st.session_state["df_clientes_cached"]
-            df_condominios = st.session_state["df_condominios_cached"]
-            meta = st.session_state["meta_cached"]
-
-    # Limpeza da flag de reload
+            st.info("Faça upload da planilha para começar")
+            return
+    else:
+        df_clientes = st.session_state["df_clientes_cached"]
+        df_condominios = st.session_state["df_condominios_cached"]
+        meta = st.session_state["meta_cached"]
+    
     if "reload_data" in st.session_state:
         del st.session_state["reload_data"]
     
