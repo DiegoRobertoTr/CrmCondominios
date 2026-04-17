@@ -34,7 +34,7 @@ EMAIL_CONFIG = {
 DESTINATARIOS_BACKUP = [
     "comercial1@tracecom.net.br",
     "pmarques@tracecom.net.br",
-    "myjobtracecomnet@gmail.com",
+    "myjobtracecom@gmail.com",
 ]
 
 # Horário a partir do qual o backup diário será disparado (hora local do servidor)
