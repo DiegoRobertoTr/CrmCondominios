@@ -12,10 +12,12 @@ import traceback
 
 
 
-db["condominios_clientes"].delete_many({})
-db["condominios"].delete_many({})
-db["condominios_metadata"].delete_many({})
-
+if st.button("🧹 Limpar banco de dados"):
+    db["condominios_clientes"].delete_many({})
+    db["condominios"].delete_many({})
+    db["condominios_metadata"].delete_many({})
+    
+    st.success("Banco limpo com sucesso!")
 
 
 
