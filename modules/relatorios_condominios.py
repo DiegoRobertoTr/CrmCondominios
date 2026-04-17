@@ -4,11 +4,12 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timezone
-from pymongo import MongoClient, ASCENDING
+from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
 import traceback
+import time  # ✅ CORREÇÃO: Import adicionado para timeouts
 
 # ==================== IMPORTAÇÕES PARA O MAPA ====================
 try:
@@ -22,6 +23,12 @@ except ImportError:
 
 # ==================== CONFIGURAÇÃO INICIAL ====================
 st.set_page_config(page_title="Relatórios Condomínios", layout="wide", initial_sidebar_state="collapsed")
+
+# ✅ CORREÇÃO 1: Inicializar flags de sessão
+if "reload_data" not in st.session_state:
+    st.session_state["reload_data"] = False
+if "confirm_delete" not in st.session_state:
+    st.session_state["confirm_delete"] = False
 
 # ==================== CONFIGURAÇÃO MONGODB OTIMIZADA ====================
 @st.cache_resource
@@ -71,8 +78,6 @@ def criar_indices_mongodb(db):
         print("✅ Índices MongoDB criados/atualizados")
     except Exception as e:
         print(f"⚠️ Aviso ao criar índices: {e}")
-
-from pymongo import DESCENDING
 
 # ==================== FUNÇÕES UTILITÁRIAS OTIMIZADAS ====================
 def limpar_valor_data(valor):
@@ -213,15 +218,28 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     
     batch_id = metadata["batch_id"]
     
-    # ✅ OTIMIZAÇÃO: Limpar apenas batches antigos (não tudo)
-    count_clientes_del = collection_clientes.delete_many({"_import_batch": {"$ne": batch_id}}).deleted_count
-    count_meta_del = collection_meta.delete_many({"batch_id": {"$ne": batch_id}}).deleted_count
+    # 🛡️ PROTEÇÃO: Validar batch_id antes de deletar
+    if not batch_id or batch_id == "batch_":
+        st.error("❌ Batch ID inválido. Abortando operação.")
+        return False
     
-    if count_clientes_del > 0 or count_meta_del > 0:
-        print(f"Limpeza realizada: {count_clientes_del} clientes e {count_meta_del} metadados removidos.")
+    # ✅ OTIMIZAÇÃO: Limpar apenas batches antigos (não tudo)
+    try:
+        count_clientes_del = collection_clientes.delete_many(
+            {"_import_batch": {"$ne": batch_id, "$exists": True}}
+        ).deleted_count
+        count_meta_del = collection_meta.delete_many(
+            {"batch_id": {"$ne": batch_id, "$exists": True}}
+        ).deleted_count
+        
+        if count_clientes_del > 0 or count_meta_del > 0:
+            print(f"🧹 Limpeza: {count_clientes_del} clientes e {count_meta_del} metadados antigos removidos.")
+    except Exception as e:
+        st.error(f"❌ Erro ao limpar dados antigos: {e}")
+        return False
     
     # ✅ OTIMIZAÇÃO 3: Processamento vetorial (sem iterrows)
-    df_clientes_limpo = converter_dataframe_dates(df_clientes)
+    df_clientes_limpo = converter_dataframe_dates(df_clientes.copy())
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
     
@@ -229,23 +247,38 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     docs = safe_mongo_docs(df_clientes_limpo)
     
     if docs:
-        collection_clientes.insert_many(docs)
+        try:
+            collection_clientes.insert_many(docs)
+            print(f"✅ {len(docs)} clientes salvos no MongoDB")
+        except Exception as e:
+            st.error(f"❌ Erro ao inserir clientes: {e}")
+            st.expander("🔍 Detalhes").code(traceback.format_exc())
+            return False
+    else:
+        st.warning("⚠️ Nenhum documento para salvar.")
     
     # Preparar metadados dos condomínios
-    df_condominios_limpo = converter_dataframe_dates(df_condominios)
+    df_condominios_limpo = converter_dataframe_dates(df_condominios.copy())
     # ✅ CORREÇÃO: Usar safe_mongo_docs nos condomínios também
     condominios_records = safe_mongo_docs(df_condominios_limpo)
     
     # Inserir metadata do lote atual
-    collection_meta.insert_one({
+    meta_doc = {
         "batch_id": batch_id,
         "timestamp": datetime.now().replace(tzinfo=None),
         "total_clientes": len(df_clientes),
         "total_condominios": len(df_condominios),
+        "filename": metadata.get("filename", "unknown"),
         "condominios": condominios_records
-    })
+    }
     
-    return True
+    try:
+        collection_meta.insert_one(meta_doc)
+        return True
+    except Exception as e:
+        st.error(f"❌ Erro ao salvar metadados: {e}")
+        st.expander("🔍 Detalhes").code(traceback.format_exc())
+        return False
 
 def load_latest_data(db, limit=10000):
     """
@@ -253,35 +286,52 @@ def load_latest_data(db, limit=10000):
     - Não trava com >10k registros
     - Carrega apenas o necessário
     """
-    meta = db["condominios_meta"].find_one(sort=[("timestamp", DESCENDING)])
-    if not meta:
+    try:
+        meta = db["condominios_meta"].find_one(sort=[("timestamp", DESCENDING)])
+        if not meta:
+            return None, None, None
+        
+        batch_id = meta.get("batch_id")
+        if not batch_id:
+            return None, None, None
+        
+        collection = db["condominios_relatorios"]
+        
+        # ✅ OTIMIZAÇÃO: LIMITAR quantidade de registros carregados
+        cursor = collection.find({"_import_batch": batch_id}).limit(limit)
+        docs = list(cursor)
+        
+        if not docs:
+            return None, None, None
+        
+        df_clientes = pd.DataFrame(docs)
+        
+        if "_id" in df_clientes.columns:
+            df_clientes = df_clientes.drop(columns=["_id"])
+        
+        df_clientes = converter_dataframe_dates(df_clientes)
+        
+        # ✅ CORREÇÃO: Garantir tipos corretos das chaves de join após carregar do MongoDB
+        if "CONDOMANIO" in df_clientes.columns:
+            df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+        
+        df_condominios = pd.DataFrame(meta.get("condominios", []))
+        if not df_condominios.empty:
+            df_condominios = converter_dataframe_dates(df_condominios)
+            
+            if "ID" in df_condominios.columns:
+                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+            if "Apartamentos" in df_condominios.columns:
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
+        else:
+            df_condominios = pd.DataFrame()
+        
+        return df_clientes, df_condominios, meta
+        
+    except Exception as e:
+        st.error(f"❌ Erro crítico ao carregar dados do MongoDB: {e}")
+        st.expander("🔍 Detalhes técnicos").code(traceback.format_exc())
         return None, None, None
-    
-    collection = db["condominios_relatorios"]
-    
-    # ✅ OTIMIZAÇÃO: LIMITAR quantidade de registros carregados
-    df_clientes = pd.DataFrame(list(
-        collection.find({"_import_batch": meta["batch_id"]}).limit(limit)
-    ))
-    
-    if "_id" in df_clientes.columns:
-        df_clientes = df_clientes.drop(columns=["_id"])
-    
-    df_clientes = converter_dataframe_dates(df_clientes)
-    
-    # ✅ CORREÇÃO: Garantir tipos corretos das chaves de join após carregar do MongoDB
-    if "CONDOMANIO" in df_clientes.columns:
-        df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
-    
-    df_condominios = pd.DataFrame(meta.get("condominios", []))
-    df_condominios = converter_dataframe_dates(df_condominios)
-    
-    if "ID" in df_condominios.columns:
-        df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-    if "Apartamentos" in df_condominios.columns:
-        df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
-    
-    return df_clientes, df_condominios, meta
 
 def clear_condominio_data(db, batch_id=None):
     """Limpa dados do banco"""
@@ -676,28 +726,37 @@ def preparar_dados_maturidade_cached(df_clientes_json, df_condominios_json):
 # ==================== GEOCODIFICAÇÃO OTIMIZADA ====================
 @st.cache_data(ttl=3600)
 def obter_coordenadas_se_nao_existir(endereco, numero, cep, cidade="Rio de Janeiro"):
-    """Obtém coordenadas com cache de 1 hora"""
+    """Obtém coordenadas com cache de 1 hora e timeout reduzido"""
     if not GEOCODING_AVAILABLE:
         return None, None
     
+    # ✅ OTIMIZAÇÃO: Validar entradas antes de tentar geocodificar
+    if not endereco or pd.isna(endereco) or str(endereco).strip() == "":
+        return None, None
+    
     endereco_completo = f"{endereco}, {numero}, {cep}, {cidade}, Brasil"
-    endereco_completo = endereco_completo.replace("NaN", "").strip()
+    endereco_completo = endereco_completo.replace("NaN", "").replace("nan", "").strip()
     
     if not endereco_completo or endereco_completo == ", , , Brasil":
         return None, None
     
     try:
-        geolocator = Nominatim(user_agent="tracecom_condominios_app_v3_optimized")
-        location = geolocator.geocode(endereco_completo, timeout=10)
+        geolocator = Nominatim(user_agent="tracecom_condominios_app_v4")
+        # ✅ CORREÇÃO: Timeout reduzido para 3 segundos
+        location = geolocator.geocode(endereco_completo, timeout=3)
         
         if location:
             return location.latitude, location.longitude
         else:
-            location_cep = geolocator.geocode(f"{cep}, {cidade}, Brasil", timeout=10)
-            if location_cep:
-                return location_cep.latitude, location_cep.longitude
+            # Tenta apenas com CEP se endereço completo falhar
+            if cep and str(cep).strip():
+                location_cep = geolocator.geocode(f"{cep}, {cidade}, Brasil", timeout=3)
+                if location_cep:
+                    return location_cep.latitude, location_cep.longitude
             return None, None
-    except Exception:
+    except Exception as e:
+        # Log silencioso para não poluir a UI
+        print(f"⚠️ Erro geocodificação para {endereco}: {e}")
         return None, None
 
 # ==================== INTERFACE STREAMLIT ====================
@@ -718,13 +777,19 @@ def render_relatorios_condominios():
     with col2:
         if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
             st.session_state["reload_data"] = True
+            st.rerun()
         if st.button("🗑️ Limpar Dados", type="secondary", use_container_width=True):
             if st.session_state.get("confirm_delete"):
                 deleted = clear_condominio_data(db)
                 st.success(f"✅ {deleted} registros removidos!")
                 st.session_state["confirm_delete"] = False
+                # Limpar cache da sessão
+                for key in ["df_clientes_cached", "df_condominios_cached", "meta_cached"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
                 # ✅ OTIMIZAÇÃO: Limpar apenas caches relacionados
                 st.cache_data.clear()
+                time.sleep(1)
                 st.rerun()
             else:
                 st.warning("⚠️ Clique novamente para confirmar")
@@ -744,67 +809,105 @@ def render_relatorios_condominios():
         st.warning("⚠️ Nenhum dado importado ainda")
     
     st.markdown("---")
+    
+    # ==================== LÓGICA DE CARREGAMENTO CORRIGIDA ====================
     df_clientes, df_condominios, meta = None, None, None
     
+    # 1. PRIORIDADE MÁXIMA: Upload de novo arquivo
     if uploaded_file:
         try:
-            df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
-            df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
-            
-            # ✅ CORREÇÃO: Normalizar chaves de join para int, evitando mismatch float/int
-            if "CONDOMANIO" in df_clientes.columns:
-                df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
-            if "ID" in df_condominios.columns:
-                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-
-            if "Apartamentos" in df_condominios.columns:
-                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
-                    errors="coerce").fillna(0).astype(int)
-            
-            df_clientes = converter_dataframe_dates(df_clientes)
-            df_condominios = converter_dataframe_dates(df_condominios)
-            
-            metadata = {
-                "timestamp": datetime.now().replace(tzinfo=None),
-                "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "filename": uploaded_file.name
-            }
-            
-            if save_condominio_data(db, df_clientes, df_condominios, metadata):
-                st.success(f"✅ Dados importados! {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
-                st.cache_data.clear()
-                st.rerun()
+            with st.spinner('📤 Processando planilha...'):
+                df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
+                df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
+                
+                # Normalização imediata das chaves
+                if "CONDOMANIO" in df_clientes.columns:
+                    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+                if "ID" in df_condominios.columns:
+                    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+                if "Apartamentos" in df_condominios.columns:
+                    df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
+                        errors="coerce").fillna(0).astype(int)
+                
+                df_clientes = converter_dataframe_dates(df_clientes)
+                df_condominios = converter_dataframe_dates(df_condominios)
+                
+                metadata = {
+                    "timestamp": datetime.now().replace(tzinfo=None),
+                    "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    "filename": uploaded_file.name
+                }
+                
+                if save_condominio_data(db, df_clientes, df_condominios, metadata):
+                    st.success(f"✅ Dados importados! {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
+                    
+                    # Salva na sessão IMEDIATAMENTE
+                    st.session_state["df_clientes_cached"] = df_clientes
+                    st.session_state["df_condominios_cached"] = df_condominios
+                    st.session_state["meta_cached"] = metadata
+                    
+                    st.cache_data.clear()
+                    time.sleep(1)  # Pequena pausa para garantir persistência
+                    st.rerun()
+                    
         except Exception as e:
             st.error(f"❌ Erro ao processar planilha: {str(e)}")
-            st.expander("Detalhes técnicos do erro").code(traceback.format_exc())
+            st.expander("🔍 Detalhes técnicos").code(traceback.format_exc())
+    
+    # 2. SEGUNDA PRIORIDADE: Recarregar do MongoDB (quando solicitado ou sem cache)
+    elif (st.session_state.get("reload_data") or 
+          "df_clientes_cached" not in st.session_state or 
+          st.session_state.get("df_clientes_cached") is None):
+        
+        with st.spinner('🔄 Carregando dados do banco de dados...'):
+            result = load_latest_data(db)
             
-    elif st.session_state.get("reload_data") or "df_clientes_cached" not in st.session_state:
-        result = load_latest_data(db)
-        if result[0] is not None:
-            df_clientes, df_condominios, meta = result
-            if "Apartamentos" in df_condominios.columns:
-                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
-                    errors="coerce").fillna(0).astype(int)
-            # ✅ CORREÇÃO: Garantir normalização das chaves ao recarregar
-            if "CONDOMANIO" in df_clientes.columns:
-                df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
-            if "ID" in df_condominios.columns:
-                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-            
-            st.session_state["df_clientes_cached"] = df_clientes
-            st.session_state["df_condominios_cached"] = df_condominios
-            st.session_state["meta_cached"] = meta
-            st.success("📦 Dados pré-carregados da última importação")
-        else:
-            st.info("Faça upload da planilha para começar")
-            return
+            if result[0] is not None and not result[0].empty:
+                df_clientes, df_condominios, meta = result
+                
+                # Normalização pós-carregamento
+                if "Apartamentos" in df_condominios.columns:
+                    df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
+                        errors="coerce").fillna(0).astype(int)
+                if "CONDOMANIO" in df_clientes.columns:
+                    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+                if "ID" in df_condominios.columns:
+                    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+                
+                # Salva na sessão
+                st.session_state["df_clientes_cached"] = df_clientes
+                st.session_state["df_condominios_cached"] = df_condominios
+                st.session_state["meta_cached"] = meta
+                
+                st.success(f"📦 Dados recuperados do banco: {len(df_clientes)} clientes, {len(df_condominios)} condomínios")
+            else:
+                st.warning("⚠️ Nenhum dado encontrado no banco de dados.")
+                st.info("👆 Faça o upload de uma planilha para começar.")
+                
+                # Limpa flags para evitar loop
+                st.session_state["reload_data"] = False
+                return  # Interrompe execução
+    
+    # 3. TERCEIRA PRIORIDADE: Usar cache da sessão
     else:
         df_clientes = st.session_state["df_clientes_cached"]
         df_condominios = st.session_state["df_condominios_cached"]
-        meta = st.session_state["meta_cached"]
+        meta = st.session_state.get("meta_cached")
+        
+        # ✅ CORREÇÃO: Verificar se os dados do cache são válidos
+        if df_clientes is None or df_clientes.empty:
+            st.warning("⚠️ Cache da sessão está vazio. Tentando recarregar do banco...")
+            st.session_state["reload_data"] = True
+            st.rerun()
     
+    # Limpa flag de reload após uso
     if "reload_data" in st.session_state:
-        del st.session_state["reload_data"]
+        st.session_state["reload_data"] = False
+    
+    # ✅ VERIFICAÇÃO FINAL: Garantir que temos dados antes de continuar
+    if df_clientes is None or df_clientes.empty:
+        st.error("❌ Não foi possível carregar os dados. Por favor, faça o upload da planilha.")
+        st.stop()
     
     # ==================== DASHBOARD PRINCIPAL ====================
     st.subheader("📊 Dashboard Principal")
@@ -872,7 +975,7 @@ def render_relatorios_condominios():
             "Bloqueio Automático": st.column_config.NumberColumn(format="%d"),
         })
         
-        with st.expander("Entenda os cálculos"):
+        with st.expander("📊 Entenda os cálculos"):
             st.markdown(f"""
             ### Como são calculados os indicadores:
             **Modo atual:** {'**Todos os Ocupados**' if modo_param == 'todos_ativos' else '**Somente Ativos Limpos**'}
