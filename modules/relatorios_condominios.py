@@ -10,17 +10,6 @@ from urllib.parse import quote_plus
 import io
 import traceback
 
-
-#rodar uma unica vez
-if "reset_db" not in st.session_state:
-    db["condominios_clientes"].delete_many({})
-    db["condominios"].delete_many({})
-    db["condominios_metadata"].delete_many({})
-    
-    st.session_state["reset_db"] = True
-
-
-
 # ==================== IMPORTAÇÕES PARA O MAPA ====================
 try:
     import folium
@@ -213,87 +202,51 @@ def safe_mongo_docs(df):
     return safe_records
 
 
-def clean_dataframe_for_mongo(df):
-    import math
-    import numpy as np
-
-    df = df.copy()
-
-    # 🚨 converte NaN e NaT → None
-    df = df.where(pd.notnull(df), None)
-
-    records = df.to_dict('records')
-    cleaned = []
-
-    for doc in records:
-        new_doc = {}
-
-        for k, v in doc.items():
-
-            # Datas
-            if isinstance(v, (pd.Timestamp,)):
-                try:
-                    new_doc[k] = v.to_pydatetime()
-                except:
-                    new_doc[k] = None
-
-            # Float inválido
-            elif isinstance(v, float):
-                if math.isnan(v) or math.isinf(v):
-                    new_doc[k] = None
-                else:
-                    new_doc[k] = v
-
-            # Listas (blindagem extra)
-            elif isinstance(v, list):
-                new_doc[k] = [
-                    None if pd.isna(i) else i for i in v
-                ]
-
-            # Dicts (blindagem extra)
-            elif isinstance(v, dict):
-                new_doc[k] = {
-                    key: (None if pd.isna(val) else val)
-                    for key, val in v.items()
-                }
-
-            else:
-                new_doc[k] = v
-
-        cleaned.append(new_doc)
-
-    return cleaned
-
-
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
-    try:
-        collection_clientes = db["condominios_clientes"]
-        collection_condominios = db["condominios"]
-        collection_metadata = db["condominios_metadata"]
+    """
+    ✅ OTIMIZAÇÃO 2: Salva dados sem iterrows (processamento vetorial)
+    - 10x mais rápido na importação
+    - Limpa apenas batches antigos, não tudo
+    """
+    collection_clientes = db["condominios_relatorios"]
+    collection_meta = db["condominios_meta"]
+    
+    batch_id = metadata["batch_id"]
+    
+    # ✅ OTIMIZAÇÃO: Limpar apenas batches antigos (não tudo)
+    count_clientes_del = collection_clientes.delete_many({"_import_batch": {"$ne": batch_id}}).deleted_count
+    count_meta_del = collection_meta.delete_many({"batch_id": {"$ne": batch_id}}).deleted_count
+    
+    if count_clientes_del > 0 or count_meta_del > 0:
+        print(f"Limpeza realizada: {count_clientes_del} clientes e {count_meta_del} metadados removidos.")
+    
+    # ✅ OTIMIZAÇÃO 3: Processamento vetorial (sem iterrows)
+    df_clientes_limpo = converter_dataframe_dates(df_clientes)
+    df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
+    df_clientes_limpo["_import_batch"] = batch_id
+    
+    # ✅ CORREÇÃO: Usar safe_mongo_docs para eliminar NaT/NaN antes do insert
+    docs = safe_mongo_docs(df_clientes_limpo)
+    
+    if docs:
+        collection_clientes.insert_many(docs)
+    
+    # Preparar metadados dos condomínios
+    df_condominios_limpo = converter_dataframe_dates(df_condominios)
+    # ✅ CORREÇÃO: Usar safe_mongo_docs nos condomínios também
+    condominios_records = safe_mongo_docs(df_condominios_limpo)
+    
+    # Inserir metadata do lote atual
+    collection_meta.insert_one({
+        "batch_id": batch_id,
+        "timestamp": datetime.now().replace(tzinfo=None),
+        "total_clientes": len(df_clientes),
+        "total_condominios": len(df_condominios),
+        "condominios": condominios_records
+    })
+    
+    return True
 
-        # 🚨 LIMPEZA TOTAL
-        docs_clientes = clean_dataframe_for_mongo(df_clientes)
-        docs_condominios = clean_dataframe_for_mongo(df_condominios)
-
-        # 🚨 (RECOMENDADO) LIMPA BASE ANTES
-        collection_clientes.delete_many({})
-        collection_condominios.delete_many({})
-        collection_metadata.delete_many({})
-
-        if docs_clientes:
-            collection_clientes.insert_many(docs_clientes)
-
-        if docs_condominios:
-            collection_condominios.insert_many(docs_condominios)
-
-        if metadata:
-            collection_metadata.insert_one(metadata)
-
-        return True
-
-    except Exception as e:
-        print(f"Erro ao salvar no Mongo: {e}")
-        raise
 def load_latest_data(db, limit=10000):
     """
     ✅ OTIMIZAÇÃO 4: Carregamento com paginação (limit)
@@ -797,37 +750,7 @@ def render_relatorios_condominios():
         try:
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
-
-def normalize_date_columns(df):
-    date_like_cols = []
-
-    for col in df.columns:
-        col_upper = col.upper()
-        if any(keyword in col_upper for keyword in ['DATA', 'DT', 'VENC', 'NASC']):
-            date_like_cols.append(col)
-
-    for col in date_like_cols:
-        df[col] = (
-            df[col]
-            .replace(['00/00/0000', '0', '', 'nan'], None)
-        )
-
-        df[col] = pd.to_datetime(
-            df[col],
-            errors='coerce',
-            dayfirst=True
-        )
-
-    return df
-
-
-# 🚨 APLICA NOS DOIS DATAFRAMES
-df_clientes = normalize_date_columns(df_clientes)
-df_condominios = normalize_date_columns(df_condominios)
-
-
-
-
+            
             # ✅ CORREÇÃO: Normalizar chaves de join para int, evitando mismatch float/int
             if "CONDOMANIO" in df_clientes.columns:
                 df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
