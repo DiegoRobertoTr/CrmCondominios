@@ -156,52 +156,6 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     return str(value)
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
-def safe_mongo_docs(df):
-    """
-    ✅ CORREÇÃO: Converte DataFrame para lista de dicts seguros para o MongoDB.
-    - Substitui NaT, NaN, inf por None (BSON-safe)
-    - Converte Timestamps pandas para datetime Python sem timezone
-    - Evita o erro: NaTType does not support utcoffset
-    """
-    import math
-    records = df.to_dict('records')
-    safe_records = []
-    for doc in records:
-        safe_doc = {}
-        for k, v in doc.items():
-            if v is None:
-                safe_doc[k] = None
-            elif isinstance(v, pd.Timestamp):
-                if pd.isna(v):
-                    safe_doc[k] = None
-                else:
-                    try:
-                        safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
-                    except Exception:
-                        safe_doc[k] = None
-            elif isinstance(v, datetime):
-                try:
-                    safe_doc[k] = v.replace(tzinfo=None)
-                except Exception:
-                    safe_doc[k] = None
-            elif isinstance(v, float):
-                if math.isnan(v) or math.isinf(v):
-                    safe_doc[k] = None
-                else:
-                    safe_doc[k] = v
-            else:
-                # Captura qualquer outro tipo com isna (ex: numpy NaN, NAType)
-                try:
-                    if pd.isna(v):
-                        safe_doc[k] = None
-                    else:
-                        safe_doc[k] = v
-                except (TypeError, ValueError):
-                    safe_doc[k] = v
-        safe_records.append(safe_doc)
-    return safe_records
-
-
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """
     ✅ OTIMIZAÇÃO 2: Salva dados sem iterrows (processamento vetorial)
@@ -225,16 +179,15 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
     
-    # ✅ CORREÇÃO: Usar safe_mongo_docs para eliminar NaT/NaN antes do insert
-    docs = safe_mongo_docs(df_clientes_limpo)
+    # Converter DataFrame para documentos MongoDB de uma vez
+    docs = df_clientes_limpo.to_dict('records')
     
     if docs:
         collection_clientes.insert_many(docs)
     
     # Preparar metadados dos condomínios
     df_condominios_limpo = converter_dataframe_dates(df_condominios)
-    # ✅ CORREÇÃO: Usar safe_mongo_docs nos condomínios também
-    condominios_records = safe_mongo_docs(df_condominios_limpo)
+    condominios_records = df_condominios_limpo.to_dict('records')
     
     # Inserir metadata do lote atual
     collection_meta.insert_one({
@@ -305,7 +258,7 @@ def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo
         return pd.DataFrame()
     
     df_condominios = df_condominios.copy()
-    # ✅ CORREÇÃO: Garantir tipo int nas chaves antes do merge
+    # ✅ CORREÇÃO: Garantir tipo int nas chaves antes do merge para evitar mismatch float vs int
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
     df_clientes = df_clientes.copy()
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
@@ -834,7 +787,7 @@ def render_relatorios_condominios():
     
     st.markdown("---")
     
-    # ✅ CORREÇÃO: Usar date_format='iso' para serialização segura de datas
+    # ✅ CORREÇÃO: Usar orient='split' com date_format='iso' para evitar warning de datas
     df_clientes_json = df_clientes.to_json(orient='split', date_format='iso')
     df_condominios_json = df_condominios.to_json(orient='split', date_format='iso')
     
