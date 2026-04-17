@@ -76,47 +76,89 @@ from pymongo import DESCENDING
 
 # ==================== FUNÇÕES UTILITÁRIAS OTIMIZADAS ====================
 def limpar_valor_data(valor):
-    """Limpa e padroniza valores de data"""
-    if pd.isna(valor) or valor is None:
-        return None
+    """Limpa e padroniza valores de data — retorna datetime Python sem timezone ou None."""
+    try:
+        if valor is None or pd.isna(valor):
+            return None
+    except (TypeError, ValueError):
+        pass
     if isinstance(valor, str):
         valor_limpo = valor.strip()
-        if valor_limpo in ["00/00/0000", "0", " ", "nan", "NaT", "null", "NULL"]:
+        if valor_limpo in ["00/00/0000", "0", " ", "nan", "NaT", "null", "NULL", ""]:
             return None
         try:
             valor = pd.to_datetime(valor_limpo, errors='coerce')
+        except Exception:
+            return None
+        try:
             if pd.isna(valor):
                 return None
-        except:
+        except (TypeError, ValueError):
             return None
     if isinstance(valor, pd.Timestamp):
-        if pd.isna(valor):
+        try:
+            if pd.isna(valor):
+                return None
+        except (TypeError, ValueError):
             return None
         try:
             return valor.to_pydatetime().replace(tzinfo=None)
-        except:
+        except Exception:
             return None
     if isinstance(valor, datetime):
-        if valor.tzinfo is not None:
-            try:
-                return valor.replace(tzinfo=None)
-            except:
-                return None
-        return valor
+        try:
+            return valor.replace(tzinfo=None)
+        except Exception:
+            return None
     return None
 
+
 def converter_dataframe_dates(df):
-    """✅ OTIMIZAÇÃO: Conversão vetorial de datas"""
+    """Converte colunas de data para datetime Python sem timezone. Processa por nome e por dtype."""
     df = df.copy()
     for col in df.columns:
         col_lower = col.lower()
-        eh_coluna_data = any(palavra in col_lower for palavra in 
-                           ['data', 'date', 'cadastro', 'ativacao', 'cancelamento', 
-                            'nascimento', 'renovacao'])
+        eh_coluna_data = any(p in col_lower for p in
+                             ['data', 'date', 'cadastro', 'ativacao', 'cancelamento',
+                              'nascimento', 'renovacao'])
         if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = pd.to_datetime(df[col], errors='coerce')
-            df[col] = df[col].apply(lambda x: limpar_valor_data(x))
+            df[col] = df[col].apply(limpar_valor_data)
     return df
+
+
+def _sanitize_value(v):
+    """Converte qualquer valor nao serializavel pelo BSON para tipos Python seguros."""
+    import math
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, pd.Timestamp):
+        try:
+            return v.to_pydatetime().replace(tzinfo=None)
+        except Exception:
+            return None
+    if isinstance(v, datetime):
+        try:
+            return v.replace(tzinfo=None)
+        except Exception:
+            return None
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return None
+    return v
+
+
+def safe_mongo_docs(df):
+    """
+    Converte DataFrame para lista de dicts 100% seguros para insercao no MongoDB.
+    Elimina NaT, NaN, inf e garante que datas sejam datetime Python sem timezone.
+    Usa no lugar de df.to_dict('records') em todos os inserts.
+    """
+    records = df.to_dict('records')
+    return [{k: _sanitize_value(v) for k, v in doc.items()} for doc in records]
 
 def formatar_numero_br(valor, decimais=0):
     """Formata número para padrão brasileiro"""
@@ -156,52 +198,6 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     return str(value)
 
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
-def safe_mongo_docs(df):
-    """
-    ✅ CORREÇÃO: Converte DataFrame para lista de dicts seguros para o MongoDB.
-    - Substitui NaT, NaN, inf por None (BSON-safe)
-    - Converte Timestamps pandas para datetime Python sem timezone
-    - Evita o erro: NaTType does not support utcoffset
-    """
-    import math
-    records = df.to_dict('records')
-    safe_records = []
-    for doc in records:
-        safe_doc = {}
-        for k, v in doc.items():
-            if v is None:
-                safe_doc[k] = None
-            elif isinstance(v, pd.Timestamp):
-                if pd.isna(v):
-                    safe_doc[k] = None
-                else:
-                    try:
-                        safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
-                    except Exception:
-                        safe_doc[k] = None
-            elif isinstance(v, datetime):
-                try:
-                    safe_doc[k] = v.replace(tzinfo=None)
-                except Exception:
-                    safe_doc[k] = None
-            elif isinstance(v, float):
-                if math.isnan(v) or math.isinf(v):
-                    safe_doc[k] = None
-                else:
-                    safe_doc[k] = v
-            else:
-                # Captura qualquer outro tipo com isna (ex: numpy NaN, NAType)
-                try:
-                    if pd.isna(v):
-                        safe_doc[k] = None
-                    else:
-                        safe_doc[k] = v
-                except (TypeError, ValueError):
-                    safe_doc[k] = v
-        safe_records.append(safe_doc)
-    return safe_records
-
-
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """
     ✅ OTIMIZAÇÃO 2: Salva dados sem iterrows (processamento vetorial)
@@ -224,16 +220,15 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
-    
-    # ✅ CORREÇÃO: Usar safe_mongo_docs para eliminar NaT/NaN antes do insert
+
+    # ✅ CORREÇÃO DEFINITIVA: safe_mongo_docs elimina NaT/NaN/inf antes do insert
     docs = safe_mongo_docs(df_clientes_limpo)
-    
+
     if docs:
         collection_clientes.insert_many(docs)
-    
+
     # Preparar metadados dos condomínios
     df_condominios_limpo = converter_dataframe_dates(df_condominios)
-    # ✅ CORREÇÃO: Usar safe_mongo_docs nos condomínios também
     condominios_records = safe_mongo_docs(df_condominios_limpo)
     
     # Inserir metadata do lote atual
@@ -266,21 +261,21 @@ def load_latest_data(db, limit=10000):
     
     if "_id" in df_clientes.columns:
         df_clientes = df_clientes.drop(columns=["_id"])
-    
+
     df_clientes = converter_dataframe_dates(df_clientes)
-    
-    # ✅ CORREÇÃO: Garantir tipos corretos das chaves de join após carregar do MongoDB
+
+    # ✅ CORREÇÃO: Normalizar chaves ao carregar do MongoDB
     if "CONDOMANIO" in df_clientes.columns:
         df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
-    
+
     df_condominios = pd.DataFrame(meta.get("condominios", []))
     df_condominios = converter_dataframe_dates(df_condominios)
-    
+
     if "ID" in df_condominios.columns:
         df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
     if "Apartamentos" in df_condominios.columns:
         df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
-    
+
     return df_clientes, df_condominios, meta
 
 def clear_condominio_data(db, batch_id=None):
@@ -303,14 +298,14 @@ def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo
     
     if "CONDOMANIO" not in df_clientes.columns or "ID" not in df_condominios.columns:
         return pd.DataFrame()
-    
+
     df_condominios = df_condominios.copy()
-    # ✅ CORREÇÃO: Garantir tipo int nas chaves antes do merge
+    # ✅ CORREÇÃO: Normalizar chaves antes do merge para evitar mismatch float/int
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
     df_clientes = df_clientes.copy()
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
-    
+
     def classificar_status(status):
         if pd.isna(status):
             return "Outros"
@@ -382,11 +377,11 @@ def calcular_penetracao_cached(df_clientes_json, df_condominios_json):
     """Calcula taxa de penetração com cache"""
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
-    
-    # ✅ CORREÇÃO: Garantir tipo int nas chaves antes do merge
+
+    # ✅ CORREÇÃO: Normalizar chaves antes do merge
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-    
+
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
     
@@ -419,11 +414,11 @@ def analisar_inadimplencia_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Análise de inadimplência com cache"""
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
-    
+
     # ✅ CORREÇÃO: Normalizar chaves antes do merge
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-    
+
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
         lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in 
         ["00/00/0000", "  ", "0", "nan", "nat"] else "Em Dia"
@@ -451,11 +446,11 @@ def analisar_churn_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Análise de churn com cache"""
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
-    
+
     # ✅ CORREÇÃO: Normalizar chaves antes do merge
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-    
+
     status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
     
     if "Ativo" not in status_count.columns:
@@ -621,11 +616,11 @@ def preparar_dados_maturidade_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Preparação de dados de maturidade com cache"""
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
-    
+
     # ✅ CORREÇÃO: Normalizar chaves antes do merge
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-    
+
     data_ref = datetime.now().replace(tzinfo=None)
     df_condominios = df_condominios.copy()
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
@@ -750,17 +745,16 @@ def render_relatorios_condominios():
         try:
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
-            
-            # ✅ CORREÇÃO: Normalizar chaves de join para int, evitando mismatch float/int
+
+            # ✅ CORREÇÃO: Normalizar chaves de join para int (evita mismatch float/int no merge)
             if "CONDOMANIO" in df_clientes.columns:
                 df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
             if "ID" in df_condominios.columns:
                 df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-
             if "Apartamentos" in df_condominios.columns:
-                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"],
                     errors="coerce").fillna(0).astype(int)
-            
+
             df_clientes = converter_dataframe_dates(df_clientes)
             df_condominios = converter_dataframe_dates(df_condominios)
             
@@ -783,14 +777,14 @@ def render_relatorios_condominios():
         if result[0] is not None:
             df_clientes, df_condominios, meta = result
             if "Apartamentos" in df_condominios.columns:
-                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
+                df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"],
                     errors="coerce").fillna(0).astype(int)
-            # ✅ CORREÇÃO: Garantir normalização das chaves ao recarregar
+            # ✅ CORREÇÃO: Normalizar chaves ao recarregar do session_state
             if "CONDOMANIO" in df_clientes.columns:
                 df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
             if "ID" in df_condominios.columns:
                 df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
-            
+
             st.session_state["df_clientes_cached"] = df_clientes
             st.session_state["df_condominios_cached"] = df_condominios
             st.session_state["meta_cached"] = meta
@@ -834,7 +828,7 @@ def render_relatorios_condominios():
     
     st.markdown("---")
     
-    # ✅ CORREÇÃO: Usar date_format='iso' para serialização segura de datas
+    # ✅ CORREÇÃO: date_format='iso' para serialização segura de datas
     df_clientes_json = df_clientes.to_json(orient='split', date_format='iso')
     df_condominios_json = df_condominios.to_json(orient='split', date_format='iso')
     
