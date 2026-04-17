@@ -222,8 +222,17 @@ def load_latest_data(db, limit=10000):
     
     df_clientes = converter_dataframe_dates(df_clientes)
     
+    # ✅ CORREÇÃO: Garantir tipos corretos das chaves de join após carregar do MongoDB
+    if "CONDOMANIO" in df_clientes.columns:
+        df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+    
     df_condominios = pd.DataFrame(meta.get("condominios", []))
     df_condominios = converter_dataframe_dates(df_condominios)
+    
+    if "ID" in df_condominios.columns:
+        df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    if "Apartamentos" in df_condominios.columns:
+        df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
     
     return df_clientes, df_condominios, meta
 
@@ -249,6 +258,10 @@ def gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo
         return pd.DataFrame()
     
     df_condominios = df_condominios.copy()
+    # ✅ CORREÇÃO: Garantir tipo int nas chaves antes do merge para evitar mismatch float vs int
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    df_clientes = df_clientes.copy()
+    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
     
     def classificar_status(status):
@@ -323,6 +336,10 @@ def calcular_penetracao_cached(df_clientes_json, df_condominios_json):
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
     
+    # ✅ CORREÇÃO: Garantir tipo int nas chaves antes do merge
+    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    
     ativos = df_clientes[df_clientes["STATUS ACESSO"].str.lower().str.contains("ativo", na=False)]
     clientes_por_cond = ativos.groupby("CONDOMANIO").size().reset_index(name="clientes_ativos")
     
@@ -356,6 +373,10 @@ def analisar_inadimplencia_cached(df_clientes_json, df_condominios_json):
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
     
+    # ✅ CORREÇÃO: Normalizar chaves antes do merge
+    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    
     df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
         lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in 
         ["00/00/0000", "  ", "0", "nan", "nat"] else "Em Dia"
@@ -383,6 +404,10 @@ def analisar_churn_cached(df_clientes_json, df_condominios_json):
     """✅ OTIMIZAÇÃO: Análise de churn com cache"""
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
+    
+    # ✅ CORREÇÃO: Normalizar chaves antes do merge
+    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
     
     status_count = df_clientes.groupby(["CONDOMANIO", "STATUS ACESSO"]).size().unstack(fill_value=0)
     
@@ -550,6 +575,10 @@ def preparar_dados_maturidade_cached(df_clientes_json, df_condominios_json):
     df_clientes = pd.read_json(df_clientes_json, orient='split')
     df_condominios = pd.read_json(df_condominios_json, orient='split')
     
+    # ✅ CORREÇÃO: Normalizar chaves antes do merge
+    df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    
     data_ref = datetime.now().replace(tzinfo=None)
     df_condominios = df_condominios.copy()
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
@@ -675,6 +704,12 @@ def render_relatorios_condominios():
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
+            # ✅ CORREÇÃO: Normalizar chaves de join para int, evitando mismatch float/int
+            if "CONDOMANIO" in df_clientes.columns:
+                df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+            if "ID" in df_condominios.columns:
+                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+
             if "Apartamentos" in df_condominios.columns:
                 df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
                     errors="coerce").fillna(0).astype(int)
@@ -703,6 +738,11 @@ def render_relatorios_condominios():
             if "Apartamentos" in df_condominios.columns:
                 df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], 
                     errors="coerce").fillna(0).astype(int)
+            # ✅ CORREÇÃO: Garantir normalização das chaves ao recarregar
+            if "CONDOMANIO" in df_clientes.columns:
+                df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+            if "ID" in df_condominios.columns:
+                df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
             
             st.session_state["df_clientes_cached"] = df_clientes
             st.session_state["df_condominios_cached"] = df_condominios
@@ -747,9 +787,9 @@ def render_relatorios_condominios():
     
     st.markdown("---")
     
-    # ✅ OTIMIZAÇÃO: Converter para JSON apenas uma vez
-    df_clientes_json = df_clientes.to_json(orient='split')
-    df_condominios_json = df_condominios.to_json(orient='split')
+    # ✅ CORREÇÃO: Usar orient='split' com date_format='iso' para evitar warning de datas
+    df_clientes_json = df_clientes.to_json(orient='split', date_format='iso')
+    df_condominios_json = df_condominios.to_json(orient='split', date_format='iso')
     
     dashboard_df = gerar_dashboard_principal_cached(df_clientes_json, df_condominios_json, modo_param)
     
