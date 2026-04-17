@@ -8,7 +8,7 @@ Melhorias implementadas:
 - Session state estruturado
 - Exclusão com confirmação de senha
 - Processamento otimizado com referência ao arquivo original
-- Todas as abas do original: Penetração, Receita, Inadimplência, Churn, Concorrência, Zona, Maturidade
+- Todas as abas do original: Penetração, Receita, Inadimplência (2 visões), Churn, Concorrência, Zona, Maturidade
 """
 import streamlit as st
 import pandas as pd
@@ -641,38 +641,71 @@ def calcular_penetracao(df_clientes, df_condominios):
     df_merged["classificacao"] = df_merged["taxa_penetracao"].apply(classificar_penetracao)
     return df_merged.sort_values("taxa_penetracao", ascending=False)
 
-def analisar_inadimplencia(df_clientes, df_condominios):
-    """Análise de inadimplência"""
+def analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados=True):
+    """
+    Analisa inadimplência baseada apenas na coluna FINANCEIRO EM ATRASO
+    
+    Parâmetros:
+    - incluir_desativados=True: análise com TODOS os clientes
+    - incluir_desativados=False: análise apenas com NÃO DESATIVADOS (recuperáveis)
+    """
     df_clientes = df_clientes.copy()
     df_condominios = df_condominios.copy()
     
+    # Normalizar chaves
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
     
-    df_clientes["atraso_bin"] = df_clientes["FINANCEIRO EM ATRASO"].apply(
-        lambda x: "Em Atraso" if pd.notna(x) and str(x).strip().lower() not in 
-        ["00/00/0000", "  ", "0", "nan", "nat"] else "Em Dia"
-    )
+    # Filtrar por status (se necessário)
+    if not incluir_desativados:
+        # Manter apenas clientes NÃO desativados
+        df_clientes = df_clientes[
+            ~df_clientes["STATUS ACESSO"].str.lower().str.contains("desativado|cancelado", na=False)
+        ].copy()
     
-    inadimplencia = df_clientes.groupby(["CONDOMANIO", "atraso_bin"]).size().unstack(fill_value=0)
+    # Classificar inadimplência baseada apenas em FINANCEIRO EM ATRASO
+    def classificar_inadimplencia(valor):
+        if pd.isna(valor):
+            return "Em Dia"
+        valor_str = str(valor).strip().lower()
+        if valor_str in ["", "00/00/0000", "0", "nan", "nat", "none", "null"]:
+            return "Em Dia"
+        return "Em Atraso"
     
-    if "Em Atraso" in inadimplencia.columns and "Em Dia" in inadimplencia.columns:
-        inadimplencia["taxa_inadimplencia"] = (inadimplencia["Em Atraso"] / 
-            (inadimplencia["Em Atraso"] + inadimplencia["Em Dia"]) * 100).round(2)
-    elif "Em Atraso" in inadimplencia.columns:
-        inadimplencia["taxa_inadimplencia"] = 100.0
-    else:
-        inadimplencia["taxa_inadimplencia"] = 0.0
+    df_clientes["situacao_inadimplencia"] = df_clientes["FINANCEIRO EM ATRASO"].apply(classificar_inadimplencia)
     
-    cols_merge = ["ID", "Condomínio", "Região"]
+    # Agrupar por condomínio
+    inadimplencia = df_clientes.groupby(["CONDOMANIO", "situacao_inadimplencia"]).size().unstack(fill_value=0)
+    
+    # Garantir colunas existentes
+    if "Em Atraso" not in inadimplencia.columns:
+        inadimplencia["Em Atraso"] = 0
+    if "Em Dia" not in inadimplencia.columns:
+        inadimplencia["Em Dia"] = 0
+    
+    total_clientes = inadimplencia["Em Atraso"] + inadimplencia["Em Dia"]
+    inadimplencia["taxa_inadimplencia"] = (inadimplencia["Em Atraso"] / total_clientes.replace(0, np.nan) * 100).round(2).fillna(0)
+    inadimplencia["total_clientes"] = total_clientes
+    inadimplencia["total_inadimplentes"] = inadimplencia["Em Atraso"]
+    
+    # Adicionar informações do condomínio
+    cols_merge = ["ID", "Condomínio", "Região", "Apartamentos"]
     cols_existentes = [c for c in cols_merge if c in df_condominios.columns]
     
     result = inadimplencia.reset_index().merge(
         df_condominios[cols_existentes], 
         left_on="CONDOMANIO", right_on="ID", how="right"
     )
+    
+    # Preencher NAs
     result["taxa_inadimplencia"] = result["taxa_inadimplencia"].fillna(0)
-    return result.sort_values("taxa_inadimplencia", ascending=False)
+    result["total_clientes"] = result["total_clientes"].fillna(0).astype(int)
+    result["total_inadimplentes"] = result["total_inadimplentes"].fillna(0).astype(int)
+    result["Em Atraso"] = result["Em Atraso"].fillna(0).astype(int)
+    result["Em Dia"] = result["Em Dia"].fillna(0).astype(int)
+    
+    # Ordenar por maior inadimplência
+    return result.sort_values("taxa_inadimplencia", ascending=False).reset_index(drop=True)
 
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn (taxa de cancelamento)"""
@@ -1292,42 +1325,156 @@ def exibir_dashboard_principal():
                 }
             )
     
-    # TAB 3: INADIMPLÊNCIA
+    # TAB 3: INADIMPLÊNCIA (COM DUAS VISÕES)
     with tab3:
         st.subheader("⚠️ Análise de Inadimplência por Condomínio")
-        df_inadimplencia = analisar_inadimplencia(df_clientes, df_condominios)
+        
+        st.markdown("""
+        <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
+        <strong>📋 Como a inadimplência é calculada:</strong><br>
+        A inadimplência é baseada <strong>exclusivamente na coluna "FINANCEIRO EM ATRASO"</strong> do arquivo de dados.<br>
+        Um cliente é considerado <strong>"Em Atraso"</strong> se esta coluna contiver uma data válida (diferente de vazio, 00/00/0000, 0, nan).<br>
+        Clientes com status "Desativado" ou "Cancelado" NÃO são considerados na <strong>Visão Recuperável</strong>.
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Toggle para escolher a visão
+        col_visao1, col_visao2 = st.columns([1, 2])
+        with col_visao1:
+            visao_selecionada = st.radio(
+                "📊 Selecione a visão:",
+                options=["🔴 Visão Completa (todos os clientes)", "🟢 Visão Recuperável (apenas não desativados)"],
+                index=0,
+                key="visao_inadimplencia",
+                help="Visão Recuperável exclui clientes desativados/cancelados (foco em ação comercial)"
+            )
+        
+        incluir_desativados = visao_selecionada == "🔴 Visão Completa (todos os clientes)"
+        
+        # Explicação da visão selecionada
+        if incluir_desativados:
+            st.info("🔴 **Visão Completa:** Inclui todos os clientes, inclusive desativados. Mostra a inadimplência histórica total do condomínio.")
+        else:
+            st.success("🟢 **Visão Recuperável:** Exclui clientes desativados/cancelados. Mostra apenas clientes que ainda podem regularizar sua situação financeira.")
+        
+        # Calcular inadimplência com base na seleção
+        df_inadimplencia = analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados)
         
         if not df_inadimplencia.empty:
-            # Gráfico de dispersão: Penetração vs Inadimplência
-            df_merge = calcular_penetracao(df_clientes, df_condominios).merge(
-                df_inadimplencia[["CONDOMANIO", "taxa_inadimplencia"]], 
-                left_on="CONDOMANIO", right_on="CONDOMANIO", how="left"
-            )
+            # Métricas resumidas
+            total_condominios = len(df_inadimplencia)
+            total_inadimplentes = df_inadimplencia["total_inadimplentes"].sum()
+            total_clientes_analisados = df_inadimplencia["total_clientes"].sum()
+            media_inadimplencia = df_inadimplencia["taxa_inadimplencia"].mean()
             
-            fig_scatter = px.scatter(
-                df_merge, 
-                x="taxa_penetracao", 
-                y="taxa_inadimplencia", 
-                size="Apartamentos", 
-                color="Região", 
-                hover_name="Condomínio", 
-                title="Penetração vs Inadimplência"
-            )
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("🏢 Condomínios Analisados", formatar_numero_br(total_condominios))
+            col2.metric("⚠️ Total Inadimplentes", formatar_numero_br(total_inadimplentes))
+            col3.metric("👥 Total Clientes", formatar_numero_br(total_clientes_analisados))
+            col4.metric("📊 Média Inadimplência", f"{media_inadimplencia:.1f}%")
             
-            # Gráfico de barras
-            fig = px.bar(
+            st.markdown("---")
+            
+            # Gráfico 1: Top 15 condomínios com maior inadimplência
+            st.markdown("#### 📊 Top 15 Condomínios com Maior Taxa de Inadimplência")
+            
+            fig1 = px.bar(
                 df_inadimplencia.head(15),
                 x="Condomínio",
                 y="taxa_inadimplencia",
                 color="taxa_inadimplencia",
                 color_continuous_scale="Reds",
-                title="Top 15 Condomínios com Maior Taxa de Inadimplência"
+                text="taxa_inadimplencia",
+                title=f"Top 15 - {visao_selecionada}"
             )
-            st.plotly_chart(fig, use_container_width=True)
+            fig1.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+            fig1.update_layout(yaxis_title="Taxa de Inadimplência (%)", xaxis_title="")
+            st.plotly_chart(fig1, use_container_width=True)
             
-            with st.expander("📋 Tabela Completa de Inadimplência"):
-                st.dataframe(df_inadimplencia, use_container_width=True)
+            # Gráfico 2: Dispersão Penetração vs Inadimplência (apenas para visão completa)
+            if incluir_desativados:
+                st.markdown("#### 📈 Correlação: Penetração vs Inadimplência")
+                
+                df_penetracao_temp = calcular_penetracao(df_clientes, df_condominios)
+                df_merge = df_penetracao_temp.merge(
+                    df_inadimplencia[["CONDOMANIO", "taxa_inadimplencia", "total_inadimplentes", "total_clientes"]], 
+                    left_on="CONDOMANIO", right_on="CONDOMANIO", how="left"
+                )
+                
+                fig2 = px.scatter(
+                    df_merge, 
+                    x="taxa_penetracao", 
+                    y="taxa_inadimplencia", 
+                    size="total_clientes",
+                    color="Região", 
+                    hover_name="Condomínio",
+                    title="Relação entre Penetração e Inadimplência (quanto maior a bolha, mais clientes)",
+                    labels={"taxa_penetracao": "Penetração (%)", "taxa_inadimplencia": "Inadimplência (%)"}
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+                
+                st.caption("💡 **Insight:** Idealmente, condomínios com alta penetração deveriam ter baixa inadimplência. Pontos no canto superior direito (alta penetração + alta inadimplência) merecem atenção especial.")
+            
+            # Gráfico 3: Mapa de calor por região
+            if "Região" in df_inadimplencia.columns:
+                st.markdown("#### 🗺️ Inadimplência Média por Região")
+                
+                regiao_stats = df_inadimplencia.groupby("Região").agg(
+                    total_condominios=("Condomínio", "count"),
+                    media_inadimplencia=("taxa_inadimplencia", "mean"),
+                    total_inadimplentes=("total_inadimplentes", "sum"),
+                    total_clientes=("total_clientes", "sum")
+                ).reset_index()
+                
+                regiao_stats["inadimplencia_ponderada"] = (regiao_stats["total_inadimplentes"] / regiao_stats["total_clientes"] * 100).round(2)
+                
+                fig3 = px.bar(
+                    regiao_stats,
+                    x="Região",
+                    y="inadimplencia_ponderada",
+                    color="inadimplencia_ponderada",
+                    color_continuous_scale="Reds",
+                    title="Inadimplência Ponderada por Região",
+                    labels={"inadimplencia_ponderada": "Taxa de Inadimplência (%)"}
+                )
+                st.plotly_chart(fig3, use_container_width=True)
+            
+            # Tabela completa
+            with st.expander("📋 Ver Tabela Completa de Inadimplência"):
+                st.dataframe(
+                    df_inadimplencia[[
+                        "Condomínio", "Região", "Apartamentos", 
+                        "total_clientes", "Em Dia", "Em Atraso", "total_inadimplentes", "taxa_inadimplencia"
+                    ]], 
+                    use_container_width=True,
+                    column_config={
+                        "taxa_inadimplencia": st.column_config.ProgressColumn(
+                            "Taxa Inadimplência", 
+                            format="%.1f%%", 
+                            min_value=0, 
+                            max_value=100
+                        ),
+                        "Apartamentos": st.column_config.NumberColumn("Apartamentos", format="%d"),
+                        "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
+                        "Em Dia": st.column_config.NumberColumn("Em Dia", format="%d"),
+                        "Em Atraso": st.column_config.NumberColumn("Em Atraso", format="%d"),
+                        "total_inadimplentes": st.column_config.NumberColumn("Total Inadimplentes", format="%d"),
+                    }
+                )
+            
+            # Botão de exportação específico para inadimplência
+            output_inad = io.BytesIO()
+            with pd.ExcelWriter(output_inad, engine='openpyxl') as writer:
+                df_inadimplencia.to_excel(writer, sheet_name='Inadimplencia', index=False)
+            output_inad.seek(0)
+            
+            st.download_button(
+                f"📥 Exportar Análise de Inadimplência - {visao_selecionada}",
+                output_inad,
+                f"inadimplencia_condominios_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
     
     # TAB 4: CHURN
     with tab4:
