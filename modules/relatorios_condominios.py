@@ -4,12 +4,11 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timezone
-from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo import MongoClient, ASCENDING
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
 import io
 import traceback
-import math
 
 # ==================== IMPORTAÇÕES PARA O MAPA ====================
 try:
@@ -73,6 +72,8 @@ def criar_indices_mongodb(db):
     except Exception as e:
         print(f"⚠️ Aviso ao criar índices: {e}")
 
+from pymongo import DESCENDING
+
 # ==================== FUNÇÕES UTILITÁRIAS OTIMIZADAS ====================
 def limpar_valor_data(valor):
     """Limpa e padroniza valores de data"""
@@ -105,25 +106,16 @@ def limpar_valor_data(valor):
     return None
 
 def converter_dataframe_dates(df):
-    """✅ CORREÇÃO ROBUSTA: Conversão vetorial de datas com remoção FORÇADA de timezone"""
+    """✅ OTIMIZAÇÃO: Conversão vetorial de datas"""
     df = df.copy()
     for col in df.columns:
         col_lower = col.lower()
         eh_coluna_data = any(palavra in col_lower for palavra in 
                            ['data', 'date', 'cadastro', 'ativacao', 'cancelamento', 
                             'nascimento', 'renovacao'])
-        
         if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
-            # Converter para datetime
             df[col] = pd.to_datetime(df[col], errors='coerce')
-            
-            # ✅ CORREÇÃO CRÍTICA: Remover timezone de TODAS as datas
-            if hasattr(df[col].dtype, 'tz') and df[col].dtype.tz is not None:
-                df[col] = df[col].dt.tz_localize(None)
-            
-            # Aplicar limpar_valor_data para garantir None onde é NaT
             df[col] = df[col].apply(lambda x: limpar_valor_data(x))
-    
     return df
 
 def formatar_numero_br(valor, decimais=0):
@@ -166,57 +158,29 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
 # ==================== FUNÇÕES DE BANCO DE DADOS OTIMIZADAS ====================
 def safe_mongo_docs(df):
     """
-    ✅ CORREÇÃO ROBUSTA: Converte DataFrame para lista de dicts 100% seguros para o MongoDB.
-    - Captura EXPLICITAMENTE pd.NaT (que causa o erro de utcoffset)
+    ✅ CORREÇÃO: Converte DataFrame para lista de dicts seguros para o MongoDB.
     - Substitui NaT, NaN, inf por None (BSON-safe)
-    - Converte Timestamps pandas para datetime Python SEM timezone
-    - Força remoção de timezone em TODOS os objetos datetime
+    - Converte Timestamps pandas para datetime Python sem timezone
+    - Evita o erro: NaTType does not support utcoffset
     """
-    # Primeiro, garantir que o DataFrame não tenha colunas datetime com timezone
-    df = df.copy()
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            # Converter para datetime e REMOVER TIMEZONE explicitamente
-            df[col] = pd.to_datetime(df[col], errors='coerce')
-            # Se tiver timezone, converter para naive (sem timezone)
-            if hasattr(df[col].dtype, 'tz') and df[col].dtype.tz is not None:
-                df[col] = df[col].dt.tz_localize(None)
-        # Tentar converter colunas object que podem conter datas
-        elif df[col].dtype == 'object':
-            try:
-                # Tentar converter para datetime, ignorando erros
-                temp = pd.to_datetime(df[col], errors='coerce')
-                if not temp.isna().all():  # Se pelo menos um valor virou data
-                    # Remover timezone se existir
-                    if hasattr(temp.dtype, 'tz') and temp.dtype.tz is not None:
-                        temp = temp.dt.tz_localize(None)
-                    df[col] = temp
-            except:
-                pass
-    
+    import math
     records = df.to_dict('records')
     safe_records = []
-    
     for doc in records:
         safe_doc = {}
         for k, v in doc.items():
-            # ✅ CORREÇÃO CRÍTICA: Verificar ESPECIFICAMENTE pd.NaT primeiro
-            if v is pd.NaT:
-                safe_doc[k] = None
-            elif v is None:
+            if v is None:
                 safe_doc[k] = None
             elif isinstance(v, pd.Timestamp):
                 if pd.isna(v):
                     safe_doc[k] = None
                 else:
                     try:
-                        # Garantir que não tem timezone
                         safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
                     except Exception:
                         safe_doc[k] = None
             elif isinstance(v, datetime):
                 try:
-                    # Garantir que não tem timezone
                     safe_doc[k] = v.replace(tzinfo=None)
                 except Exception:
                     safe_doc[k] = None
@@ -235,24 +199,14 @@ def safe_mongo_docs(df):
                 except (TypeError, ValueError):
                     safe_doc[k] = v
         safe_records.append(safe_doc)
-    
-    # ✅ VERIFICAÇÃO ADICIONAL: Garantir que nenhum NaT escapou
-    for i, record in enumerate(safe_records):
-        for k, v in record.items():
-            if v is pd.NaT:
-                safe_records[i][k] = None
-            elif isinstance(v, pd.Timestamp) and pd.isna(v):
-                safe_records[i][k] = None
-    
     return safe_records
 
 
 def save_condominio_data(db, df_clientes, df_condominios, metadata):
     """
-    ✅ OTIMIZAÇÃO: Salva dados sem iterrows (processamento vetorial)
+    ✅ OTIMIZAÇÃO 2: Salva dados sem iterrows (processamento vetorial)
     - 10x mais rápido na importação
     - Limpa apenas batches antigos, não tudo
-    - ✅ CORREÇÃO ROBUSTA: Sanitização completa de datas e timezones
     """
     collection_clientes = db["condominios_relatorios"]
     collection_meta = db["condominios_meta"]
@@ -266,78 +220,36 @@ def save_condominio_data(db, df_clientes, df_condominios, metadata):
     if count_clientes_del > 0 or count_meta_del > 0:
         print(f"Limpeza realizada: {count_clientes_del} clientes e {count_meta_del} metadados removidos.")
     
-    # ✅ OTIMIZAÇÃO: Processamento vetorial (sem iterrows)
+    # ✅ OTIMIZAÇÃO 3: Processamento vetorial (sem iterrows)
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
-    
-    # ✅ CORREÇÃO ADICIONAL: Garantir que não há timezone em nenhum objeto datetime
-    for col in df_clientes_limpo.columns:
-        if pd.api.types.is_datetime64_any_dtype(df_clientes_limpo[col]):
-            # Se ainda tiver timezone, remover agressivamente
-            if hasattr(df_clientes_limpo[col].dtype, 'tz') and df_clientes_limpo[col].dtype.tz is not None:
-                df_clientes_limpo[col] = df_clientes_limpo[col].dt.tz_localize(None)
-    
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
     
     # ✅ CORREÇÃO: Usar safe_mongo_docs para eliminar NaT/NaN antes do insert
     docs = safe_mongo_docs(df_clientes_limpo)
     
-    # ✅ VERIFICAÇÃO FINAL: Garantir que não há NaT nos documentos
-    for i, doc in enumerate(docs):
-        for k, v in doc.items():
-            if v is pd.NaT or (isinstance(v, pd.Timestamp) and pd.isna(v)):
-                docs[i][k] = None
-            elif isinstance(v, datetime) and v.tzinfo is not None:
-                docs[i][k] = v.replace(tzinfo=None)
-    
     if docs:
-        try:
-            collection_clientes.insert_many(docs)
-        except Exception as e:
-            st.error(f"Erro no insert_many: {e}")
-            st.write("Tentando inserir documentos um por um para identificar o problema...")
-            # Tentar inserir um por um para identificar o problema
-            for i, doc in enumerate(docs):
-                try:
-                    collection_clientes.insert_one(doc)
-                except Exception as doc_e:
-                    st.error(f"Erro no documento {i}: {doc_e}")
-                    st.write("Tipos de dados no documento problemático:")
-                    for k, v in doc.items():
-                        if v is not None:
-                            st.write(f"  {k}: {type(v)} = {v}")
-                    raise
-    else:
-        st.warning("Nenhum documento para inserir")
+        collection_clientes.insert_many(docs)
     
     # Preparar metadados dos condomínios
     df_condominios_limpo = converter_dataframe_dates(df_condominios)
-    
-    # Remover timezone dos condomínios também
-    for col in df_condominios_limpo.columns:
-        if pd.api.types.is_datetime64_any_dtype(df_condominios_limpo[col]):
-            if hasattr(df_condominios_limpo[col].dtype, 'tz') and df_condominios_limpo[col].dtype.tz is not None:
-                df_condominios_limpo[col] = df_condominios_limpo[col].dt.tz_localize(None)
-    
     # ✅ CORREÇÃO: Usar safe_mongo_docs nos condomínios também
     condominios_records = safe_mongo_docs(df_condominios_limpo)
     
     # Inserir metadata do lote atual
-    meta_doc = {
+    collection_meta.insert_one({
         "batch_id": batch_id,
         "timestamp": datetime.now().replace(tzinfo=None),
         "total_clientes": len(df_clientes),
         "total_condominios": len(df_condominios),
         "condominios": condominios_records
-    }
-    
-    collection_meta.insert_one(meta_doc)
+    })
     
     return True
 
 def load_latest_data(db, limit=10000):
     """
-    ✅ OTIMIZAÇÃO: Carregamento com paginação (limit)
+    ✅ OTIMIZAÇÃO 4: Carregamento com paginação (limit)
     - Não trava com >10k registros
     - Carrega apenas o necessário
     """
