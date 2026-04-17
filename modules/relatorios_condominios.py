@@ -180,11 +180,13 @@ def load_excel_from_gridfs(file_id):
 # ==================== FUNÇÕES UTILITÁRIAS ====================
 def limpar_valor_data(valor):
     """Limpa e padroniza valores de data"""
+    # Verificar se é nulo usando pandas.isna (captura NaN, NaT, None)
     if pd.isna(valor) or valor is None:
         return None
+    
     if isinstance(valor, str):
         valor_limpo = valor.strip()
-        if valor_limpo in ["00/00/0000", "0", " ", "nan", "NaT", "null", "NULL"]:
+        if valor_limpo in ["", "00/00/0000", "0", " ", "nan", "NaT", "null", "NULL", "NaTType"]:
             return None
         try:
             valor = pd.to_datetime(valor_limpo, errors='coerce')
@@ -192,6 +194,7 @@ def limpar_valor_data(valor):
                 return None
         except:
             return None
+    
     if isinstance(valor, pd.Timestamp):
         if pd.isna(valor):
             return None
@@ -199,69 +202,119 @@ def limpar_valor_data(valor):
             return valor.to_pydatetime().replace(tzinfo=None)
         except:
             return None
+    
     if isinstance(valor, datetime):
-        if valor.tzinfo is not None:
-            try:
+        try:
+            if valor.tzinfo is not None:
                 return valor.replace(tzinfo=None)
-            except:
-                return None
-        return valor
+            return valor
+        except:
+            return None
+    
     return None
 
 def converter_dataframe_dates(df):
-    """Conversão vetorial de datas"""
+    """Conversão vetorial de datas com tratamento seguro de NaT"""
     df = df.copy()
+    
     for col in df.columns:
         col_lower = col.lower()
         eh_coluna_data = any(palavra in col_lower for palavra in 
                            ['data', 'date', 'cadastro', 'ativacao', 'cancelamento', 
-                            'nascimento', 'renovacao'])
+                            'nascimento', 'renovacao', 'vencimento', 'credito'])
+        
         if eh_coluna_data or pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = pd.to_datetime(df[col], errors='coerce')
-            df[col] = df[col].apply(lambda x: limpar_valor_data(x))
+            # Converter para datetime, invalid para NaT
+            df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
+            # Substituir NaT por None
+            df[col] = df[col].apply(lambda x: None if pd.isna(x) else x)
+    
     return df
 
 def safe_mongo_docs(df):
     """
     Converte DataFrame para lista de dicts seguros para o MongoDB.
-    - Substitui NaT, NaN, inf por None (BSON-safe)
+    - Substitui NaT, NaN, inf, pd.NA por None (BSON-safe)
     - Converte Timestamps pandas para datetime Python sem timezone
+    - Trata especificamente o erro "NaTType does not support utcoffset"
     """
     import math
+    import numpy as np
+    
+    # Primeiro, substituir todos os NaT por None no DataFrame
+    df = df.copy()
+    
+    # Para cada coluna de data, substituir NaT por None explicitamente
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].apply(lambda x: None if pd.isna(x) else x)
+    
+    # Substituir NaN e inf por None
+    df = df.replace([np.nan, np.inf, -np.inf], None)
+    
+    # Converter para dicionários
     records = df.to_dict('records')
     safe_records = []
+    
     for doc in records:
         safe_doc = {}
         for k, v in doc.items():
+            # Se já é None, manter
             if v is None:
                 safe_doc[k] = None
-            elif isinstance(v, pd.Timestamp):
-                if pd.isna(v):
-                    safe_doc[k] = None
-                else:
-                    try:
-                        safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
-                    except Exception:
-                        safe_doc[k] = None
-            elif isinstance(v, datetime):
+                continue
+            
+            # Verificar se é pandas NaT (pode vir de várias formas)
+            if pd.isna(v):
+                safe_doc[k] = None
+                continue
+            
+            # Tratar Timestamp do pandas
+            if isinstance(v, pd.Timestamp):
                 try:
-                    safe_doc[k] = v.replace(tzinfo=None)
-                except Exception:
+                    # Converter para datetime Python sem timezone
+                    safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
+                except (AttributeError, ValueError, TypeError):
                     safe_doc[k] = None
-            elif isinstance(v, float):
+                continue
+            
+            # Tratar datetime do Python
+            if isinstance(v, datetime):
+                try:
+                    if v.tzinfo is not None:
+                        safe_doc[k] = v.replace(tzinfo=None)
+                    else:
+                        safe_doc[k] = v
+                except (AttributeError, ValueError):
+                    safe_doc[k] = None
+                continue
+            
+            # Tratar float (NaN, inf)
+            if isinstance(v, float):
                 if math.isnan(v) or math.isinf(v):
                     safe_doc[k] = None
                 else:
                     safe_doc[k] = v
-            else:
+                continue
+            
+            # Tratar numpy arrays ou outros tipos numpy
+            if hasattr(v, 'dtype'):
                 try:
-                    if pd.isna(v):
-                        safe_doc[k] = None
-                    else:
-                        safe_doc[k] = v
-                except (TypeError, ValueError):
-                    safe_doc[k] = v
+                    if np.issubdtype(v.dtype, np.datetime64):
+                        if np.isnat(v):
+                            safe_doc[k] = None
+                        else:
+                            ts = pd.Timestamp(v)
+                            safe_doc[k] = ts.to_pydatetime().replace(tzinfo=None)
+                        continue
+                except (TypeError, AttributeError):
+                    pass
+            
+            # Valor normal - manter como está
+            safe_doc[k] = v
+            
         safe_records.append(safe_doc)
+    
     return safe_records
 
 def formatar_numero_br(valor, decimais=0):
@@ -432,7 +485,6 @@ def clear_condominio_data(db, batch_id=None, module="condominios"):
 def processar_upload_condominios(db, uploaded_file):
     """
     Processa upload de planilha e salva no GridFS + MongoDB
-    Igual ao fluxo do analise_financeira
     """
     with st.spinner('💾 Salvando arquivo no GridFS...'):
         file_id = save_excel_to_gridfs(uploaded_file, "condominios")
@@ -448,6 +500,10 @@ def processar_upload_condominios(db, uploaded_file):
             # Ler planilha
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
+            
+            # ===== NOVO: Substituir NaN/NaT por None em todas as colunas =====
+            df_clientes = df_clientes.replace({pd.NaT: None, np.nan: None})
+            df_condominios = df_condominios.replace({pd.NaT: None, np.nan: None})
             
             # Validar colunas obrigatórias
             colunas_faltantes_clientes = [
@@ -483,6 +539,16 @@ def processar_upload_condominios(db, uploaded_file):
             # Converter datas
             df_clientes = converter_dataframe_dates(df_clientes)
             df_condominios = converter_dataframe_dates(df_condominios)
+            
+            # ===== NOVO: Garantir que não há NaT antes de criar metadados =====
+            # Substituir qualquer NaT restante por None
+            for col in df_clientes.columns:
+                if pd.api.types.is_datetime64_any_dtype(df_clientes[col]):
+                    df_clientes[col] = df_clientes[col].apply(lambda x: None if pd.isna(x) else x)
+            
+            for col in df_condominios.columns:
+                if pd.api.types.is_datetime64_any_dtype(df_condominios[col]):
+                    df_condominios[col] = df_condominios[col].apply(lambda x: None if pd.isna(x) else x)
             
             # Criar metadados com referência ao arquivo original
             batch_id = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
