@@ -10,6 +10,17 @@ from urllib.parse import quote_plus
 import io
 import traceback
 
+
+#rodar uma unica vez
+if "reset_db" not in st.session_state:
+    db["condominios_clientes"].delete_many({})
+    db["condominios"].delete_many({})
+    db["condominios_metadata"].delete_many({})
+    
+    st.session_state["reset_db"] = True
+
+
+
 # ==================== IMPORTAÇÕES PARA O MAPA ====================
 try:
     import folium
