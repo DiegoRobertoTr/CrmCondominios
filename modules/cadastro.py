@@ -15,7 +15,10 @@ import copy
 try:
     from .condominios import get_condominio_options, get_condominio_by_id
 except ImportError:
-    from .condominios import get_condominio_options, get_condominio_by_id
+    def get_condominio_options():
+        return {}
+    def get_condominio_by_id(cond_id):
+        return None
 
 # --- Configuração do WhatsApp da loja ---
 WHATSAPP_LOJA = "5524992035540"  # +55 24 99203-5540 → 5524992035540
@@ -39,10 +42,12 @@ def copiar_para_area_de_transferencia(texto, botao_key):
         f"""
         <script>
         function copyToClipboard_{botao_key}() {{
-            navigator.clipboard.writeText("{texto}");
+            navigator.clipboard.writeText(&quot;{texto}&quot;);
         }}
         </script>
-        <button onclick="copyToClipboard_{botao_key}()" style="padding: 5px 10px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">📋 Copiar</button>
+        <button onclick="copyToClipboard_{botao_key}()" style="padding: 5px 10px; cursor: pointer;">
+            📋 Copiar
+        </button>
         """,
         height=40,
     )
@@ -67,22 +72,22 @@ def verificar_duplicidade():
     
     cpf = re.sub(r'\D', '', cpf_raw)
     celular_normalizado = normalize_phone(celular_bruto)
-    
+
     if cpf == st.session_state.get("ultimo_cpf", "") and celular_normalizado == st.session_state.get("ultimo_celular", ""):
         return None, None
-    
+
     st.session_state["ultimo_cpf"] = cpf
     st.session_state["ultimo_celular"] = celular_normalizado
-    
+
     if not cpf and not celular_normalizado:
         return None, None
-    
+
     query = {}
     if cpf:
         query["cpf"] = cpf
     if celular_normalizado:
         query["celular"] = celular_normalizado
-    
+
     if query:
         cliente = st.session_state["clientes_collection"].find_one(query)
         if cliente:
@@ -90,7 +95,7 @@ def verificar_duplicidade():
                 return cliente, "cpf"
             elif celular_normalizado and cliente.get("celular") == celular_normalizado:
                 return cliente, "celular"
-    
+
     return None, None
 
 # 🏢 CONDOMÍNIO - Função auxiliar para atualizar endereço quando condomínio é selecionado
@@ -151,14 +156,14 @@ def render_motivo_recusa_ativacao(key_suffix, seguiu_ativacao, cliente=None):
         index_motivo = MOTIVOS_RECUSA_ATIVACAO.index(motivo_atual) if motivo_atual in MOTIVOS_RECUSA_ATIVACAO else 0
         
         motivo_recusa = st.selectbox(
-            "Selecione o motivo da recusa *",
+            "Selecione o motivo da recusa * ",
             MOTIVOS_RECUSA_ATIVACAO,
             index=index_motivo,
             key=f"motivo_recusa_ativacao_{key_suffix}"
         )
         
         detalhes_recusa = st.text_area(
-            "Detalhes adicionais sobre a recusa (opcional)",
+            "Detalhes adicionais sobre a recusa (opcional) ",
             value=cliente.get("detalhes_recusa_ativacao", "") if cliente else "",
             placeholder="Ex: Cliente possui 3 registros no SPC dos últimos 6 meses...",
             key=f"detalhes_recusa_ativacao_{key_suffix}"
@@ -194,7 +199,6 @@ def expander_visualizar_editar(cliente, clientes_collection):
     if not cliente or not isinstance(cliente, dict):
         st.error("❌ Cliente não encontrado.")
         return
-    
     with st.expander("📋 Visualizar / Editar Cadastro Completo", expanded=True):
         st.success(f"Visualizando cadastro de: {cliente['nome_completo']}")
         
@@ -226,30 +230,30 @@ def expander_visualizar_editar(cliente, clientes_collection):
             if cliente_bloqueado:
                 endereco_completo = montar_endereco_completo(endereco_atual, numero_atual, cliente.get("complemento", ""))
                 st.markdown(
-                    f'<div style="background-color:#ffe6e6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;">'
-                    f'❌ <strong>Endereço bloqueado:</strong> {endereco_completo}'
-                    f'</div>',
+                    f' <div style="background-color:#ffe6e6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;" >'
+                    f'❌  <strong>Endereço bloqueado: </strong> {endereco_completo}'
+                    f' </div>',
                     unsafe_allow_html=True
                 )
                 if cliente_bloqueado.get("observacoes_bloqueio_endereco"):
                     st.markdown(
-                        f'<div style="background-color:#f0f0f0; padding:4px 8px; border-radius:5px; margin-top:4px; font-size:0.9em;">'
-                        f'📝 <strong>Observações:</strong> {cliente_bloqueado["observacoes_bloqueio_endereco"]}'
-                        f'</div>',
+                        f' <div style="background-color:#f0f0f0; padding:4px 8px; border-radius:5px; margin-top:4px; font-size:0.9em;" >'
+                        f'📝  <strong>Observações: </strong> {cliente_bloqueado["observacoes_bloqueio_endereco"]}'
+                        f' </div>',
                         unsafe_allow_html=True
                     )
             else:
                 st.markdown(
-                    f'<div style="background-color:#e6ffe6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;">'
-                    f'✅ <strong>Endereço: LIVRE</strong>'
-                    f'</div>',
+                    f' <div style="background-color:#e6ffe6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;" >'
+                    f'✅  <strong>Endereço: LIVRE</strong>'
+                    f' </div>',
                     unsafe_allow_html=True
                 )
         else:
             st.markdown(
-                f'<div style="background-color:#e6ffe6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;">'
-                f'✅ <strong>Endereço: LIVRE</strong>'
-                f'</div>',
+                f' <div style="background-color:#e6ffe6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;" >'
+                f'✅  <strong>Endereço: LIVRE</strong>'
+                f' </div>',
                 unsafe_allow_html=True
             )
 
@@ -257,9 +261,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
             st.session_state["mostrar_form_bloqueio_visualizar"] = True
 
         if st.session_state.get("mostrar_form_bloqueio_visualizar", False):
-            st.markdown("#### 📝 Observações de Bloqueio de Endereço:")
+            st.markdown("#### 📝 Observações de Bloqueio de Endereço: ")
             observacoes_bloqueio = st.text_area(
-                "Por favor, descreva o motivo do bloqueio (ex: Fraude detectada, múltiplos CPFs).",
+                "Por favor, descreva o motivo do bloqueio (ex: Fraude detectada, múltiplos CPFs). ",
                 value=cliente.get("observacoes_bloqueio_endereco", ""),
                 key="observacoes_bloqueio_visualizar"
             )
@@ -360,7 +364,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
 
             codigo_indicacao_atual = cliente.get("codigo_indicacao", "")
             if codigo_indicacao_atual:
-                st.markdown(f"### 🎁 Código de Indicação: `{codigo_indicacao_atual}`")
+                st.markdown(f"###  Código de Indicação: `{codigo_indicacao_atual}`")
 
             st.markdown("### 📅 Follow-up")
             retorno_agendado_atual = cliente.get("retorno_agendado", "")
@@ -579,7 +583,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
             codigo_indicador_atual = cliente.get("codigo_indicador", "")
             codigo_indicador = st.text_input("Código de Quem Indicou", max_chars=15, value=codigo_indicador_atual, key="codigo_indicador_editar")
 
-            st.subheader("📸 Foto do Documento")
+            st.subheader(" Foto do Documento")
             foto_documento_base64 = cliente.get("foto_documento_base64")
             if foto_documento_base64:
                 try:
@@ -588,10 +592,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     st.warning("⚠️ Não foi possível carregar a foto salva.")
             foto_documento = st.file_uploader("Envie uma nova foto (JPG ou PNG) - Opcional", type=["jpg", "png", "jpeg"], key="foto_documento_editar")
 
-            st.subheader("📦 Equipamento em Comodato")
+            st.subheader(" Equipamento em Comodato")
             modelo_atual = cliente.get("equipamento_modelo")
             index_modelo = MODELOS_ROTEADORES.index(modelo_atual) if modelo_atual in MODELOS_ROTEADORES else 0
-            equip_modelo = st.selectbox("Marca/Modelo*", MODELOS_ROTEADORES, index=index_modelo, key="equip_modelo_editar")
+            equip_modelo = st.selectbox("Marca/Modelo* ", MODELOS_ROTEADORES, index=index_modelo, key="equip_modelo_editar")
             equip_desc = st.text_input("Descrição do Equipamento", max_chars=50, value=cliente.get("equipamento_descricao", "Roteador Wi-Fi"), key="equip_desc_editar")
             equip_codigo = st.text_input("Informação Adicional*", max_chars=50, placeholder="Ex: Número de série", value=cliente.get("equipamento_codigo", ""), key="equip_codigo_editar")
             equip_acessorios = st.text_input("Acessórios", max_chars=100, value=cliente.get("equipamento_acessorios", "Fonte de alimentação, cabo Ethernet"), key="equip_acessorios_editar")
@@ -601,7 +605,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 if st.session_state.get("gerando_contrato_visualizar"):
                     st.form_submit_button("⏳ Gerando contrato...", disabled=True)
                 elif st.session_state.get("contrato_pronto_visualizar"):
-                    if st.form_submit_button("📥 Baixar Contrato Gerado", type="secondary"):
+                    if st.form_submit_button(" Baixar Contrato Gerado", type="secondary"):
                         pass
                 else:
                     if st.form_submit_button("✍️ Gerar Contrato", type="secondary"):
@@ -631,7 +635,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 if st.session_state.get("gerando_comodato_visualizar"):
                     st.form_submit_button("⏳ Gerando termo...", disabled=True)
                 elif st.session_state.get("comodato_pronto_visualizar"):
-                    if st.form_submit_button("📥 Baixar Termo de Comodato", type="secondary"):
+                    if st.form_submit_button(" Baixar Termo de Comodato", type="secondary"):
                         pass
                 else:
                     if st.form_submit_button("📄 Gerar Termo de Comodato", type="secondary"):
@@ -693,7 +697,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
             atualizar = st.form_submit_button("🔄 Atualizar Cadastro", type="primary")
             if atualizar:
                 if not all([nome_completo, celular, plano_escolhido != "Selecione..."]):
-                    st.error("⚠️ Nome, Celular e Plano são obrigatórios!")
+                    st.error("️ Nome, Celular e Plano são obrigatórios!")
                 else:
                     if seguiu_ativacao == "Não" and (not motivo_recusa or motivo_recusa == "Selecione..."):
                         st.error("⚠️ Quando 'Seguiu para Ativação' for 'Não', é obrigatório selecionar o motivo da recusa.")
@@ -786,12 +790,12 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         except Exception as e:
                             st.error(f"❌ Erro ao atualizar: {e}")
 
-            if "mensagem_confirmacao_visualizar" in st.session_state:
-                st.subheader("📧 Mensagem de Confirmação Gerada:")
-                st.code(st.session_state["mensagem_confirmacao_visualizar"], language="text")
-                if st.button("🗑️ Limpar Mensagem", key="limpar_msg_visualizar"):
-                    del st.session_state["mensagem_confirmacao_visualizar"]
-                    st.rerun()
+        if "mensagem_confirmacao_visualizar" in st.session_state:
+            st.subheader("📧 Mensagem de Confirmação Gerada:")
+            st.code(st.session_state["mensagem_confirmacao_visualizar"], language="text")
+            if st.button("🗑️ Limpar Mensagem", key="limpar_msg_visualizar"):
+                del st.session_state["mensagem_confirmacao_visualizar"]
+                st.rerun()
 
 # ============================================================================
 # ✅ EXPANDER PARA COMPLETAR CADASTRO - COM CONDOMÍNIO
@@ -800,7 +804,6 @@ def expander_completar_cadastro(cliente, clientes_collection):
     if not cliente or not isinstance(cliente, dict):
         st.error("❌ Cliente não encontrado.")
         return
-    
     with st.expander("✏️ Completar Cadastro do Cliente", expanded=True):
         st.success(f"Completando cadastro de: {cliente['nome_completo']}")
         
@@ -832,9 +835,9 @@ def expander_completar_cadastro(cliente, clientes_collection):
             if cliente_bloqueado:
                 endereco_completo = montar_endereco_completo(endereco_atual, numero_atual, cliente.get("complemento", ""))
                 st.markdown(
-                    f'<div style="background-color:#ffe6e6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;">'
-                    f'❌ <strong>Endereço bloqueado:</strong> {endereco_completo}'
-                    f'</div>',
+                    f' <div style="background-color:#ffe6e6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;" >'
+                    f'❌  <strong>Endereço bloqueado: </strong> {endereco_completo}'
+                    f' </div>',
                     unsafe_allow_html=True
                 )
                 if cliente_bloqueado.get("observacoes_bloqueio_endereco"):
@@ -842,7 +845,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
 
         key_suffix = "completar"
         
-        # 🏢 CONDOMÍNIO - Selectbox de Condomínio (FORA do form)
+        #  CONDOMÍNIO - Selectbox de Condomínio (FORA do form)
         st.markdown("### 🏢 Localização")
         condominio_options = {"Nenhum / Não se aplica": None}
         condominio_options.update(get_condominio_options())
@@ -869,7 +872,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                 st.session_state[f"condominio_nome_{key_suffix}"] = cond_nome_salvo
         
         with st.container(border=True):
-            st.markdown("### 📌 Informações de Origem")
+            st.markdown("###  Informações de Origem")
             origem_opcoes = ["Selecione...", "Radio Show FM", "Opa Suite", "Whatsapp", "Instagram", "Indicação", "Loja", "Panfleto", "PaP", "Ex Cliente", "Prospecção Ativa (Zap, Email, Telegram)", "Facebook", "Site"]
             origem_atual = cliente.get("origem", "")
             index_origem = origem_opcoes.index(origem_atual) if origem_atual in origem_opcoes else 0
@@ -957,7 +960,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                 else:
                     retorno_agendado = ""
 
-            st.markdown("### 📝 Observações Gerais")
+            st.markdown("###  Observações Gerais")
             observacoes_atual = cliente.get("observacoes", "")
             observacoes = st.text_area(
                 "Adicione observações ou resumo sobre o cliente",
@@ -976,7 +979,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
             )
 
         with st.form("form_completar_cadastro"):
-            st.markdown("### ⚙️ Informações do Sistema")
+            st.markdown("### ️ Informações do Sistema")
             st.text_input("Cadastrado por:", value=cliente.get("cadastrado_por", "N/A"), disabled=True, key="cadastrado_por_completar")
             data_cadastro = cliente.get("data_cadastro")
             if data_cadastro:
@@ -1121,10 +1124,10 @@ def expander_completar_cadastro(cliente, clientes_collection):
             st.subheader("1️⃣ Foto segurando documento com foto (RG, CNH, etc) - Opcional")
             foto_documento = st.file_uploader("Envie a foto aqui (JPG ou PNG) - Opcional", type=["jpg", "png", "jpeg"], key="foto_documento_completar")
 
-            st.subheader("📦 Equipamento em Comodato (opcional)")
+            st.subheader(" Equipamento em Comodato (opcional)")
             modelo_atual = cliente.get("equipamento_modelo")
             index_modelo = MODELOS_ROTEADORES.index(modelo_atual) if modelo_atual in MODELOS_ROTEADORES else 0
-            equip_modelo = st.selectbox("Marca/Modelo*", MODELOS_ROTEADORES, index=index_modelo, key="equip_modelo_completar")
+            equip_modelo = st.selectbox("Marca/Modelo* ", MODELOS_ROTEADORES, index=index_modelo, key="equip_modelo_completar")
             equip_desc = st.text_input("Descrição do Equipamento", max_chars=50, value=cliente.get("equipamento_descricao", "Roteador Wi-Fi"), key="equip_desc_completar")
             equip_codigo = st.text_input("Informação Adicional*", max_chars=50, placeholder="Ex: Número de série", value=cliente.get("equipamento_codigo", ""), key="equip_codigo_completar")
             equip_acessorios = st.text_input("Acessórios", max_chars=100, value=cliente.get("equipamento_acessorios", "Fonte de alimentação, cabo Ethernet"), key="equip_acessorios_completar")
@@ -1134,7 +1137,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                 if st.session_state.get("gerando_contrato_completar"):
                     st.form_submit_button("⏳ Gerando contrato...", disabled=True)
                 elif st.session_state.get("contrato_pronto_completar"):
-                    if st.form_submit_button("📥 Baixar Contrato Gerado", type="secondary"):
+                    if st.form_submit_button(" Baixar Contrato Gerado", type="secondary"):
                         pass
                 else:
                     if st.form_submit_button("✍️ Gerar Contrato", type="secondary"):
@@ -1164,7 +1167,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                 if st.session_state.get("gerando_comodato_completar"):
                     st.form_submit_button("⏳ Gerando termo...", disabled=True)
                 elif st.session_state.get("comodato_pronto_completar"):
-                    if st.form_submit_button("📥 Baixar Termo de Comodato", type="secondary"):
+                    if st.form_submit_button(" Baixar Termo de Comodato", type="secondary"):
                         pass
                 else:
                     if st.form_submit_button("📄 Gerar Termo de Comodato", type="secondary"):
@@ -1296,7 +1299,7 @@ def expander_completar_cadastro(cliente, clientes_collection):
                             "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                             "endereco_bloqueado": cliente.get("endereco_bloqueado", False),
                             "observacoes_bloqueio_endereco": cliente.get("observacoes_bloqueio_endereco", None),
-                            # 🏢 CONDOMÍNIO - Novos campos
+                            #  CONDOMÍNIO - Novos campos
                             "condominio_id": st.session_state.get(f"condominio_id_{key_suffix}"),
                             "condominio_nome": st.session_state.get(f"condominio_nome_{key_suffix}"),
                             "bloco": bloco if bloco else None,
@@ -1322,12 +1325,12 @@ def expander_completar_cadastro(cliente, clientes_collection):
                         except Exception as e:
                             st.error(f"❌ Erro ao atualizar: {e}")
 
-            if "mensagem_confirmacao_completar" in st.session_state:
-                st.subheader("📧 Mensagem de Confirmação Gerada:")
-                st.code(st.session_state["mensagem_confirmacao_completar"], language="text")
-                if st.button("🗑️ Limpar Mensagem", key="limpar_msg_completar"):
-                    del st.session_state["mensagem_confirmacao_completar"]
-                    st.rerun()
+        if "mensagem_confirmacao_completar" in st.session_state:
+            st.subheader("📧 Mensagem de Confirmação Gerada:")
+            st.code(st.session_state["mensagem_confirmacao_completar"], language="text")
+            if st.button("🗑️ Limpar Mensagem", key="limpar_msg_completar"):
+                del st.session_state["mensagem_confirmacao_completar"]
+                st.rerun()
 
 # ============================================================================
 # RESTANTE DO CÓDIGO (render_cadastro e demais funções)
@@ -1364,14 +1367,14 @@ def render_cadastro(clientes_collection):
         st.session_state["ignorar_bloqueio"] = False
     if "endereco_bloqueado_confirmado" not in st.session_state:
         st.session_state["endereco_bloqueado_confirmado"] = {}
-    
+
     st.markdown("### 🔍 Buscar cliente por nome, CPF ou Celular")
     busca_global = st.text_input(
         "Digite o nome, CPF ou celular do cliente",
         placeholder="Ex: Diego Roberto, 21973570259 ou (11) 98765-4321",
         key=f"busca_global_{st.session_state['form_key']}"
     )
-    
+
     if busca_global.strip():
         busca_normalizada = normalize_phone(busca_global)
         cpf_puro = re.sub(r'\D', '', busca_global)
@@ -1434,16 +1437,16 @@ def render_cadastro(clientes_collection):
                             if cliente_bloqueado:
                                 endereco_completo = montar_endereco_completo(endereco_atual, numero_atual, cliente.get("complemento", ""))
                                 st.markdown(
-                                    f'<div style="background-color:#ffe6e6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;">'
-                                    f'❌ <strong>Endereço bloqueado:</strong> {endereco_completo}'
-                                    f'</div>',
+                                    f' <div style="background-color:#ffe6e6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;" >'
+                                    f'❌  <strong>Endereço bloqueado: </strong> {endereco_completo}'
+                                    f' </div>',
                                     unsafe_allow_html=True
                                 )
                             else:
                                 st.markdown(
-                                    f'<div style="background-color:#e6ffe6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;">'
-                                    f'✅ <strong>Endereço: LIVRE</strong>'
-                                    f'</div>',
+                                    f' <div style="background-color:#e6ffe6; padding:4px 8px; border-radius:5px; display:inline-block; font-size:0.9em; margin-bottom:4px;" >'
+                                    f'✅  <strong>Endereço: LIVRE</strong>'
+                                    f' </div>',
                                     unsafe_allow_html=True
                                 )
 
@@ -1500,9 +1503,9 @@ def render_cadastro(clientes_collection):
                                     st.session_state["mostrar_completar"] = True
                                     st.rerun()
                             else:
-                                st.write("🟢 Cadastro já completo")
+                                st.write(" Cadastro já completo")
             else:
-                st.warning("⚠️ Nenhum cliente encontrado.")
+                st.warning("️ Nenhum cliente encontrado.")
 
     if st.button("➕ Iniciar Novo Cadastro", key="novo_cadastro_via_busca"):
         st.session_state["acao_selecionada"] = "Novo Cadastro"
@@ -1610,7 +1613,7 @@ def render_cadastro(clientes_collection):
 
         if tipo_cadastro == "Cadastro CRM":
             with st.container(border=True):
-                st.markdown("### 📌 Informações de Origem")
+                st.markdown("###  Informações de Origem")
                 codigo_embaixador_input = ""
                 origem_opcoes = ["Selecione...", "Radio Show FM", "Opa Suite", "Whatsapp", "Instagram", "Indicação", "Loja", "Panfleto", "PaP", "Ex Cliente", "Prospecção Ativa (Zap, Email, Telegram)", "Facebook", "Site"]
                 origem = st.selectbox(
@@ -1620,7 +1623,7 @@ def render_cadastro(clientes_collection):
                     key=f"origem_novo_{st.session_state['form_key']}"
                 )
 
-                st.markdown("### 📅 Follow-up")
+                st.markdown("###  Follow-up")
                 col_auto, col_manual = st.columns([2, 3])
                 with col_auto:
                     followup_opcao = st.selectbox(
@@ -1687,7 +1690,7 @@ def render_cadastro(clientes_collection):
                     key=f"observacoes_novo_{st.session_state['form_key']}"
                 )
 
-                st.markdown("### 📝 Observações de Follow-up *(exclusivo para acompanhamento)*")
+                st.markdown("###  Observações de Follow-up *(exclusivo para acompanhamento)*")
                 observacoes_followup_simples = st.text_area(
                     "",
                     placeholder="Ex: Cliente ligou hoje, está aguardando retorno do financeiro.",
@@ -1697,7 +1700,7 @@ def render_cadastro(clientes_collection):
 
         else:
             with st.container(border=True):
-                st.markdown("### 📅 Follow-up (opcional)")
+                st.markdown("###  Follow-up (opcional)")
                 col_auto, col_manual = st.columns([2, 3])
                 with col_auto:
                     followup_opcao_simples = st.selectbox(
@@ -1734,20 +1737,21 @@ def render_cadastro(clientes_collection):
             ja_possui_internet = ""
 
         # 🏢 CONDOMÍNIO - Selectbox de Condomínio (FORA do form) para Novo Cadastro
-        if tipo_cadastro == "Cadastro CRM":
-            st.markdown("### 🏢 Localização")
-            condominio_options = {"Nenhum / Não se aplica": None}
-            condominio_options.update(get_condominio_options())
-            
-            condominio_select = st.selectbox(
-                "Condomínio (Opcional)",
-                options=list(condominio_options.keys()),
-                index=0,
-                key=f"condominio_select_novo_{st.session_state['form_key']}"
-            )
-            
-            if condominio_select and condominio_select != "Nenhum / Não se aplica":
-                atualizar_endereco_por_condominio(condominio_select, st.session_state['form_key'], condominio_options)
+        # ADICIONADO: Agora aparece também no Cadastro Simples
+        st.markdown("### 🏢 Localização")
+        condominio_options = {"Nenhum / Não se aplica": None}
+        condominio_options.update(get_condominio_options())
+        
+        # Tenta recuperar valor salvo anterior se houver (para evitar reset ao trocar de aba)
+        condominio_select = st.selectbox(
+            "Condomínio (Opcional)",
+            options=list(condominio_options.keys()),
+            index=0,
+            key=f"condominio_select_novo_{st.session_state['form_key']}"
+        )
+        
+        if condominio_select and condominio_select != "Nenhum / Não se aplica":
+            atualizar_endereco_por_condominio(condominio_select, st.session_state['form_key'], condominio_options)
 
         endereco_para_salvar = get_valor_inicial("endereco", "").strip() if tipo_cadastro == "Cadastro CRM" else ""
         numero_para_salvar = get_valor_inicial("numero", "").strip()
@@ -1763,24 +1767,24 @@ def render_cadastro(clientes_collection):
         if cliente_bloqueado and not st.session_state["ignorar_bloqueio"]:
             endereco_completo = montar_endereco_completo(endereco_para_salvar, numero_para_salvar, get_valor_inicial("complemento", ""))
             st.markdown(
-                f'<div style="background-color:#ffe6e6; padding:8px; border-radius:6px; margin-bottom:12px; font-weight:bold; font-size:1em;">'
-                f'🚨 <strong>Endereço bloqueado:</strong> <br><small>{endereco_completo}</small>'
-                f'</div>',
+                f' <div style="background-color:#ffe6e6; padding:8px; border-radius:6px; margin-bottom:12px; font-weight:bold; font-size:1em;" >'
+                f'🚨  <strong>Endereço bloqueado: </strong>  <br><small>{endereco_completo}</small>'
+                f' </div>',
                 unsafe_allow_html=True
             )
 
             motivo = cliente_bloqueado.get("observacoes_bloqueio_endereco", "").strip()
             if motivo:
-                st.markdown(f"<p style='background-color:#f0f0f0; padding:8px; border-radius:5px; font-size:0.9em;'><strong>📌 Motivo:</strong> {motivo}</p>", unsafe_allow_html=True)
+                st.markdown(f" <p style='background-color:#f0f0f0; padding:8px; border-radius:5px; font-size:0.9em;'><strong>📌 Motivo: </strong> {motivo}</p>", unsafe_allow_html=True)
             else:
-                st.markdown("<p style='background-color:#fff3cd; padding:8px; border-radius:5px; font-size:0.9em;'><strong>⚠️ Motivo não informado.</strong></p>", unsafe_allow_html=True)
+                st.markdown(" <p style='background-color:#fff3cd; padding:8px; border-radius:5px; font-size:0.9em;'><strong>️ Motivo não informado.</strong></p>", unsafe_allow_html=True)
 
             clientes_com_mesmo_endereco = list(clientes_collection.find({
                 "endereco": endereco_para_salvar,
                 "numero": numero_para_salvar
             }))
             if clientes_com_mesmo_endereco:
-                st.markdown(f"<p style='margin-top:12px;'><strong>👥 Já há {len(clientes_com_mesmo_endereco)} cadastro(s) neste endereço:</strong></p>", unsafe_allow_html=True)
+                st.markdown(f" <p style='margin-top:12px;'><strong>👥 Já há {len(clientes_com_mesmo_endereco)} cadastro(s) neste endereço: </strong></p>", unsafe_allow_html=True)
                 for c in clientes_com_mesmo_endereco:
                     nome = c.get("nome_completo", "Nome não informado")
                     celular = c.get("celular", "—")
@@ -1797,16 +1801,16 @@ def render_cadastro(clientes_collection):
                         except:
                             pass
                     cpf_display = f" • CPF: {cpf_c[:3]}***{cpf_c[-2:]}" if cpf_c and len(cpf_c) == 11 else ""
-                    badge_tipo = "🔵 Simples" if tipo == "simples" else "🟢 Completo"
-                    badge_status = "🟡 Novo" if status == "novo" else "🟠 Em análise" if status == "analise" else "🟢 Convertido" if status == "convertido" else status
+                    badge_tipo = " Simples" if tipo == "simples" else "🟢 Completo"
+                    badge_status = " Novo" if status == "novo" else " Em análise" if status == "analise" else "🟢 Convertido" if status == "convertido" else status
                     st.markdown(
                         f"- **{nome}** • `{celular}`{cpf_display}{data_str}<br>"
-                        f"<span style='font-size:0.85em; background-color:#e0e0e0; padding:2px 6px; border-radius:4px;'>{badge_tipo}</span>"
+                        f"<span style='font-size:0.85em; background-color:#e0e0e0; padding:2px 6px; border-radius:4px;'>{badge_tipo}</span> "
                         f"<span style='font-size:0.85em; background-color:#d0e0ff; padding:2px 6px; border-radius:4px;'>{badge_status}</span>",
                         unsafe_allow_html=True
                     )
 
-            st.markdown("<p style='margin-top:12px; font-weight:bold;'>Você deseja continuar com o cadastro mesmo assim?</p>", unsafe_allow_html=True)
+            st.markdown(" <p style='margin-top:12px; font-weight:bold;'>Você deseja continuar com o cadastro mesmo assim?</p>", unsafe_allow_html=True)
 
             col_conf, col_canc = st.columns(2)
             with col_conf:
@@ -1954,7 +1958,7 @@ def render_cadastro(clientes_collection):
                     key=f"data_vencimento_{st.session_state['form_key']}"
                 )
 
-                st.subheader("1️⃣ Foto segurando documento com foto (RG, CNH, etc) - Opcional")
+                st.subheader("1️ Foto segurando documento com foto (RG, CNH, etc) - Opcional")
                 foto_documento = st.file_uploader(
                     "Envie a foto aqui (JPG ou PNG) - Opcional",
                     type=["jpg", "png", "jpeg"],
@@ -1970,7 +1974,7 @@ def render_cadastro(clientes_collection):
                 modelo_atual = get_valor_inicial("equip_modelo", "")
                 index_modelo = MODELOS_ROTEADORES.index(modelo_atual) if modelo_atual in MODELOS_ROTEADORES else 0
                 equip_modelo = st.selectbox(
-                    "Marca/Modelo*",
+                    "Marca/Modelo* ",
                     MODELOS_ROTEADORES,
                     index=index_modelo,
                     key=f"equip_modelo_{st.session_state['form_key']}"
@@ -1988,6 +1992,7 @@ def render_cadastro(clientes_collection):
                 )
 
             else:
+                # === CONFIGURAÇÃO PADRÃO PARA CADASTRO SIMPLES ===
                 rg = email = endereco = numero = bairro = ponto_referencia = ""
                 plano_escolhido = "Não informado"
                 profissao = ""
@@ -2004,6 +2009,8 @@ def render_cadastro(clientes_collection):
                 tipo_moradia = ""
                 tempo_moradia_valor = 0
                 tempo_moradia_unidade = "Anos"
+                
+                #  NOVO: Garantir que Bloco e Apto existam no simples também
                 bloco = ""
                 apartamento = ""
 
@@ -2015,7 +2022,7 @@ def render_cadastro(clientes_collection):
                     if st.form_submit_button("📥 Baixar Contrato Gerado", type="secondary"):
                         pass
                 else:
-                    if st.form_submit_button("✍️ Gerar Contrato", type="secondary"):
+                    if st.form_submit_button("️ Gerar Contrato", type="secondary"):
                         cpf_valido = limpar_cpf(cpf)
                         if not cpf_valido:
                             st.error("❌ CPF inválido!")
@@ -2045,7 +2052,7 @@ def render_cadastro(clientes_collection):
                 if st.session_state["gerando_comodato_principal"]:
                     st.form_submit_button("⏳ Gerando termo...", disabled=True)
                 elif st.session_state["comodato_pronto_principal"]:
-                    if st.form_submit_button("📥 Baixar Termo de Comodato", type="secondary"):
+                    if st.form_submit_button(" Baixar Termo de Comodato", type="secondary"):
                         pass
                 else:
                     if st.form_submit_button("📄 Gerar Termo de Comodato", type="secondary"):
@@ -2110,11 +2117,11 @@ def render_cadastro(clientes_collection):
             enviado = st.form_submit_button("💾 Salvar Cadastro", type="primary")
             if enviado:
                 if not nome_completo or not celular_principal:
-                    st.error("⚠️ Nome e Celular Principal são obrigatórios.")
+                    st.error("️ Nome e Celular Principal são obrigatórios.")
                 elif tipo_cadastro == "Cadastro CRM" and plano_escolhido == "Selecione...":
                     st.error("⚠️ Selecione um plano válido.")
                 elif tipo_cadastro == "Cadastro CRM" and seguiu_ativacao == "Não" and (not motivo_recusa or motivo_recusa == "Selecione..."):
-                    st.error("⚠️ Quando 'Seguiu para Ativação' for 'Não', é obrigatório selecionar o motivo da recusa.")
+                    st.error("️ Quando 'Seguiu para Ativação' for 'Não', é obrigatório selecionar o motivo da recusa.")
                 else:
                     endereco_salvo = st.session_state.get(f"endereco_{st.session_state['form_key']}", "").strip()
                     numero_salvo = st.session_state.get(f"numero_{st.session_state['form_key']}", "").strip()
@@ -2211,7 +2218,7 @@ def render_cadastro(clientes_collection):
                         "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                         "endereco_bloqueado": False,
                         "observacoes_bloqueio_endereco": None,
-                        # 🏢 CONDOMÍNIO - Novos campos
+                        # 🏢 CONDOMÍNIO - Novos campos (AGORA SALVA TAMBÉM NO SIMPLES)
                         "condominio_id": st.session_state.get(f"condominio_id_{st.session_state['form_key']}"),
                         "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}"),
                         "bloco": bloco if bloco else None,
@@ -2242,9 +2249,9 @@ def render_cadastro(clientes_collection):
                                 cpf_limpo
                             )
                             st.markdown(
-                                f'<a href="{link_whatsapp}" target="_blank"'
+                                f' <a href="{link_whatsapp}" target="_blank"'
                                 f'style="display: inline-block; padding: 0.5em 1em; background-color: #25D366;'
-                                f'color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">'
+                                f'color: white; text-decoration: none; border-radius: 5px; font-weight: bold;" >'
                                 f'📲 Solicitar Análise</a>',
                                 unsafe_allow_html=True
                             )
@@ -2258,15 +2265,15 @@ def render_cadastro(clientes_collection):
                     except Exception as e:
                         st.error(f"❌ Erro inesperado ao salvar: {str(e)}")
 
-            if "mensagem_confirmacao_novo" in st.session_state:
-                st.subheader("📧 Mensagem de Confirmação Gerada:")
-                st.code(st.session_state["mensagem_confirmacao_novo"], language="text")
-                if st.button("🗑️ Limpar Mensagem", key="limpar_msg_novo"):
-                    del st.session_state["mensagem_confirmacao_novo"]
-                    st.rerun()
+        if "mensagem_confirmacao_novo" in st.session_state:
+            st.subheader("📧 Mensagem de Confirmação Gerada:")
+            st.code(st.session_state["mensagem_confirmacao_novo"], language="text")
+            if st.button("🗑️ Limpar Mensagem", key="limpar_msg_novo"):
+                del st.session_state["mensagem_confirmacao_novo"]
+                st.rerun()
 
     elif acao == "Completar Cadastro Existente":
-        st.info("🔍 Busque um cadastro simples para completar os dados.")
+        st.info(" Busque um cadastro simples para completar os dados.")
         busca = st.text_input("Digite o nome ou telefone do cliente", placeholder="Ex: Ana Silva ou (11) 98765-4321", value=st.session_state["busca_pre_preenchida"], key=f"busca_completar_{st.session_state['form_key']}")
         if st.session_state["busca_pre_preenchida"]:
             st.session_state["busca_pre_preenchida"] = ""
@@ -2320,13 +2327,13 @@ def render_cadastro(clientes_collection):
 
     if "contrato_pdf_bytes" in st.session_state and "contrato_nome" in st.session_state:
         st.download_button(
-            label="📥 Baixar Contrato Gerado",
+            label=" Baixar Contrato Gerado",
             data=st.session_state["contrato_pdf_bytes"],
             file_name=st.session_state["contrato_nome"],
             mime="application/pdf",
             key="download_contrato_global_unica_key"
         )
-        if st.button("🗑️ Limpar Contrato", key="limpar_contrato_global"):
+        if st.button("️ Limpar Contrato", key="limpar_contrato_global"):
             del st.session_state["contrato_pdf_bytes"]
             del st.session_state["contrato_nome"]
             for key in ["contrato_pronto_principal", "contrato_pronto_visualizar", "contrato_pronto_completar"]:
@@ -2335,7 +2342,7 @@ def render_cadastro(clientes_collection):
 
     if "comodato_pdf_bytes" in st.session_state and "comodato_nome" in st.session_state:
         st.download_button(
-            label="📥 Baixar Termo de Comodato",
+            label=" Baixar Termo de Comodato",
             data=st.session_state["comodato_pdf_bytes"],
             file_name=st.session_state["comodato_nome"],
             mime="application/pdf",
