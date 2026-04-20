@@ -44,8 +44,9 @@ def render_admin_funcionarios(usuarios_collection):
                 login = st.text_input("Login de Acesso *")
                 email = st.text_input("E-mail ")
             with col2:
-                senha = st.text_input("Senha *", type="password ")
-                confirmar_senha = st.text_input("Confirmar Senha *", type="password ")
+                # ✅ CORREÇÃO: type="password" (sem espaço)
+                senha = st.text_input("Senha *", type="password")
+                confirmar_senha = st.text_input("Confirmar Senha *", type="password")
                 
                 # Garante que a lista de perfis venha da função corrigida
                 perfis_disponiveis = get_perfis_internos()
@@ -132,7 +133,7 @@ def render_admin_funcionarios(usuarios_collection):
                             )
                             st.rerun()
                     with col_ac2:
-                        if st.button("🗑️ Excluir ", key=f"delete_{func['_id']} ", type="secondary "):
+                        if st.button("🗑️ Excluir ", key=f"delete_{func['_id']} ", type="secondary"):
                             usuarios_collection.delete_one({"_id ": func["_id "]})
                             st.rerun()
         else:
@@ -144,8 +145,9 @@ def render_admin_funcionarios(usuarios_collection):
     with menu[2]:
         st.subheader("Alterar Senha de Funcionário ")
         login_alterar = st.text_input("Login do funcionário ")
-        nova_senha = st.text_input("Nova Senha ", type="password ")
-        confirmar_nova_senha = st.text_input("Confirmar Nova Senha ", type="password ")
+        # ✅ CORREÇÃO: type="password" (sem espaço)
+        nova_senha = st.text_input("Nova Senha ", type="password")
+        confirmar_nova_senha = st.text_input("Confirmar Nova Senha ", type="password")
         
         if st.button("🔄 Alterar Senha "):
             if not all([login_alterar, nova_senha, confirmar_nova_senha]):
