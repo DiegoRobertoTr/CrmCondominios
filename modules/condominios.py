@@ -37,7 +37,7 @@ def render_cadastro_condominio():
         with col2:
             endereco = st.text_input("Endereço *", max_chars=100)
             numero = st.text_input("Número *", max_chars=10)
-            # ✅ NOVO: Campo Bairro
+            # ✅ CAMPO BAIRRO ADICIONADO
             bairro = st.text_input("Bairro *", max_chars=50)
             cep = st.text_input("CEP", max_chars=10, placeholder="00000-000")
         
@@ -55,7 +55,6 @@ def render_cadastro_condominio():
         submitted = st.form_submit_button("💾 Salvar Condomínio", type="primary")
         
         if submitted:
-            # ✅ Bairro adicionado na validação
             if not all([nome, endereco, numero, cidade, bairro]):
                 st.error("⚠️ Preencha os campos obrigatórios!")
             else:
@@ -64,7 +63,7 @@ def render_cadastro_condominio():
                     "cnpj": cnpj.strip() if cnpj else None,
                     "cidade": cidade.strip(),
                     "estado": "RJ",
-                    "bairro": bairro.strip(),  # ✅ NOVO: Campo Bairro
+                    "bairro": bairro.strip(),  # ✅ Campo Bairro
                     "endereco": endereco.strip(),
                     "numero": numero.strip(),
                     "cep": cep.strip() if cep else None,
