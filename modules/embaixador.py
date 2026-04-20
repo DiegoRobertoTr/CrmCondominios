@@ -3,7 +3,7 @@ import streamlit as st
 from datetime import datetime
 from .utils import normalize_phone
 
-#  CONDOMÍNIO - Importação
+# 🏢 CONDOMÍNIO - Importação
 try:
     from .condominios import get_condominio_options, get_condominio_by_id
 except ImportError:
@@ -14,7 +14,9 @@ except ImportError:
 
 def determinar_status_embaixador(cliente):
     """Converte campos do cliente em status legível para o painel do embaixador."""
+    # Primeiro verifica o status principal do agendamento
     status_agendamento = cliente.get("status_agendamento")
+    
     if status_agendamento == "ativado":
         return "Ativado"
     elif status_agendamento == "cancelado":
@@ -22,6 +24,7 @@ def determinar_status_embaixador(cliente):
     elif status_agendamento == "agendado":
         return "Agendado"
     
+    # Só verifica reagendado se NÃO estiver ativado/cancelado
     if cliente.get("reagendado_para") and status_agendamento not in ["ativado", "cancelado"]:
         return "Reagendado"
     elif cliente.get("em_tratamento") is True:
@@ -36,7 +39,7 @@ def atualizar_endereco_por_condominio_emb(condominio_nome, condominio_options):
     cond_id = condominio_options.get(condominio_nome)
     if cond_id:
         cond_data = get_condominio_by_id(cond_id)
-        if cond_
+        if cond_data:  # ✅ CORREÇÃO AQUI: Verificação completa
             st.session_state["endereco_emb"] = cond_data.get("endereco", "")
             st.session_state["numero_emb"] = cond_data.get("numero", "")
             st.session_state["cidade_emb"] = cond_data.get("cidade", "")
@@ -45,7 +48,7 @@ def atualizar_endereco_por_condominio_emb(condominio_nome, condominio_options):
             st.rerun()
 
 def render_embaixador(usuarios_collection, clientes_collection):
-    # 🔍 Busca dados completos do embaixador logado
+    # 🔍 Busca dados completos do embaixador logado (para obter nome da loja)
     codigo_embaixador = st.session_state.get("codigo_embaixador")
     nome_embaixador = st.session_state.get("nome_usuario", "Embaixador")
     loja_parceira = "—"
@@ -54,11 +57,11 @@ def render_embaixador(usuarios_collection, clientes_collection):
         emb_data = usuarios_collection.find_one(
             {"codigo_embaixador": codigo_embaixador, "perfil": "embaixador"}
         )
-        if emb_
+        if emb_data:  # ✅ CORREÇÃO AQUI: Verificação completa
             nome_embaixador = emb_data.get("nome_exibicao", nome_embaixador)
             loja_parceira = emb_data.get("loja_parceira", "—")
 
-    # ✨ Mensagem de boas-vindas
+    #  Mensagem de boas-vindas personalizada
     st.markdown(
         f"""
         <div style="background-color: #f0f9ff; border-left: 4px solid #4a90e2; padding: 12px 16px; border-radius: 0 6px 6px 0; margin-bottom: 20px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
@@ -71,7 +74,7 @@ def render_embaixador(usuarios_collection, clientes_collection):
 
     # --- Formulário de Indicação ---
     with st.expander("➕ Indicar Novo Cliente", expanded=False):
-        st.info("️ Este formulário é para registro inicial. A equipe entrará em contato para completar os dados técnicos.")
+        st.info("ℹ️ Este formulário é para registro inicial de indicação. Os dados técnicos serão completados pela equipe.")
         
         nome = st.text_input("Nome completo do cliente *", key="ind_nome_emb")
         celular = st.text_input("Telefone (com DDD, ex: 24999999999) *", key="ind_cel_emb")
@@ -100,7 +103,8 @@ def render_embaixador(usuarios_collection, clientes_collection):
             else:
                 # Garante persistência se já estava selecionado
                 if "condominio_id_emb" not in st.session_state:
-                    pass # Já deve estar lá
+                    # Tenta recuperar do banco se houver edição futura, aqui apenas mantém
+                    pass
 
         col_bloco, col_apto = st.columns(2)
         with col_bloco:
@@ -114,15 +118,13 @@ def render_embaixador(usuarios_collection, clientes_collection):
             else:
                 celular_norm = normalize_phone(celular)
                 if len(celular_norm) < 10 or len(celular_norm) > 11:
-                    st.error("️ Telefone inválido. Use 10 ou 11 dígitos (com DDD).")
+                    st.error("⚠️ Telefone inválido. Use 10 ou 11 dígitos (com DDD).")
                 else:
                     # Verifica duplicidade simples
                     existe = clientes_collection.find_one({"celular": celular_norm})
                     if existe:
                         st.warning(f"⚠️ Este telefone já está cadastrado como: **{existe.get('nome_completo')}**.")
-                        if st.button("Mesmo assim registrar nova indicação?"):
-                            pass # Continua abaixo
-                        else:
+                        if not st.button("Mesmo assim registrar nova indicação?"):
                             st.stop()
                     
                     cliente = {
@@ -132,7 +134,7 @@ def render_embaixador(usuarios_collection, clientes_collection):
                         "indicado_por": {
                             "tipo": "embaixador",
                             "codigo": codigo_embaixador,
-                            "nome_embaixador": nome_embaixador
+                            "nome_embaixador": nome_embaixador # usa o nome atualizado
                         },
                         "data_indicacao": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "indicado",
@@ -141,7 +143,7 @@ def render_embaixador(usuarios_collection, clientes_collection):
                         "bonus_enviado": False,
                         "bonus_confirmado": False,
                         "status_agendamento": "aguardando", # Status inicial
-                        #  CONDOMÍNIO - Salvando dados
+                        # 🏢 CONDOMÍNIO - Salvando dados
                         "condominio_id": st.session_state.get("condominio_id_emb"),
                         "condominio_nome": st.session_state.get("condominio_nome_emb"),
                         "bloco": bloco.strip() if bloco.strip() else None,
@@ -169,11 +171,11 @@ def render_embaixador(usuarios_collection, clientes_collection):
                         st.session_state["form_key_emb"] = st.session_state.get("form_key_emb", 0) + 1
                         st.rerun()
                     except Exception as e:
-                        st.error(f" Erro ao salvar: {e}")
+                        st.error(f"❌ Erro ao salvar: {e}")
 
     # --- Lista de Indicações ---
     st.divider()
-    st.subheader("📋 Minhas Indicações")
+    st.subheader(" Minhas Indicações")
     
     minhas_indicacoes = list(
         clientes_collection.find(
@@ -182,7 +184,7 @@ def render_embaixador(usuarios_collection, clientes_collection):
     )
 
     if minhas_indicacoes:
-        # 📊 Resumo
+        # 📊 Resumo das indicações
         total = len(minhas_indicacoes)
         ativados = sum(1 for c in minhas_indicacoes if c.get("status_agendamento") == "ativado")
         em_andamento = sum(1 for c in minhas_indicacoes if c.get("status_agendamento") in ["agendado", "em_tratamento"])
@@ -206,7 +208,7 @@ def render_embaixador(usuarios_collection, clientes_collection):
             data = cli.get("data_indicacao", "")[:16] if cli.get("data_indicacao") else "—"
             status_legivel = determinar_status_embaixador(cli)
             
-            #  NOVO: Informações de condomínio
+            #  NOVO: Informações de condomínio (se existir)
             condominio_nome = cli.get("condominio_nome")
             bloco = cli.get("bloco")
             apartamento = cli.get("apartamento")
@@ -220,24 +222,24 @@ def render_embaixador(usuarios_collection, clientes_collection):
                     if apartamento: partes.append(f"Apto {apartamento}")
                     condominio_info += f" ({' / '.join(partes)})"
 
-            with st.expander(f"**{nome}** | 📞 {tel} | 🕒 {data}", expanded=False):
+            with st.expander(f"**{nome}** |  {tel} | 🕒 {data}", expanded=False):
                 col1, col2 = st.columns([4, 1])
                 with col1:
                     # Destaque visual
                     if cli.get("status_agendamento") == "ativado" and not cli.get("notificacao_embaixador_lida", False):
-                        st.markdown(" **NOVO CLIENTE ATIVADO!**")
+                        st.markdown("**NOVO CLIENTE ATIVADO!**")
                     
                     # Linha principal
                     st.write(f"**Status:** `{status_legivel}`")
                     
-                    # 🏢 Exibir condomínio se existir
+                    #  Exibir condomínio se existir
                     if condominio_info:
                         st.info(condominio_info)
                     
                     if cli.get("endereco"):
                         end_full = f"{cli['endereco']}, {cli.get('numero', '')}"
                         if cli.get('complemento'): end_full += f" ({cli['complemento']})"
-                        st.caption(f" {end_full} - {cli.get('cidade', '')}")
+                        st.caption(f"📍 {end_full} - {cli.get('cidade', '')}")
 
                 with col2:
                     # Ações
@@ -251,12 +253,12 @@ def render_embaixador(usuarios_collection, clientes_collection):
                     
                     # Confirmação de bônus (exemplo simples)
                     if cli.get("status_agendamento") == "ativado" and not cli.get("bonus_confirmado", False):
-                        if st.button(" Confirmar Bônus", key=f"bonus_{cli['_id']}"):
+                        if st.button("💰 Confirmar Bônus", key=f"bonus_{cli['_id']}"):
                             clientes_collection.update_one(
                                 {"_id": cli["_id"]},
                                 {"$set": {"bonus_confirmado": True, "data_bonus": datetime.now()}}
                             )
-                            st.success(" Bônus confirmado!")
+                            st.success("🎉 Bônus confirmado!")
                             st.rerun()
 
     else:
