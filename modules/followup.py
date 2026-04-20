@@ -17,12 +17,11 @@ def get_condominios_com_contagem(clientes_collection, forcar_atualizacao=False):
     cache_key = "condominios_cache_followup"
     cache_timestamp_key = "condominios_cache_timestamp_followup"
     CACHE_EXPIRY_SECONDS = 300  # 5 minutos de validade do cache
-    
     agora = datetime.now(timezone.utc)
-    
+
     # Verifica se precisa atualizar o cache
     precisa_atualizar = forcar_atualizacao
-    
+
     if not precisa_atualizar:
         if cache_key not in st.session_state or cache_timestamp_key not in st.session_state:
             precisa_atualizar = True
@@ -30,27 +29,27 @@ def get_condominios_com_contagem(clientes_collection, forcar_atualizacao=False):
             cache_timestamp = st.session_state.get(cache_timestamp_key, datetime.min.replace(tzinfo=timezone.utc))
             if (agora - cache_timestamp).total_seconds() > CACHE_EXPIRY_SECONDS:
                 precisa_atualizar = True
-    
+
     # Atualiza cache se necessário
     if precisa_atualizar:
         try:
-            # Busca todos os condomínios únicos com contagem
+            # Busca todos os condomínios únicos com contagem 
             pipeline = [
                 {
                     "$match": {
-                        "seguiu_ativacao": {"$ne": "Sim"},
-                        "restritivo": {"$ne": "Sim"},
-                        "status_followup": {"$ne": "removido"},
-                        "condominio_nome": {"$ne": None, "$ne": ""}
+                        "seguiu_ativacao": { "$ne": "Sim"},
+                        "restritivo": { "$ne": "Sim"},
+                        "status_followup": { "$ne": "removido"},
+                        "condominio_nome": { "$ne": None, "$ne": ""}
                     }
                 },
                 {
                     "$group": {
                         "_id": "$condominio_nome",
-                        "count": {"$sum": 1}
+                        "count": { "$sum": 1}
                     }
                 },
-                {"$sort": {"_id": 1}}
+                { "$sort": { "_id": 1}}
             ]
             
             resultados = list(clientes_collection.aggregate(pipeline))
@@ -78,10 +77,9 @@ def get_condominios_com_contagem(clientes_collection, forcar_atualizacao=False):
         except Exception as e:
             st.error(f"❌ Erro ao buscar condomínios: {e}")
             return {"Todos": "Todos"}
-    
+
     # Retorna do cache
     return st.session_state.get(cache_key, {"Todos": "Todos"})
-
 
 # ============================================================================
 # ✅ FUNÇÃO AUXILIAR: exibir cliente com touch tracking
@@ -90,7 +88,6 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
     nome = cliente["nome_completo"]
     _id = str(cliente["_id"])
     key_base = f"{key_suffix}{_id}"
-    
     # Obter contagem de touches (padrão: 0)
     touch_count = cliente.get("touch_count", 0)
 
@@ -131,8 +128,8 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
             if cliente.get("condominio_nome"):
                 st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')} ")
             if cliente.get("bloco") or cliente.get("apartamento"):
-                bloco = cliente.get("bloco", "")
-                apto = cliente.get("apartamento", "")
+                bloco = cliente.get("bloco", " ")
+                apto = cliente.get("apartamento", " ")
                 unidade_texto = []
                 if bloco:
                     unidade_texto.append(f"Bloco {bloco}")
@@ -144,7 +141,7 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
         with col2:
             if st.button("✏️ Editar Follow-up ", key=f"edit_{key_base}"):
                 st.session_state["editando_followup"] = _id
-                st.session_state["data_banco_original"] = cliente.get("retorno_agendado", "")
+                st.session_state["data_banco_original"] = cliente.get("retorno_agendado", " ")
 
         # Botão de Registrar Touch
         if st.button("✅ Registrar Touch ", key=f"touch_{key_base}", type="secondary"):
@@ -170,8 +167,8 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
         # Formulário de edição
         if st.session_state.get("editando_followup") == _id:
             with st.form(f"form_edit_{key_base}"):
-                data_banco_orig = st.session_state.get("data_banco_original", "")
-                data_para_exibicao = ""
+                data_banco_orig = st.session_state.get("data_banco_original", " ")
+                data_para_exibicao = " "
                 if data_banco_orig:
                     try:
                         data_para_exibicao = datetime.strptime(data_banco_orig, "%Y-%m-%d").strftime("%d/%m/%Y")
@@ -186,7 +183,7 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
                 col_a, col_b = st.columns(2)
                 with col_a:
                     if st.form_submit_button("💾 Salvar "):
-                        nova_data_banco = ""
+                        nova_data_banco = " "
                         if nova_data_exibicao.strip():
                             if re.match(r'\d{2}/\d{2}/\d{4}', nova_data_exibicao):
                                 try:
@@ -217,7 +214,7 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
         st.markdown("### 📝 Observações de Follow-up ")
         col_obs, col_btns = st.columns([3, 1])
         with col_obs:
-            obs_atual = cliente.get("observacoes_followup", "")
+            obs_atual = cliente.get("observacoes_followup", " ")
             nova_observacao = st.text_area(
                 " ",
                 value=obs_atual,
@@ -242,14 +239,13 @@ def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
 
         # WhatsApp
         if st.button("📞 Contatar Agora ", key=f"contato_{key_base}", type="secondary"):
-            celular = cliente.get("celular", "").replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+            celular = cliente.get("celular", " ").replace(" ", " ").replace("-", " ").replace("(", " ").replace(")", " ")
             if celular:
                 mensagem = f"Olá {nome}, tudo bem? Aqui é da Tracecom. Estamos entrando em contato para acompanhar seu cadastro. Podemos conversar? "
                 whatsapp_url = f"https://wa.me/55{celular}?text={urllib.parse.quote(mensagem)}"
-                st.markdown(f"[📲 Enviar mensagem via WhatsApp]({whatsapp_url}) ", unsafe_allow_html=True)
+                st.markdown(f"[📲 Enviar mensagem via WhatsApp]({whatsapp_url})", unsafe_allow_html=True)
             else:
                 st.warning("Celular não encontrado. ")
-
 
 # ============================================================================
 # ✅ FUNÇÃO AUXILIAR: Formatar último touch
@@ -258,10 +254,9 @@ def formatar_ultimo_touch(cliente):
     """Retorna string formatada com data do último touch ou mensagem padrão"""
     touch_history = cliente.get("touch_history", [])
     if not touch_history:
-        return "🆕 Nunca contactado "
-    
+        return "🆕 Nunca contactado"
     try:
-        ultimo_ts = max([t.get("timestamp", "") for t in touch_history])
+        ultimo_ts = max([t.get("timestamp", " ") for t in touch_history])
         if not ultimo_ts:
             return "🆕 Nunca contactado "
         
@@ -305,7 +300,6 @@ def formatar_ultimo_touch(cliente):
     except Exception:
         return "❓ Data inválida "
 
-
 # ============================================================================
 # ✅ FUNÇÃO AUXILIAR: Formatar data de cadastro
 # ============================================================================
@@ -319,14 +313,12 @@ def formatar_data_cadastro(data_cad):
         return data_cad.strftime("%Y-%m-%d")
     return str(data_cad)[:10]
 
-
 # ============================================================================
 # ✅ FUNÇÃO: Painel de Ligações (CORRIGIDA)
 # ============================================================================
 def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
     """Renderiza o painel de ligações telefônicas com visualização e exportação"""
     st.subheader("📞 Painel de Ligações - Modo Call Center ")
-    
     # CARREGAR CONFIGURAÇÃO DO BANCO
     config_banco = clientes_collection.database["configuracoes"].find_one({"tipo": "modo_delegacao"})
 
@@ -350,7 +342,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
         
         if banco_ativo != modo_delegacao_ativo or banco_atendente != atendente_delegado:
             modo_delegacao_ativo = banco_ativo
-            atendente_delegado = banco_atendente  
+            atendente_delegado = banco_atendente   
             st.session_state.modo_delegacao_ativo_sessao = modo_delegacao_ativo
             st.session_state.atendente_delegado_sessao = atendente_delegado
 
@@ -363,9 +355,9 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                 st.warning(f"🚨 **MODO DELEGAÇÃO ATIVO (PERSISTENTE)** - Apenas **{atendente_delegado}** está vendo TODOS os clientes! ")
         
         todos_atendentes = clientes_collection.distinct("cadastrado_por", {
-            "seguiu_ativacao": {"$ne": "Sim"},
-            "restritivo": {"$ne": "Sim"},
-            "status_followup": {"$ne": "removido"}
+            "seguiu_ativacao": { "$ne": "Sim"},
+            "restritivo": { "$ne": "Sim"},
+            "status_followup": { "$ne": "removido"}
         })
         todos_atendentes = [a for a in todos_atendentes if a]
         opcoes_delegacao = ["Todos os atendentes"] + sorted(todos_atendentes)
@@ -459,7 +451,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
             touch_min = st.number_input("Mínimo: ", min_value=0, value=0, key="touch_min")
             touch_max = st.number_input("Máximo: ", min_value=0, value=999, key="touch_max")
         else:
-            st.caption("Selecione 'Personalizado' para definir range ")
+            st.caption("Selecione 'Personalizado' para definir range")
             touch_min, touch_max = 0, 999
 
     with col_f3:
@@ -491,14 +483,13 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
         if st.button("🚫 Não perturbar 6m ", key="acao_6meses", use_container_width=True):
             st.session_state.acao_lote = "nao_perturbar_6m"
     with col_acoes4:
-        # ✅ CORRIGIDO: type="secondary" (sem espaço)
         if st.button("❌ Remover da lista ", key="acao_remover", use_container_width=True, type="secondary"):
             st.session_state.acao_lote = "remover"
 
     st.divider()
 
-    # Filtros específicos do painel
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+    # Filtros específicos do painel - LINHA 1
+    col1, col2, col3 = st.columns([2, 2, 2])
 
     usuario_pode_ver_todos = is_admin or (
         modo_delegacao_ativo and (
@@ -510,9 +501,9 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
     with col1:
         if usuario_pode_ver_todos:
             atendentes = clientes_collection.distinct("cadastrado_por", {
-                "seguiu_ativacao": {"$ne": "Sim"},
-                "restritivo": {"$ne": "Sim"},
-                "status_followup": {"$ne": "removido"}
+                "seguiu_ativacao": { "$ne": "Sim"},
+                "restritivo": { "$ne": "Sim"},
+                "status_followup": { "$ne": "removido"}
             })
             atendentes = [a for a in atendentes if a]
             atendentes.insert(0, "Todos")
@@ -545,10 +536,13 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
             key="painel_limite"
         )
 
-    # 🏢 Filtro de Condomínio com Cache e Contador
-    with col4:
+    # 🏢 FILTRO DE CONDOMÍNIO - LINHA 2 (ABAIXO DOS OUTROS FILTROS)
+    st.markdown("")  # Espaçamento
+    col_condominio = st.columns(1)
+    
+    with col_condominio[0]:
         # Botão para atualizar cache
-        if st.button("🔄 Atualizar ", key="btn_atualizar_cond_painel", help="Atualiza a lista de condomínios"):
+        if st.button("🔄 Atualizar Lista de Condomínios ", key="btn_atualizar_cond_painel", help="Atualiza a lista de condomínios"):
             if "condominios_cache_followup" in st.session_state:
                 del st.session_state["condominios_cache_followup"]
             if "condominios_cache_timestamp_followup" in st.session_state:
@@ -561,15 +555,15 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
         filtro_condominio_painel = st.multiselect(
             "Condomínio: ",
             options=opcoes_display,
-            default=["Todos"] if "Todos" in opcoes_display else [],
+            default=[],  # ✅ ALTERADO: Agora inicia vazio
             key="painel_filtro_condominio"
         )
 
     # Montagem da query
     query = {
-        "seguiu_ativacao": {"$ne": "Sim"},
-        "restritivo": {"$ne": "Sim"},
-        "status_followup": {"$ne": "removido"}
+        "seguiu_ativacao": { "$ne": "Sim"},
+        "restritivo": { "$ne": "Sim"},
+        "status_followup": { "$ne": "removido"}
     }
 
     # Lógica de filtro por atendente
@@ -587,21 +581,21 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                 condominios_selecionados.append(nome_real)
         
         if condominios_selecionados:
-            query["condominio_nome"] = {"$in": condominios_selecionados}
+            query["condominio_nome"] = { "$in": condominios_selecionados}
 
     # === FILTROS DE TOUCH ===
     if filtro_touch_tipo == "Nunca ligado (0) ":
-        query["touch_count"] = {"$eq": 0}
+        query["touch_count"] = { "$eq": 0}
     elif filtro_touch_tipo == "1-3 ligações ":
-        query["touch_count"] = {"$gte": 1, "$lte": 3}
+        query["touch_count"] = { "$gte": 1, "$lte": 3}
     elif filtro_touch_tipo == "4-6 ligações ":
-        query["touch_count"] = {"$gte": 4, "$lte": 6}
+        query["touch_count"] = { "$gte": 4, "$lte": 6}
     elif filtro_touch_tipo == "7-10 ligações ":
-        query["touch_count"] = {"$gte": 7, "$lte": 10}
+        query["touch_count"] = { "$gte": 7, "$lte": 10}
     elif filtro_touch_tipo == "Mais de 10 ":
-        query["touch_count"] = {"$gt": 10}
+        query["touch_count"] = { "$gt": 10}
     elif filtro_touch_tipo == "Personalizado ":
-        query["touch_count"] = {"$gte": touch_min, "$lte": touch_max}
+        query["touch_count"] = { "$gte": touch_min, "$lte": touch_max}
 
     # === FILTRO DE NÃO PERTURBAR ===
     hoje = datetime.now(timezone.utc)
@@ -609,9 +603,9 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
 
     if not filtro_nao_perturbar:
         query["$or"] = [
-            {"retorno_agendado": {"$exists": False}},
+            {"retorno_agendado": { "$exists": False}},
             {"retorno_agendado": ""},
-            {"retorno_agendado": {"$lte": hoje_str}}
+            {"retorno_agendado": { "$lte": hoje_str}}
         ]
 
     # === FILTRO DE PERÍODO DO ÚLTIMO CONTATO ===
@@ -634,12 +628,12 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
             pass
         
         if filtro_periodo != "Mais de 1 mês ":
-            query["touch_history.timestamp"] = {"$gte": data_limite.isoformat()}
+            query["touch_history.timestamp"] = { "$gte": data_limite.isoformat()}
 
     elif filtro_periodo == "Nunca contactado ":
         query["$or"] = [
-            {"touch_history": {"$exists": False}},
-            {"touch_history": {"$size": 0}}
+            {"touch_history": { "$exists": False}},
+            {"touch_history": { "$size": 0}}
         ]
 
     # Ordenação
@@ -674,7 +668,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
         for c in clientes:
             touch_history = c.get("touch_history", [])
             if touch_history:
-                ultimo_touch = max([t.get("timestamp", "") for t in touch_history])
+                ultimo_touch = max([t.get("timestamp", " ") for t in touch_history])
                 if ultimo_touch:
                     try:
                         data_ultimo = datetime.fromisoformat(ultimo_touch.replace("Z", "+00:00"))
@@ -712,7 +706,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
             touch_history = c.get("touch_history", [])
             ultimo_contato = "Nunca "
             if touch_history:
-                ultimo_ts = max([t.get("timestamp", "") for t in touch_history])
+                ultimo_ts = max([t.get("timestamp", " ") for t in touch_history])
                 try:
                     ultimo_dt = datetime.fromisoformat(ultimo_ts.replace("Z", "+00:00"))
                     ultimo_contato = ultimo_dt.strftime("%d/%m/%Y %H:%M")
@@ -720,12 +714,12 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                     ultimo_contato = ultimo_ts
             
             # 🏢 Informações de condomínio
-            condominio_info = ""
+            condominio_info = " "
             if c.get("condominio_nome"):
-                condominio_info = c.get("condominio_nome", "")
+                condominio_info = c.get("condominio_nome", " ")
             if c.get("bloco") or c.get("apartamento"):
-                bloco = c.get("bloco", "")
-                apto = c.get("apartamento", "")
+                bloco = c.get("bloco", " ")
+                apto = c.get("apartamento", " ")
                 if bloco:
                     condominio_info += f" - Bloco {bloco}" if condominio_info else f"Bloco {bloco}"
                 if apto:
@@ -737,7 +731,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                 "Nome Completo": c.get("nome_completo", "N/A"),
                 "Telefone": c.get("celular", "N/A"),
                 "Condomínio/Unidade": condominio_info if condominio_info else "N/A",
-                "Observações": c.get("observacoes_followup", "").replace("\n", " "),
+                "Observações": c.get("observacoes_followup", " ").replace("\n", " "),
                 "Toques": c.get("touch_count", 0),
                 "Último Contato": ultimo_contato,
                 "Retorno Agendado": c.get("retorno_agendado", "Imediato"),
@@ -798,41 +792,41 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
     st.caption("Use os botões para registrar touch, adicionar observações ou agendar retorno. ")
 
     st.markdown("""
-    <style>
-    .painel-card {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px;
-        margin-bottom: 10px;
-        border-left: 5px solid #007bff;
-    }
-    .painel-card:hover {
-        background-color: #e9ecef;
-    }
-    .telefone-destaque {
-        font-size: 1.3em;
-        font-weight: bold;
-        color: #28a745;
-    }
-    .nao-perturbar {
-        border-left: 5px solid #dc3545 !important;  
-        background-color: #f8d7da !important;
-    }
-    .data-cadastro {
-        font-size: 0.85em;
-        color: #6c757d;
-    }
-    .ultimo-touch {
-        font-size: 0.8em;
-        font-weight: 500;
-        margin-top: 2px;
-    }
-    .condominio-info {
-        font-size: 0.85em;
-        color: #17a2b8;
-        font-weight: 500;
-    }
-    </style>
+        <style>
+        .painel-card {
+            background-color: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 5px solid #007bff;
+        }
+        .painel-card:hover {
+            background-color: #e9ecef;
+        }
+        .telefone-destaque {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #28a745;
+        }
+        .nao-perturbar {
+            border-left: 5px solid #dc3545 !important;   
+            background-color: #f8d7da !important;
+        }
+        .data-cadastro {
+            font-size: 0.85em;
+            color: #6c757d;
+        }
+        .ultimo-touch {
+            font-size: 0.8em;
+            font-weight: 500;
+            margin-top: 2px;
+        }
+        .condominio-info {
+            font-size: 0.85em;
+            color: #17a2b8;
+            font-weight: 500;
+        }
+        </style>
     """, unsafe_allow_html=True)
 
     selecionados = []
@@ -842,20 +836,20 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
         telefone = cliente.get("celular", "N/A")
         data_cad = cliente.get("data_cadastro", "N/A")
         cadastrado_por = cliente.get("cadastrado_por", "N/A")
-        obs = cliente.get("observacoes_followup", "")
+        obs = cliente.get("observacoes_followup", " ")
         touch_count = cliente.get("touch_count", 0)
         origem = cliente.get("origem", "N/A")
-        retorno_agendado = cliente.get("retorno_agendado", "")
+        retorno_agendado = cliente.get("retorno_agendado", " ")
         _id = str(cliente["_id"])
         
         info_ultimo_touch = formatar_ultimo_touch(cliente)
         data_cad_str = formatar_data_cadastro(data_cad)
         
         # 🏢 Informações de condomínio
-        condominio_nome = cliente.get("condominio_nome", "")
-        bloco = cliente.get("bloco", "")
-        apartamento = cliente.get("apartamento", "")
-        condominio_display = ""
+        condominio_nome = cliente.get("condominio_nome", " ")
+        bloco = cliente.get("bloco", " ")
+        apartamento = cliente.get("apartamento", " ")
+        condominio_display = " "
         if condominio_nome:
             condominio_display = f"🏢 {condominio_nome}"
             if bloco or apartamento:
@@ -899,17 +893,17 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                     st.markdown(f"**{nome}** ")
                     st.caption(f"Origem: {origem} ")
                     if condominio_display:
-                        st.caption(f"<span class='condominio-info'>{condominio_display}</span> ", unsafe_allow_html=True)
+                        st.caption(f"<span class='condominio-info'>{condominio_display}</span>", unsafe_allow_html=True)
                     if em_nao_perturbar:
                         st.caption(f"🔕 Retorno: {datetime.strptime(retorno_agendado, '%Y-%m-%d').strftime('%d/%m/%Y')} ")
                 
                 with cols[2]:
-                    st.markdown(f"<span class='telefone-destaque'>{telefone}</span> ", unsafe_allow_html=True)
+                    st.markdown(f"<span class='telefone-destaque'>{telefone}</span>", unsafe_allow_html=True)
                     st.caption(f"Toques: {badge_touch} ")
                 
                 with cols[3]:
-                    st.markdown(f"<span class='data-cadastro'>📅 Cad: {data_cad_str}</span> ", unsafe_allow_html=True)
-                    st.markdown(f"<span class='ultimo-touch'>{info_ultimo_touch}</span> ", unsafe_allow_html=True)
+                    st.markdown(f"<span class='data-cadastro'>📅 Cad: {data_cad_str}</span>", unsafe_allow_html=True)
+                    st.markdown(f"<span class='ultimo-touch'>{info_ultimo_touch}</span>", unsafe_allow_html=True)
                     st.caption(f"👤 {cadastrado_por} ")
                 
                 with cols[4]:
@@ -919,7 +913,6 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                         st.caption("_Sem observações_ ")
                 
                 with cols[5]:
-                    # ✅ CORRIGIDO: type="primary" (sem espaço)
                     if st.button("✋ Touch ", key=f"painel_touch_{_id}", use_container_width=True, type="primary"):
                         novo_count = touch_count + 1
                         nome_usuario = st.session_state.get("nome_usuario", "Anônimo")
@@ -940,10 +933,9 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                         st.success("✔️ Touch registrado! ", icon="✅")
                         st.rerun()
                     
-                    # ✅ CORRIGIDO: type="secondary" (sem espaço)
                     if st.button("⚙️ Ações ", key=f"painel_acoes_{_id}", use_container_width=True, type="secondary"):
                         st.session_state[f"mostrar_acoes_{_id}"] = True
-    
+
     if st.session_state.get(f"mostrar_acoes_{_id}", False):
         with st.form(key=f"form_acoes_painel_{_id}"):
             st.markdown("**Ações Rápidas:** ")
@@ -959,7 +951,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                 )
             
             with col_ac2:
-                st.markdown("  &nbsp; ")
+                st.markdown(" &nbsp; ")
                 if st.form_submit_button("💾 Salvar Obs ", use_container_width=True):
                     clientes_collection.update_one(
                         {"_id": cliente["_id"]},
@@ -977,7 +969,6 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                     format_func=lambda x: f"{x} dias" if x < 30 else f"{x//30} meses" if x == 180 else f"{x} dias",
                     key=f"dias_retorno_{_id}"
                 )
-                # ✅ CORRIGIDO: type="primary" (sem espaço)
                 if st.form_submit_button("📅 Agendar ", use_container_width=True, type="primary"):
                     data_retorno = (hoje + timedelta(days=dias_retorno)).strftime("%Y-%m-%d")
                     clientes_collection.update_one(
@@ -990,7 +981,6 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
             
             with col_ac4:
                 st.markdown("**Outras Ações:** ")
-                # ✅ CORRIGIDO: type="secondary" (sem espaço)
                 if st.form_submit_button("🚫 Não Perturbar 6m ", use_container_width=True, type="secondary"):
                     data_retorno = (hoje + timedelta(days=180)).strftime("%Y-%m-%d")
                     clientes_collection.update_one(
@@ -1006,7 +996,6 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                     st.session_state[f"mostrar_acoes_{_id}"] = False
                     st.rerun()
                 
-                # ✅ CORRIGIDO: type="secondary" (sem espaço)
                 if st.form_submit_button("❌ Remover ", use_container_width=True, type="secondary"):
                     clientes_collection.update_one(
                         {"_id": cliente["_id"]},
@@ -1015,7 +1004,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                     st.success("✅ Cliente removido da lista! ")
                     st.session_state[f"mostrar_acoes_{_id}"] = False
                     st.rerun()
-    
+
     st.divider()
 
     if selecionados:
@@ -1039,7 +1028,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
             if st.button("🚫 Não Perturbar 6 meses (Lote) ", use_container_width=True):
                 data_retorno = (hoje + timedelta(days=180)).strftime("%Y-%m-%d")
                 for cid in selecionados:
-                    obs_atual = clientes_collection.find_one({"_id": cid}).get("observacoes_followup", "")
+                    obs_atual = clientes_collection.find_one({"_id": cid}).get("observacoes_followup", " ")
                     clientes_collection.update_one(
                         {"_id": cid},
                         {
@@ -1053,7 +1042,6 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                 st.rerun()
         
         with col_lote3:
-            # ✅ CORRIGIDO: type="secondary" (sem espaço)
             if st.button("❌ Remover da lista (Lote) ", use_container_width=True, type="secondary"):
                 for cid in selecionados:
                     clientes_collection.update_one(
@@ -1063,7 +1051,6 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
                 st.success(f"✅ {len(selecionados)} clientes removidos da lista! ")
                 st.rerun()
 
-
 # ============================================================================
 # ✅ FUNÇÃO PRINCIPAL: render_followup
 # ============================================================================
@@ -1071,10 +1058,9 @@ def render_followup(clientes_collection):
     """Renderiza o módulo de Follow-up com tracking de touches"""
     st.title("📅 Follow-up de Clientes")
     st.info("Aqui você gerencia o acompanhamento dos clientes que ainda não seguiram para ativação e não são restritivos.")
-    
     tab1, tab2, tab3 = st.tabs(["📋 Lista de Follow-up ", "🗓️ Calendário Mensal ", "📞 Painel de Ligações "])
 
-    usuario_atual = st.session_state.get("nome_usuario", "")
+    usuario_atual = st.session_state.get("nome_usuario", " ")
     is_admin = (usuario_atual == "Diego Roberto")
 
     # =============== TAB 1: LISTA TRADICIONAL ===============
@@ -1095,8 +1081,8 @@ def render_followup(clientes_collection):
                 key="followup_busca"
             ).strip()
 
-        # 🏢 Filtros com Condomínio (3 colunas)
-        col1, col2, col3 = st.columns([2, 2, 1])
+        # 🏢 LINHA 1: Filtros de Data e Origem
+        col1, col2 = st.columns([2, 2])
         
         with col1:
             filtro_data = st.selectbox(
@@ -1109,13 +1095,16 @@ def render_followup(clientes_collection):
             filtro_origem = st.multiselect(
                 "Filtrar por origem: ",
                 ["Opa Suite ", "Whatsapp ", "Indicação ", "Loja "],
-                default=["Opa Suite ", "Whatsapp ", "Indicação ", "Loja "]
+                default=[]  # ✅ ALTERADO: Agora inicia vazio
             )
+
+        # 🏢 LINHA 2: Filtro de Condomínio (ABAIXO DOS OUTROS FILTROS)
+        st.markdown("")  # Espaçamento
+        col_condominio = st.columns(1)
         
-        # 🏢 Filtro de Condomínio com Cache e Contador
-        with col3:
+        with col_condominio[0]:
             # Botão para atualizar cache
-            if st.button("🔄 Atualizar ", key="btn_atualizar_cond_tab1", help="Atualiza a lista de condomínios"):
+            if st.button("🔄 Atualizar Lista de Condomínios ", key="btn_atualizar_cond_tab1", help="Atualiza a lista de condomínios"):
                 if "condominios_cache_followup" in st.session_state:
                     del st.session_state["condominios_cache_followup"]
                 if "condominios_cache_timestamp_followup" in st.session_state:
@@ -1128,27 +1117,27 @@ def render_followup(clientes_collection):
             filtro_condominio = st.multiselect(
                 "Condomínio: ",
                 options=opcoes_display,
-                default=["Todos"] if "Todos" in opcoes_display else [],
+                default=[],  # ✅ ALTERADO: Agora inicia vazio
                 key="followup_filtro_condominio"
             )
 
         # Montagem da query base
         query = {
-            "seguiu_ativacao": {"$ne": "Sim"},
-            "restritivo": {"$ne": "Sim"},
-            "status_followup": {"$ne": "removido"}
+            "seguiu_ativacao": { "$ne": "Sim"},
+            "restritivo": { "$ne": "Sim"},
+            "status_followup": { "$ne": "removido"}
         }
 
         # Aplicar filtro de busca
         if busca_texto:
             if tipo_busca == "Nome ":
-                query["nome_completo"] = {"$regex": re.escape(busca_texto), "$options": "i"}
+                query["nome_completo"] = { "$regex": re.escape(busca_texto), "$options": "i"}
             else:
                 celular_limpo = re.sub(r"[^\d]", "", busca_texto)
                 if len(celular_limpo) > 10 and celular_limpo.startswith("55"):
                     celular_limpo = celular_limpo[2:]
                 if celular_limpo:
-                    query["celular"] = {"$regex": celular_limpo, "$options": "i"}
+                    query["celular"] = { "$regex": celular_limpo, "$options": "i"}
 
         # Filtro por usuário
         if not is_admin and usuario_atual:
@@ -1158,19 +1147,19 @@ def render_followup(clientes_collection):
         hoje = datetime.now(timezone.utc)
         hoje_str = hoje.strftime("%Y-%m-%d")
         if filtro_data == "Com data definida ":
-            query["retorno_agendado"] = {"$ne": "", "$exists": True}
+            query["retorno_agendado"] = { "$ne": "", "$exists": True}
         elif filtro_data == "Sem data definida ":
             query["retorno_agendado"] = ""
         elif filtro_data == "Vencidas ":
-            query["retorno_agendado"] = {"$lt": hoje_str, "$ne": ""}
+            query["retorno_agendado"] = { "$lt": hoje_str, "$ne": ""}
         elif filtro_data == "Hoje ":
             query["retorno_agendado"] = hoje_str
         elif filtro_data == "Próximos 7 dias ":
             proximos_7 = [(hoje + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
-            query["retorno_agendado"] = {"$in": proximos_7}
+            query["retorno_agendado"] = { "$in": proximos_7}
 
         if filtro_origem:
-            query["origem"] = {"$in": filtro_origem}
+            query["origem"] = { "$in": filtro_origem}
 
         # 🏢 APLICAR FILTRO DE CONDOMÍNIO
         if filtro_condominio and "Todos" not in filtro_condominio:
@@ -1181,7 +1170,7 @@ def render_followup(clientes_collection):
                     condominios_selecionados.append(nome_real)
             
             if condominios_selecionados:
-                query["condominio_nome"] = {"$in": condominios_selecionados}
+                query["condominio_nome"] = { "$in": condominios_selecionados}
 
         clientes_followup = list(clientes_collection.find(query).sort("retorno_agendado", 1))
 
@@ -1197,10 +1186,10 @@ def render_followup(clientes_collection):
         st.subheader("🗓️ Calendário Mensal de Follow-up ")
 
         query_agenda = {
-            "seguiu_ativacao": {"$ne": "Sim"},
-            "restritivo": {"$ne": "Sim"},
-            "status_followup": {"$ne": "removido"},
-            "retorno_agendado": {"$ne": "", "$exists": True}
+            "seguiu_ativacao": { "$ne": "Sim"},
+            "restritivo": { "$ne": "Sim"},
+            "status_followup": { "$ne": "removido"},
+            "retorno_agendado": { "$ne": "", "$exists": True}
         }
 
         if not is_admin and usuario_atual:
@@ -1282,8 +1271,8 @@ def render_followup(clientes_collection):
                         cor = "#f8d7da"
                         texto = f"{dia_num}<br/>({qtd})<br/><small>avg: {media_touches:.1f}</small>"
 
-                    borda = ""
-                    icone = ""
+                    borda = " "
+                    icone = " "
                     if data < hoje_date and qtd > 0:
                         borda = "border: 2px solid #e74c3c; "
                         icone = "❗ "
@@ -1318,20 +1307,20 @@ def render_followup(clientes_collection):
         if clientes_do_dia:
             st.markdown(f"### 👥 Follow-ups em {data_selecionada.strftime('%d/%m/%Y')} ")
 
-            texto_export = ""
+            texto_export = " "
             for cliente in clientes_do_dia:
                 nome = cliente.get("nome_completo", "N/A")
                 tel = cliente.get("celular", "N/A")
                 plano = cliente.get("plano_escolhido", "N/A")
                 origem = cliente.get("origem", "N/A")
                 cad_por = cliente.get("cadastrado_por", "N/A")
-                obs = cliente.get("observacoes_followup", "").strip() or "Sem observação "
+                obs = cliente.get("observacoes_followup", " ").strip() or "Sem observação "
                 touch_ct = cliente.get("touch_count", 0)
                 # 🏢 Incluir condomínio na exportação
-                condominio = cliente.get("condominio_nome", "")
-                bloco = cliente.get("bloco", "")
-                apto = cliente.get("apartamento", "")
-                condominio_info = ""
+                condominio = cliente.get("condominio_nome", " ")
+                bloco = cliente.get("bloco", " ")
+                apto = cliente.get("apartamento", " ")
+                condominio_info = " "
                 if condominio:
                     condominio_info = f" | 🏢 {condominio}"
                     if bloco or apto:
