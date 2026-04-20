@@ -823,9 +823,9 @@ def render_cadastro(clientes_collection):
     st.session_state["clientes_collection"] = clientes_collection
     
     # ✅ OTIMIZAÇÃO 4: Criar índices na inicialização (apenas uma vez)
-    if "indices_criados" not in st.session_state:
-        criar_indices_performance(clientes_collection)
-        st.session_state["indices_criados"] = True
+    #if "indices_criados" not in st.session_state:
+     #   criar_indices_performance(clientes_collection)
+      #  st.session_state["indices_criados"] = True
     
     # ✅ REMOVIDO: session_state ultimo_cpf e ultimo_celular (verificação de duplicidade)
     
