@@ -1,4 +1,4 @@
-#modules/pap.py
+# modules/pap.py
 import streamlit as st
 from datetime import datetime
 import base64
@@ -7,7 +7,7 @@ from urllib.parse import quote
 from .utils import normalize_phone, limpar_cpf as limpar_cpf_util
 from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEADORES, PLANOS
 
-# 🏢 CONDOMÍNIO - Import para opções de condomínio
+# 🏢 CONDOMÍNIO - Importação
 try:
     from .condominios import get_condominio_options, get_condominio_by_id
 except ImportError:
@@ -41,7 +41,6 @@ def gerar_link_whatsapp_solicitacao(nome, celular, cpf=None):
     mensagem_codificada = quote(mensagem)
     return f"https://wa.me/{WHATSAPP_LOJA}?text={mensagem_codificada}"
 
-# 🏢 CONDOMÍNIO - Função auxiliar para atualizar endereço quando condomínio é selecionado
 def atualizar_endereco_por_condominio(condominio_nome, condominio_options):
     """Atualiza o session_state com dados do condomínio selecionado."""
     cond_id = condominio_options.get(condominio_nome)
@@ -57,8 +56,8 @@ def atualizar_endereco_por_condominio(condominio_nome, condominio_options):
 
 def render_pap(clientes_collection):
     st.session_state["clientes_collection"] = clientes_collection
-    
-    # Inicializa estados
+
+    # Inicializa estados específicos do PaP
     if "form_key_pap" not in st.session_state:
         st.session_state["form_key_pap"] = 0
     if "gerando_contrato_pap" not in st.session_state:
@@ -75,39 +74,41 @@ def render_pap(clientes_collection):
         st.session_state["endereco_bloqueado_confirmado_pap"] = {}
 
     st.title("📝 Cadastro Porta a Porta (PaP)")
-    st.info("⚠️ Você só pode realizar **novos cadastros completos**. Não é possível buscar, editar ou visualizar outros clientes.")
+    st.info("⚠️ Você só pode realizar **novos cadastros completos**. Não é possível buscar, editar ou visualizar outros clientes neste módulo.")
 
-    # ➕ EXIBE BOTÃO DE WHATSAPP SE HOUVER CADASTRO RECENTE
+    # ➕ EXIBE BOTÃO DE WHATSAPP E RESUMO SE HOUVER CADASTRO RECENTE
     if "ultimo_cadastro_pap" in st.session_state:
         dados = st.session_state["ultimo_cadastro_pap"]
+        
+        # Montar resumo visual
+        st.success(f"✅ Cadastro realizado com sucesso para: **{dados['nome']}**")
+        
+        unidade_parts = []
+        if dados.get("condominio_nome"):
+            unidade_parts.append(f"🏢 {dados['condominio_nome']}")
+        if dados.get("bloco"):
+            unidade_parts.append(f"Blq {dados['bloco']}")
+        if dados.get("apartamento"):
+            unidade_parts.append(f"Apto {dados['apartamento']}")
+        
+        if unidade_parts:
+            st.info(f" **Unidade:** {' / '.join(unidade_parts)}")
+
         link_whatsapp = gerar_link_whatsapp_solicitacao(
             dados["nome"],
             dados["celular"],
             dados.get("cpf")
         )
         st.markdown(
-            f'<a href="{link_whatsapp}" target="_blank" '
+            f' <a href="{link_whatsapp}" target="_blank" '
             f'style="display: inline-block; padding: 0.5em 1em; background-color: #25D366; '
-            f'color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-bottom: 1em;">'
-            f'📲 Solicitar Análise</a>',
+            f'color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-bottom: 1em;" >'
+            f'📲 Solicitar Análise no WhatsApp</a>',
             unsafe_allow_html=True
         )
 
-        # 🏢 CONDOMÍNIO - Exibir informações do condomínio se existir
-        if dados.get("condominio_nome"):
-            st.info(f"🏢 **Condomínio:** {dados.get('condominio_nome')}")
-            if dados.get("bloco") or dados.get("apartamento"):
-                unidade_parts = []
-                if dados.get("bloco"):
-                    unidade_parts.append(f"Bloco {dados.get('bloco')}")
-                if dados.get("apartamento"):
-                    unidade_parts.append(f"Apto {dados.get('apartamento')}")
-                if unidade_parts:
-                    st.info(f"📍 **Unidade:** {' / '.join(unidade_parts)}")
-
-        # Botão "Novo Cadastro" — igual ao cadastro.py
-        if st.button("➕ Novo Cadastro", type="secondary", key="novo_cadastro_pap"):
-            # Limpa tudo relacionado ao último cadastro e ao formulário
+        # Botão "Novo Cadastro" — Limpa o formulário para o próximo
+        if st.button(" Novo Cadastro", type="secondary", key="novo_cadastro_pap"):
             if "ultimo_cadastro_pap" in st.session_state:
                 del st.session_state["ultimo_cadastro_pap"]
             keys_to_clear = [
@@ -119,17 +120,19 @@ def render_pap(clientes_collection):
                 "gerando_comodato_pap",
                 "comodato_pronto_pap",
                 "condominio_id_pap",
-                "condominio_nome_pap"
+                "condominio_nome_pap",
+                "endereco_pap",
+                "numero_pap",
+                "cidade_pap"
             ]
             for k in keys_to_clear:
                 st.session_state.pop(k, None)
             st.session_state["form_key_pap"] += 1
             st.rerun()
-
         # Não mostra o formulário se já salvou (até clicar em "Novo Cadastro")
         return
 
-    # --- Formulário de cadastro único ---
+    # - Formulário de cadastro único -
     st.subheader("📝 Cadastro CRM (Completo)")
 
     def get_valor_inicial(chave, default=""):
@@ -188,11 +191,13 @@ def render_pap(clientes_collection):
         value=get_valor_inicial("cpf", ""),
         key=f"cpf_pap_{st.session_state['form_key_pap']}"
     )
-    cpf_limpo = re.sub(r'\D', '', cpf_raw)
-    if len(cpf_limpo) == 11:
-        dup = clientes_collection.find_one({"cpf": cpf_limpo})
+    
+    # Verificação simples de duplicidade de CPF
+    cpf_limpo_check = re.sub(r'\D', '', cpf_raw)
+    if len(cpf_limpo_check) == 11:
+        dup = clientes_collection.find_one({"cpf": cpf_limpo_check})
         if dup:
-            st.warning(f"⚠️ CPF já cadastrado: **{dup.get('nome_completo', '—')}**")
+            st.warning(f"️ CPF já cadastrado: **{dup.get('nome_completo', '—')}**")
 
     with st.container(border=True):
         st.markdown("### 📌 Informações de Origem")
@@ -203,26 +208,24 @@ def render_pap(clientes_collection):
             index=origem_opcoes.index(get_valor_inicial("origem", "PaP")) if get_valor_inicial("origem") in origem_opcoes else origem_opcoes.index("PaP"),
             key=f"origem_pap_{st.session_state['form_key_pap']}"
         )
-
+        
         restritivo = st.selectbox(
             "Restritivo?",
             ["Selecione...", "Sim", "Não"],
             index=["Selecione...", "Sim", "Não"].index(get_valor_inicial("restritivo", "Selecione...")),
-            key=f"restritivo_pap_{st.session_state['form_key_pap']}"
+            key=f"rest_pap_{st.session_state['form_key_pap']}"
         )
-
+        
+        qtd_registros = ano_recente = servico_internet = None
         if restritivo == "Sim":
-            st.markdown("### ⚠️ Informações sobre Restrição")
             col1, col2, col3 = st.columns(3)
             with col1:
-                qtd_registros = st.selectbox("Quantos registros?", list(range(1, 31)), index=0, key=f"qtd_pap_{st.session_state['form_key_pap']}")
+                qtd_registros = st.selectbox("Qtd registros?", list(range(1, 31)), index=0, key=f"qtd_pap_{st.session_state['form_key_pap']}")
             with col2:
                 ano_atual = datetime.now().year
                 ano_recente = st.selectbox("Qual ano mais recente?", list(range(2020, ano_atual + 1)), index=ano_atual - 2020, key=f"ano_pap_{st.session_state['form_key_pap']}")
             with col3:
                 servico_internet = st.selectbox("Serviço de internet?", ["Sim", "Não"], index=0, key=f"serv_pap_{st.session_state['form_key_pap']}")
-        else:
-            qtd_registros = ano_recente = servico_internet = None
 
         seguiu_ativacao = st.selectbox(
             "Seguiu para Ativação?",
@@ -230,20 +233,13 @@ def render_pap(clientes_collection):
             index=["Selecione...", "Sim", "Não"].index(get_valor_inicial("seguiu_ativacao", "Selecione...")),
             key=f"ativacao_pap_{st.session_state['form_key_pap']}"
         )
-
+        
         OPCOES_INTERNET = ["Selecione...", "Giga+", "Internet10", "TR Telecom", "Claro", "Não possui"]
         ja_possui_internet = st.selectbox(
             "Já Possui Internet?",
             OPCOES_INTERNET,
             index=OPCOES_INTERNET.index(get_valor_inicial("ja_possui_internet", "Selecione...")) if get_valor_inicial("ja_possui_internet") in OPCOES_INTERNET else 0,
-            key=f"internet_pap_{st.session_state['form_key_pap']}"
-        )
-
-        codigo_indicador = st.text_input(
-            "Código de Quem Indicou",
-            max_chars=15,
-            value=get_valor_inicial("codigo_indicador", ""),
-            key=f"cod_ind_pap_{st.session_state['form_key_pap']}"
+            key=f"int_pap_{st.session_state['form_key_pap']}"
         )
 
         observacoes = st.text_area(
@@ -264,7 +260,7 @@ def render_pap(clientes_collection):
     # 🏢 CONDOMÍNIO - Seção de Localização com Condomínio
     st.markdown("### 🏢 Localização")
     
-    # Selectbox de Condomínio (FORA do container de endereço)
+    # Selectbox de Condomínio
     condominio_options = {"Nenhum / Não se aplica": None}
     condominio_options.update(get_condominio_options())
     
@@ -272,18 +268,24 @@ def render_pap(clientes_collection):
     index_cond = 0
     if cond_nome_salvo and cond_nome_salvo in condominio_options:
         index_cond = list(condominio_options.keys()).index(cond_nome_salvo)
-    
+
     condominio_select = st.selectbox(
         "Condomínio (Opcional)",
         options=list(condominio_options.keys()),
         index=index_cond,
-        key=f"condominio_select_pap_{st.session_state['form_key_pap']}"
+        key=f"cond_pap_{st.session_state['form_key_pap']}"
     )
-    
+
     if condominio_select and condominio_select != "Nenhum / Não se aplica":
         if condominio_select != cond_nome_salvo:
             atualizar_endereco_por_condominio(condominio_select, condominio_options)
-    
+        else:
+            # Garante que o ID esteja no session_state se já estiver selecionado
+            if "condominio_id_pap" not in st.session_state:
+                 # Tenta recuperar do banco se houver edição futura, aqui apenas mantém
+                 pass
+
+    # Endereço e Número
     col1, col2 = st.columns([3, 1])
     with col1:
         endereco = st.text_input(
@@ -316,13 +318,13 @@ def render_pap(clientes_collection):
     with col_bloco:
         bloco = st.text_input(
             "Bloco",
-            value="",
+            value=get_valor_inicial("bloco", ""),
             key=f"bloco_pap_{st.session_state['form_key_pap']}"
         )
     with col_apto:
         apartamento = st.text_input(
             "Apartamento",
-            value="",
+            value=get_valor_inicial("apartamento", ""),
             key=f"apartamento_pap_{st.session_state['form_key_pap']}"
         )
 
@@ -341,12 +343,12 @@ def render_pap(clientes_collection):
     st.subheader("1️⃣ Foto segurando documento com foto (RG, CNH, etc) - Opcional")
     foto_documento = st.file_uploader("Envie a foto aqui (JPG ou PNG)", type=["jpg", "png", "jpeg"], key=f"foto_pap_{st.session_state['form_key_pap']}")
 
-    st.subheader("📦 Equipamento em Comodato (opcional)")
+    st.subheader(" Equipamento em Comodato (opcional)")
     equip_desc = st.text_input("Descrição do Equipamento", value="Roteador Wi-Fi", key=f"equip_desc_pap_{st.session_state['form_key_pap']}")
     modelo_atual = get_valor_inicial("equip_modelo", "")
     index_modelo = MODELOS_ROTEADORES.index(modelo_atual) if modelo_atual in MODELOS_ROTEADORES else 0
-    equip_modelo = st.selectbox("Marca/Modelo*", MODELOS_ROTEADORES, index=index_modelo, key=f"equip_mod_pap_{st.session_state['form_key_pap']}")
-    equip_codigo = st.text_input("Informação Adicional*", placeholder="Ex: Número de série", value="", key=f"equip_cod_pap_{st.session_state['form_key_pap']}")
+    equip_modelo = st.selectbox("Marca/Modelo* ", MODELOS_ROTEADORES, index=index_modelo, key=f"equip_mod_pap_{st.session_state['form_key_pap']}")
+    equip_codigo = st.text_input("Informação Adicional*", placeholder="Ex: Número de série", value=" ", key=f"equip_cod_pap_{st.session_state['form_key_pap']}")
     equip_acessorios = st.text_input("Acessórios", value="Fonte de alimentação, cabo Ethernet", key=f"equip_acc_pap_{st.session_state['form_key_pap']}")
 
     # Botões de contrato/comodato
@@ -389,7 +391,7 @@ def render_pap(clientes_collection):
         if st.session_state["gerando_comodato_pap"]:
             st.button("⏳ Gerando termo...", disabled=True)
         elif st.session_state["comodato_pronto_pap"]:
-            st.download_button("📥 Baixar Termo", data=st.session_state["comodato_bytes_pap"], file_name=st.session_state["comodato_nome_pap"], mime="application/pdf")
+            st.download_button(" Baixar Termo", data=st.session_state["comodato_bytes_pap"], file_name=st.session_state["comodato_nome_pap"], mime="application/pdf")
         else:
             if st.button("📄 Gerar Termo de Comodato"):
                 cpf_valido = limpar_cpf_util(cpf_raw)
@@ -411,7 +413,7 @@ def render_pap(clientes_collection):
                         "equipamento_modelo": equip_modelo,
                         "equipamento_codigo": equip_codigo,
                         "equipamento_acessorios": equip_acessorios,
-                        # 🏢 CONDOMÍNIO - Novos campos para PDF
+                        #  CONDOMÍNIO - Novos campos para PDF
                         "condominio_nome": st.session_state.get("condominio_nome_pap", ""),
                         "bloco": bloco if bloco else "",
                         "apartamento": apartamento if apartamento else ""
@@ -428,6 +430,8 @@ def render_pap(clientes_collection):
         else:
             endereco_salvo = endereco.strip()
             numero_salvo = numero.strip()
+            
+            # Verificação de endereço bloqueado
             if endereco_salvo and numero_salvo:
                 cliente_bloqueado = clientes_collection.find_one({
                     "endereco": endereco_salvo,
@@ -436,8 +440,10 @@ def render_pap(clientes_collection):
                 })
                 conf = st.session_state.get("endereco_bloqueado_confirmado_pap", {})
                 confirmado = conf.get("endereco") == endereco_salvo and conf.get("numero") == numero_salvo
+                
                 if cliente_bloqueado and not st.session_state.get("ignorar_bloqueio_pap", False) and not confirmado:
                     st.error("❌ Endereço bloqueado! Use o botão 'Continuar mesmo assim' se necessário.")
+                    # Aqui poderíamos adicionar botões de confirmação similares ao cadastro.py se desejado
                     return
 
             cpf_valido = limpar_cpf_util(cpf_raw)
@@ -445,7 +451,7 @@ def render_pap(clientes_collection):
             if foto_documento:
                 foto_bytes = foto_documento.read()
                 foto_base64 = base64.b64encode(foto_bytes).decode('utf-8')
-
+            
             codigo_indicacao = None
             if seguiu_ativacao == "Sim":
                 codigo_indicacao = gerar_codigo_indicacao()
@@ -489,7 +495,7 @@ def render_pap(clientes_collection):
                 "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                 "endereco_bloqueado": False,
                 "observacoes_bloqueio_endereco": None,
-                # 🏢 CONDOMÍNIO - Novos campos
+                # 🏢 CONDOMÍNIO - Novos campos salvos no banco
                 "condominio_id": st.session_state.get("condominio_id_pap"),
                 "condominio_nome": st.session_state.get("condominio_nome_pap"),
                 "bloco": bloco if bloco else None,
@@ -500,18 +506,18 @@ def render_pap(clientes_collection):
                 clientes_collection.insert_one(cliente_data)
                 st.success("✅ Cadastro salvo com sucesso!")
                 st.balloons()
-
+                
                 # ✅ Armazena dados para exibir WhatsApp após rerun
                 st.session_state["ultimo_cadastro_pap"] = {
                     "nome": nome_completo,
                     "celular": normalize_phone(celular_principal),
                     "cpf": cpf_valido,
-                    # 🏢 CONDOMÍNIO - Incluir dados de condomínio
+                    # 🏢 CONDOMÍNIO - Incluir dados de condomínio no resumo
                     "condominio_nome": st.session_state.get("condominio_nome_pap"),
                     "bloco": bloco if bloco else None,
                     "apartamento": apartamento if apartamento else None,
                 }
-
+                
                 # Limpa apenas o formulário (não apaga o último cadastro!)
                 keys_to_clear = [
                     "dados_temp_pap",
@@ -521,11 +527,15 @@ def render_pap(clientes_collection):
                     "contrato_pronto_pap",
                     "gerando_comodato_pap",
                     "comodato_pronto_pap"
+                    # Nota: Não limpamos condominio_id/nome aqui para facilitar cadastros sequenciais no mesmo local, 
+                    # mas o usuário pode limpar manualmente clicando em "Novo Cadastro" ou mudando a seleção.
                 ]
                 for k in keys_to_clear:
                     st.session_state.pop(k, None)
+                
                 st.session_state["form_key_pap"] += 1
                 st.rerun()
+
             except Exception as e:
                 st.error(f"❌ Erro ao salvar: {e}")
 
