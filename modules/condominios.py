@@ -31,14 +31,15 @@ def render_cadastro_condominio():
         with col1:
             nome = st.text_input("Nome do Condomínio *", max_chars=100)
             cnpj = st.text_input("CNPJ", max_chars=18, placeholder="00.000.000/0000-00")
-            cidade = st.text_input("Cidade *", value="Rio de Janeiro", max_chars=50)
+            # ✅ BAIRRO AGORA NA COLUNA 1 (antes da Cidade)
+            bairro = st.text_input("Bairro *", max_chars=50)
             estado = st.text_input("Estado", value="RJ", max_chars=2, disabled=True)
         
         with col2:
             endereco = st.text_input("Endereço *", max_chars=100)
             numero = st.text_input("Número *", max_chars=10)
-            # ✅ CAMPO BAIRRO ADICIONADO
-            bairro = st.text_input("Bairro *", max_chars=50)
+            # ✅ CIDADE AGORA NA COLUNA 2 (depois do Bairro)
+            cidade = st.text_input("Cidade *", value="Rio de Janeiro", max_chars=50)
             cep = st.text_input("CEP", max_chars=10, placeholder="00000-000")
         
         st.subheader("👤 Dados do Síndico")
