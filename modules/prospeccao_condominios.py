@@ -432,6 +432,7 @@ def verificar_duplicatas(db):
     return total, len(batches)
 
 def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_comparar):
+    """Atualiza registros com segurança contra NaN do data_editor e persiste colunas calculadas"""
     try:
         mascaras_alteracao = {}
         for col in colunas_para_comparar:
@@ -448,50 +449,26 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         df_edit_alt = df_editado[linhas_com_alteracao].copy()
         ids_alterados = df_orig_alt['_id'].values
 
+        # 🔑 RESTAURAR valores originais onde o editor retornou NaN (células não editadas)
+        for col in df_edit_alt.columns:
+            mask = df_edit_alt[col].isna() & df_orig_alt[col].notna()
+            df_edit_alt.loc[mask, col] = df_orig_alt.loc[mask, col]
+
+        # 🔧 FORÇAR recálculo das colunas derivadas para garantir consistência
         if 'ESTÁGIO' in df_edit_alt.columns:
-            mask_estagio = df_edit_alt['ESTÁGIO'] != df_orig_alt['ESTÁGIO']
-            if mask_estagio.any():
-                df_edit_alt.loc[mask_estagio, 'FASE_CLASSIFICADA'] = \
-                    classificar_fase_vetorizado(df_edit_alt.loc[mask_estagio, 'ESTÁGIO'])
-            if 'FASE_CLASSIFICADA' not in df_edit_alt.columns:
-                df_edit_alt['FASE_CLASSIFICADA'] = classificar_fase_vetorizado(df_edit_alt['ESTÁGIO'])
-
+            df_edit_alt['FASE_CLASSIFICADA'] = classificar_fase_vetorizado(df_edit_alt['ESTÁGIO'])
         if 'VIABILIDADE' in df_edit_alt.columns:
-            mask_viab = df_edit_alt['VIABILIDADE'] != df_orig_alt['VIABILIDADE']
-            if mask_viab.any():
-                df_edit_alt.loc[mask_viab, 'PREVISAO_ENTREGA'] = \
-                    extrair_previsao_entrega_vetorizado(df_edit_alt.loc[mask_viab, 'VIABILIDADE'])
-
+            df_edit_alt['PREVISAO_ENTREGA'] = extrair_previsao_entrega_vetorizado(df_edit_alt['VIABILIDADE'])
         if 'PREVISAO_ENTREGA' in df_edit_alt.columns:
-            mask_prev = (df_edit_alt['PREVISAO_ENTREGA'] != df_orig_alt['PREVISAO_ENTREGA']) if 'PREVISAO_ENTREGA' in df_orig_alt.columns else True
-            if mask_prev.any():
-                df_edit_alt.loc[mask_prev, 'DIAS_RESTANTES'] = \
-                    calcular_dias_para_entrega_vetorizado(df_edit_alt.loc[mask_prev, 'PREVISAO_ENTREGA'])
-            if 'DIAS_RESTANTES' not in df_edit_alt.columns:
-                df_edit_alt['DIAS_RESTANTES'] = calcular_dias_para_entrega_vetorizado(df_edit_alt['PREVISAO_ENTREGA'])
+            df_edit_alt['DIAS_RESTANTES'] = calcular_dias_para_entrega_vetorizado(df_edit_alt['PREVISAO_ENTREGA'])
 
-        colunas_afetam_prioridade = ['ESTÁGIO', 'FASE_CLASSIFICADA', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES']
-        mask_prio = pd.Series(False, index=df_edit_alt.index)
-        for col in colunas_afetam_prioridade:
-            if col in df_edit_alt.columns and col in df_orig_alt.columns:
-                mask_prio |= (df_orig_alt[col].fillna('') != df_edit_alt[col].fillna(''))
-            elif col in df_edit_alt.columns:
-                mask_prio[:] = True
-
-        if mask_prio.any():
-            df_temp = df_orig_alt.copy()
-            for col in df_edit_alt.columns:
-                if col in df_temp.columns and col != '_id':
-                    df_temp[col] = df_edit_alt[col]
-            if 'FASE_CLASSIFICADA' not in df_temp.columns and 'ESTÁGIO' in df_temp.columns:
-                df_temp['FASE_CLASSIFICADA'] = classificar_fase_vetorizado(df_temp['ESTÁGIO'])
-            if 'DIAS_RESTANTES' not in df_temp.columns and 'PREVISAO_ENTREGA' in df_temp.columns:
-                df_temp['DIAS_RESTANTES'] = calcular_dias_para_entrega_vetorizado(df_temp['PREVISAO_ENTREGA'])
-
-            df_temp['PRIORIDADE'] = calcular_prioridade_vetorizado(df_temp)
-            if 'PRIORIDADE' not in df_edit_alt.columns:
-                df_edit_alt['PRIORIDADE'] = ''
-            df_edit_alt.loc[mask_prio, 'PRIORIDADE'] = df_temp.loc[mask_prio, 'PRIORIDADE']
+        df_temp = df_edit_alt.copy()
+        if 'FASE_CLASSIFICADA' not in df_temp.columns and 'ESTÁGIO' in df_temp.columns:
+            df_temp['FASE_CLASSIFICADA'] = classificar_fase_vetorizado(df_temp['ESTÁGIO'])
+        if 'DIAS_RESTANTES' not in df_temp.columns and 'PREVISAO_ENTREGA' in df_temp.columns:
+            df_temp['DIAS_RESTANTES'] = calcular_dias_para_entrega_vetorizado(df_temp['PREVISAO_ENTREGA'])
+        df_temp['PRIORIDADE'] = calcular_prioridade_vetorizado(df_temp)
+        df_edit_alt['PRIORIDADE'] = df_temp['PRIORIDADE']
 
         bulk_operations = []
         collection = db["prospeccao_condominios"]
@@ -499,20 +476,23 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         for idx, record_id in enumerate(ids_alterados):
             updates = {}
             
+            # 1. Colunas editáveis pelo usuário
             for col in colunas_para_comparar:
-                if col in df_edit_alt.columns and col in df_orig_alt.columns:
-                    v_orig = df_orig_alt[col].iloc[idx]
+                if col in df_edit_alt.columns:
                     v_edit = df_edit_alt[col].iloc[idx]
+                    v_orig = df_orig_alt[col].iloc[idx] if col in df_orig_alt.columns else None
+                    if pd.isna(v_edit): continue
                     if str(v_orig) != str(v_edit):
-                        updates[col] = None if (pd.isna(v_edit) or v_edit == '') else v_edit
+                        updates[col] = None if (v_edit == '') else v_edit
 
-            # 🔑 FIX: Persistir colunas calculadas SEMPRE que existirem
+            # 2. Colunas calculadas (usar sempre o valor recalculado)
             for col in ['FASE_CLASSIFICADA', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES', 'PRIORIDADE']:
                 if col in df_edit_alt.columns:
                     val_new = df_edit_alt[col].iloc[idx]
                     val_old = df_orig_alt[col].iloc[idx] if col in df_orig_alt.columns else None
+                    if pd.isna(val_new): continue
                     if str(val_new) != str(val_old):
-                        updates[col] = None if (pd.isna(val_new) or val_new == '') else val_new
+                        updates[col] = None if (val_new == '') else val_new
 
             if updates:
                 oid = ObjectId(record_id) if isinstance(record_id, str) else record_id
@@ -1066,7 +1046,7 @@ def render_prospeccao_condominios():
                               "ESTÁGIO", "VIABILIDADE", "APTO", "OBS", "PREVISAO_ENTREGA"]
             cols_existing = [c for c in cols_editaveis if c in df_filtered.columns]
             
-            # 🔑 ADICIONA FASE ATUAL PARA VISUALIZAÇÃO
+            # Adiciona FASE_CLASSIFICADA para exibição (somente leitura)
             if "FASE_CLASSIFICADA" in df_filtered.columns:
                 cols_to_display = cols_existing + ["FASE_CLASSIFICADA"]
             else:
