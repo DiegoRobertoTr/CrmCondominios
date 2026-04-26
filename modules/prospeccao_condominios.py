@@ -450,9 +450,11 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         ids_alterados = df_orig_alt['_id'].values
 
         # 🔑 RESTAURAR valores originais onde o editor retornou NaN (células não editadas)
+        # ✅ FIX: Só executa para colunas que existem EM AMBOS os DataFrames
         for col in df_edit_alt.columns:
-            mask = df_edit_alt[col].isna() & df_orig_alt[col].notna()
-            df_edit_alt.loc[mask, col] = df_orig_alt.loc[mask, col]
+            if col in df_orig_alt.columns:
+                mask = df_edit_alt[col].isna() & df_orig_alt[col].notna()
+                df_edit_alt.loc[mask, col] = df_orig_alt.loc[mask, col]
 
         # 🔧 FORÇAR recálculo das colunas derivadas para garantir consistência
         if 'ESTÁGIO' in df_edit_alt.columns:
