@@ -20,35 +20,29 @@ from email.mime.text import MIMEText
 from email import encoders
 
 # ==================== CONFIGURAÇÕES DE EMAIL E SENHA ====================
-
 SENHA_ADM = "3540170"
-
 EMAIL_CONFIG = {
-    "smtp_user":     "comercial1@tracecom.net.br",
+    "smtp_user": "comercial1@tracecom.net.br",
     "smtp_password": "Tracecom@mudar",
-    "smtp_server":   "smtps.uhserver.com",
-    "smtp_port":     465,
-    "use_tls":       False,          # porta 465 usa SSL direto, não STARTTLS
+    "smtp_server": "smtps.uhserver.com",
+    "smtp_port": 465,
+    "use_tls": False,
 }
-
 DESTINATARIOS_BACKUP = [
     "comercial1@tracecom.net.br",
     "pmarques@tracecom.net.br",
     "myjobtracecom@gmail.com",
 ]
-
 # Horário a partir do qual o backup diário será disparado (hora local do servidor)
 HORARIO_BACKUP_HORA = 18   # 18h00
 HORARIO_BACKUP_MIN  = 0
 
 # ==================== FUNÇÕES UTILITÁRIAS VETORIZADAS ====================
-
 @st.cache_data
 def classificar_fase_vetorizado(fases_series):
     """Versão vetorizada para classificar fases - OTIMIZADA E SEGURA"""
     if fases_series is None or len(fases_series) == 0:
         return pd.Series([], dtype='object')
-
     fases_lower = fases_series.fillna('').astype(str).str.lower().str.strip()
 
     conditions = {
@@ -69,13 +63,11 @@ def classificar_fase_vetorizado(fases_series):
         resultado[cond] = fase
     return resultado
 
-
 @st.cache_data
 def extrair_previsao_entrega_vetorizado(viabilidade_series):
     """Versão vetorizada para extrair previsão de entrega - ROBUSTA CONTRA ERROS"""
     if viabilidade_series is None or len(viabilidade_series) == 0:
         return pd.Series([], dtype='datetime64[ns]')
-
     viabilidade_str = viabilidade_series.fillna('').astype(str)
     resultado = pd.Series(pd.NaT, index=viabilidade_str.index, dtype='datetime64[ns]')
 
@@ -118,13 +110,11 @@ def extrair_previsao_entrega_vetorizado(viabilidade_series):
 
     return resultado
 
-
 @st.cache_data
 def calcular_prioridade_vetorizado(df):
     """Versão vetorizada para calcular prioridades"""
     if df.empty:
         return pd.Series([], dtype='object')
-
     fase = df['FASE_CLASSIFICADA'].fillna('')
     prioridade = pd.Series('⚪ Baixa', index=df.index)
 
@@ -150,7 +140,6 @@ def calcular_prioridade_vetorizado(df):
     prioridade[fase == '❌ Não Entramos'] = '⚪ Arquivado'
     return prioridade
 
-
 @st.cache_data
 def calcular_dias_para_entrega_vetorizado(previsao_series):
     """Versão vetorizada para calcular dias restantes"""
@@ -160,9 +149,7 @@ def calcular_dias_para_entrega_vetorizado(previsao_series):
     previsao_dt = pd.to_datetime(previsao_series, errors='coerce')
     return (previsao_dt - pd.Timestamp(hoje)).dt.days
 
-
 # ==================== CONFIGURAÇÃO MONGODB ====================
-
 @st.cache_resource
 def init_mongo():
     """Conexão segura com MongoDB usando secrets"""
@@ -178,7 +165,7 @@ def init_mongo():
                 st.error("❌ Credenciais MongoDB incompletas nos Secrets.")
                 st.stop()
             uri = f"mongodb+srv://{username}:{quote_plus(password)}@{cluster}/{database}?retryWrites=true&w=majority"
-
+        
         client = MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
         client.admin.command('ping')
         database_name = st.secrets.get("mongo", {}).get("MONGO_DATABASE", "tracecom_crm")
@@ -190,38 +177,25 @@ def init_mongo():
         st.error(f"❌ Erro inesperado ao conectar: {type(e).__name__}: {e}")
         st.stop()
 
-
 # ==================== FUNÇÕES DE BACKUP E EMAIL ====================
-
 def gerar_excel_tratado(df_prospeccao):
-    """
-    Formato SISTEMA (tratado) — igual à exportação atual com abas por fase.
-    Retorna BytesIO.
-    """
+    """Formato SISTEMA (tratado) — igual à exportação atual com abas por fase. Retorna BytesIO."""
     df_construtoras = analisar_por_construtora(df_prospeccao)
     df_zonas        = analisar_por_zona(df_prospeccao)
     return exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas)
 
-
 def gerar_excel_reimportavel(df_prospeccao):
-    """
-    Formato ORIGINAL (reimportável) — idêntico ao padrão da planilha de entrada.
-    Colunas na mesma ordem que a planilha original, sem colunas calculadas internas.
-    Retorna BytesIO.
-    """
+    """Formato ORIGINAL (reimportável) — idêntico ao padrão da planilha de entrada. Retorna BytesIO."""
     COLUNAS_ORIGINAIS = [
         'Data da Atualização', 'Região', 'BAIRRO', 'ENDEREÇO',
         'NOME', 'BLOCO', 'APTO', 'CONSTRUTORA',
         'ESTÁGIO', 'VIABILIDADE', 'OBS', 'Previsão de Entrega',
     ]
-
     df_export = df_prospeccao.copy()
 
-    # Restaurar ESTÁGIO a partir do FASE_ORIGINAL se disponível
     if 'FASE_ORIGINAL' in df_export.columns:
         df_export['ESTÁGIO'] = df_export['FASE_ORIGINAL']
 
-    # Formatar datas para leitura humana
     for col_data in ['Data da Atualização', 'Previsão de Entrega', 'PREVISAO_ENTREGA']:
         if col_data in df_export.columns:
             df_export[col_data] = pd.to_datetime(df_export[col_data], errors='coerce')
@@ -229,14 +203,11 @@ def gerar_excel_reimportavel(df_prospeccao):
             df_export.loc[mask, col_data] = df_export.loc[mask, col_data].dt.strftime('%d/%m/%Y')
             df_export.loc[~mask, col_data] = ''
 
-    # Garantir que todas as colunas originais existam (preenche com '' se ausente)
     for col in COLUNAS_ORIGINAIS:
         if col not in df_export.columns:
             df_export[col] = ''
 
     df_reimport = df_export[COLUNAS_ORIGINAIS].copy()
-
-    # Limpar valores nulos / NaN visíveis
     df_reimport = df_reimport.fillna('')
     for col in df_reimport.select_dtypes(include='object').columns:
         df_reimport[col] = df_reimport[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN'], '')
@@ -247,19 +218,12 @@ def gerar_excel_reimportavel(df_prospeccao):
     output.seek(0)
     return output
 
-
 def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
                         total_projetos: int, nome_arquivo_original: str,
                         motivo: str = "importação de planilha") -> tuple[bool, str]:
-    """
-    Envia os dois arquivos de backup por email via SSL (porta 465).
-    motivo: texto curto que aparece no corpo do email (ex: 'importação de planilha',
-            'backup diário automático', 'envio manual pelo administrador').
-    Retorna (sucesso: bool, mensagem: str).
-    """
+    """Envia os dois arquivos de backup por email via SSL (porta 465)."""
     timestamp_str = datetime.now().strftime('%d/%m/%Y às %H:%M')
     data_str      = datetime.now().strftime('%Y%m%d_%H%M%S')
-
     assunto = f"[Tracecom] Backup Prospecção Condomínios — {datetime.now().strftime('%d/%m/%Y %H:%M')}"
 
     corpo_html = f"""
@@ -267,7 +231,7 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
       <h2 style="color: #1a5276;">🏢 Backup — Prospecção de Condomínios</h2>
       <p>Olá,</p>
       <p>Este backup foi gerado automaticamente em <strong>{timestamp_str}</strong>
-         por <strong>{motivo}</strong>.</p>
+        por <strong>{motivo}</strong>.</p>
       <p>Seguem em anexo os dois arquivos de backup:</p>
       <table style="border-collapse:collapse; width:100%; margin:16px 0;">
         <tr style="background:#1a5276; color:#fff;">
@@ -283,7 +247,7 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
           <td style="padding:8px 12px;">Formato original — pode ser reimportado diretamente pelo sistema</td>
         </tr>
       </table>
-      <p><strong>Referência:</strong> {nome_arquivo_original}<br>
+      <p><strong>Referência:</strong> {nome_arquivo_original} <br>
          <strong>Total de projetos:</strong> {total_projetos:,}</p>
       <hr style="border:none; border-top:1px solid #ddd; margin:24px 0;">
       <p style="font-size:12px; color:#888;">Mensagem automática — Sistema de Prospecção Tracecom</p>
@@ -295,37 +259,26 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
         msg['Subject'] = assunto
         msg['From']    = EMAIL_CONFIG["smtp_user"]
         msg['To']      = ", ".join(DESTINATARIOS_BACKUP)
-
         msg.attach(MIMEText(corpo_html, 'html', 'utf-8'))
 
-        # Anexo 1 — tratado
         part1 = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         part1.set_payload(arquivo_tratado)
         encoders.encode_base64(part1)
-        part1.add_header('Content-Disposition', 'attachment',
-                         filename=f"backup_tratado_{data_str}.xlsx")
+        part1.add_header('Content-Disposition', 'attachment', filename=f"backup_tratado_{data_str}.xlsx")
         msg.attach(part1)
 
-        # Anexo 2 — reimportável
         part2 = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         part2.set_payload(arquivo_reimportavel)
         encoders.encode_base64(part2)
-        part2.add_header('Content-Disposition', 'attachment',
-                         filename=f"backup_reimportavel_{data_str}.xlsx")
+        part2.add_header('Content-Disposition', 'attachment', filename=f"backup_reimportavel_{data_str}.xlsx")
         msg.attach(part2)
 
-        # Envio via SSL direto (porta 465, use_tls = False = SSL_wrap, não STARTTLS)
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(EMAIL_CONFIG["smtp_server"],
-                              EMAIL_CONFIG["smtp_port"],
-                              context=context) as servidor:
+        with smtplib.SMTP_SSL(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"], context=context) as servidor:
             servidor.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_password"])
-            servidor.sendmail(EMAIL_CONFIG["smtp_user"],
-                              DESTINATARIOS_BACKUP,
-                              msg.as_bytes())
+            servidor.sendmail(EMAIL_CONFIG["smtp_user"], DESTINATARIOS_BACKUP, msg.as_bytes())
 
         return True, f"✅ Backup enviado com sucesso para {len(DESTINATARIOS_BACKUP)} destinatário(s)."
-
     except smtplib.SMTPAuthenticationError:
         return False, "❌ Falha de autenticação SMTP. Verifique usuário/senha."
     except smtplib.SMTPConnectError as e:
@@ -333,97 +286,55 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
     except Exception as e:
         return False, f"❌ Erro ao enviar email: {type(e).__name__}: {e}"
 
-
 # ==================== FUNÇÕES DE CONTROLE DE BACKUP DIÁRIO ====================
-
 def marcar_backup_pendente(db, motivo: str = "edição de registros"):
-    """
-    Grava (ou atualiza) a flag de backup pendente no MongoDB.
-    Também registra o timestamp da primeira edição do dia e o motivo.
-    Usa upsert para não criar duplicatas.
-    """
     col = db["prospeccao_backup_flags"]
     now = datetime.now().replace(tzinfo=None)
     col.update_one(
         {"_id": "backup_flag"},
-        {"$set": {
-            "pending":          True,
-            "ultimo_motivo":    motivo,
-            "ultima_edicao_em": now,
-        },
-         "$setOnInsert": {
-            "primeira_edicao_em": now,
-         }},
+        {"$set": {"pending": True, "ultimo_motivo": motivo, "ultima_edicao_em": now},
+         "$setOnInsert": {"primeira_edicao_em": now}},
         upsert=True,
     )
 
-
 def obter_flag_backup(db) -> dict:
-    """
-    Retorna o documento da flag de backup, ou {} se não existir.
-    Campos relevantes:
-      - pending (bool)
-      - ultima_edicao_em (datetime)
-      - ultimo_backup_em (datetime | None)
-      - ultimo_motivo (str)
-    """
     col = db["prospeccao_backup_flags"]
     doc = col.find_one({"_id": "backup_flag"})
     return doc or {}
 
-
 def registrar_backup_enviado(db):
-    """
-    Marca que o backup foi enviado: limpa a flag pending e registra o timestamp.
-    """
     col = db["prospeccao_backup_flags"]
     col.update_one(
         {"_id": "backup_flag"},
-        {"$set": {
-            "pending":         False,
-            "ultimo_backup_em": datetime.now().replace(tzinfo=None),
-        }},
+        {"$set": {"pending": False, "ultimo_backup_em": datetime.now().replace(tzinfo=None)}},
         upsert=True,
     )
 
-
 def verificar_e_disparar_backup_diario(db, df_prospeccao) -> tuple[bool, str]:
-    """
-    Verifica se há backup pendente E se já passou do horário configurado.
-    Se sim, gera os arquivos, envia o email e limpa a flag.
-    Retorna (enviou: bool, mensagem: str).
-    """
     flag = obter_flag_backup(db)
-
     if not flag.get("pending", False):
         return False, ""
 
     agora = datetime.now()
-    hora_limite = agora.replace(hour=HORARIO_BACKUP_HORA, minute=HORARIO_BACKUP_MIN,
-                                second=0, microsecond=0)
+    hora_limite = agora.replace(hour=HORARIO_BACKUP_HORA, minute=HORARIO_BACKUP_MIN, second=0, microsecond=0)
 
-    # Só dispara se já passou do horário E não foi enviado hoje ainda
     ultimo_backup = flag.get("ultimo_backup_em")
-    ja_enviou_hoje = (
-        ultimo_backup is not None
-        and ultimo_backup.date() == agora.date()
-    ) if ultimo_backup else False
+    ja_enviou_hoje = (ultimo_backup is not None and ultimo_backup.date() == agora.date()) if ultimo_backup else False
 
     if agora < hora_limite or ja_enviou_hoje:
         return False, ""
 
-    # Dispara o backup
     motivo = flag.get("ultimo_motivo", "backup diário automático")
     try:
         excel_tratado      = gerar_excel_tratado(df_prospeccao)
         excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
 
         sucesso, msg = enviar_email_backup(
-            arquivo_tratado      = excel_tratado.getvalue(),
-            arquivo_reimportavel = excel_reimportavel.getvalue(),
-            total_projetos       = len(df_prospeccao),
-            nome_arquivo_original= "backup_diario",
-            motivo               = motivo,
+            arquivo_tratado=excel_tratado.getvalue(),
+            arquivo_reimportavel=excel_reimportavel.getvalue(),
+            total_projetos=len(df_prospeccao),
+            nome_arquivo_original="backup_diario",
+            motivo=motivo,
         )
 
         if sucesso:
@@ -434,39 +345,29 @@ def verificar_e_disparar_backup_diario(db, df_prospeccao) -> tuple[bool, str]:
     except Exception as e:
         return False, f"❌ Erro no backup diário: {e}"
 
-
 def executar_backup_manual(db, df_prospeccao, motivo: str = "envio manual pelo administrador") -> tuple[bool, str]:
-    """
-    Gera e envia o backup imediatamente, independente de horário ou flag.
-    Após envio com sucesso limpa a flag pendente.
-    """
     try:
         excel_tratado      = gerar_excel_tratado(df_prospeccao)
         excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
-
         sucesso, msg = enviar_email_backup(
-            arquivo_tratado      = excel_tratado.getvalue(),
-            arquivo_reimportavel = excel_reimportavel.getvalue(),
-            total_projetos       = len(df_prospeccao),
-            nome_arquivo_original= "backup_manual",
-            motivo               = motivo,
+            arquivo_tratado=excel_tratado.getvalue(),
+            arquivo_reimportavel=excel_reimportavel.getvalue(),
+            total_projetos=len(df_prospeccao),
+            nome_arquivo_original="backup_manual",
+            motivo=motivo,
         )
-
         if sucesso:
             registrar_backup_enviado(db)
         return sucesso, msg
     except Exception as e:
         return False, f"❌ Erro no backup manual: {e}"
 
-
 # ==================== FUNÇÕES DE BANCO DE DADOS ====================
-
 def save_prospeccao_data(db, df_prospeccao, metadata):
     """Salva dados de prospecção no MongoDB"""
-    collection     = db["prospeccao_condominios"]
+    collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
-    batch_id       = metadata["batch_id"]
-
+    batch_id = metadata["batch_id"]
     ultimo_meta = meta_collection.find_one(sort=[("timestamp", -1)])
     if ultimo_meta:
         batch_anterior = ultimo_meta.get("batch_id")
@@ -476,7 +377,6 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
                 st.info(f"🗑️ Removidos {removidos.deleted_count} registros do batch anterior automaticamente.")
 
     df_para_salvar = df_prospeccao.copy()
-
     for col in ['Prazo Medio', 'Prazo_Medio', 'prazo_medio', 'Prazo médio']:
         if col in df_para_salvar.columns:
             df_para_salvar = df_para_salvar.drop(columns=[col])
@@ -500,9 +400,7 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
 
     df_para_salvar["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_para_salvar["_import_batch"]     = batch_id
-    df_para_salvar = df_para_salvar.replace(
-        {pd.NaT: None, np.nan: None, float('inf'): None, float('-inf'): None}
-    )
+    df_para_salvar = df_para_salvar.replace({pd.NaT: None, np.nan: None, float('inf'): None, float('-inf'): None})
 
     docs = df_para_salvar.to_dict('records')
     if docs:
@@ -511,17 +409,16 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
 
     meta_collection.delete_one({"batch_id": batch_id})
     meta_collection.insert_one({
-        "batch_id":        batch_id,
-        "timestamp":       datetime.now().replace(tzinfo=None),
-        "total_projetos":  len(df_prospeccao),
-        "fases":           metadata.get("fases", {}),
-        "construtoras":    metadata.get("construtoras", []),
+        "batch_id": batch_id,
+        "timestamp": datetime.now().replace(tzinfo=None),
+        "total_projetos": len(df_prospeccao),
+        "fases": metadata.get("fases", {}),
+        "construtoras": metadata.get("construtoras", []),
     })
     return True
 
-
 def clear_prospeccao_data(db, batch_id=None):
-    collection      = db["prospeccao_condominios"]
+    collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
     if batch_id:
         result = collection.delete_many({"_import_batch": batch_id})
@@ -532,29 +429,25 @@ def clear_prospeccao_data(db, batch_id=None):
         meta_collection.delete_many({})
         return result.deleted_count
 
-
 def limpar_todas_duplicatas(db):
-    collection      = db["prospeccao_condominios"]
+    collection = db["prospeccao_condominios"]
     meta_collection = db["prospeccao_meta"]
-    total_antes     = collection.count_documents({})
+    total_antes = collection.count_documents({})
     if total_antes > 0:
         collection.delete_many({})
         meta_collection.delete_many({})
         return total_antes
     return 0
 
-
 def verificar_duplicatas(db):
     collection = db["prospeccao_condominios"]
     pipeline = [
-        {"$group": {"_id": "$_import_batch", "count": {"$sum": 1},
-                    "timestamp": {"$max": "$_import_timestamp"}}},
+        {"$group": {"_id": "$_import_batch", "count": {"$sum": 1}, "timestamp": {"$max": "$_import_timestamp"}}},
         {"$sort": {"timestamp": -1}},
     ]
     batches = list(collection.aggregate(pipeline))
     total   = collection.count_documents({})
     return total, len(batches)
-
 
 def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_comparar):
     """Atualiza registros usando processamento 100% VETORIZADO e seguro contra colunas faltantes"""
@@ -596,7 +489,7 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
             if mask_prev.any():
                 df_edit_alt.loc[mask_prev, 'DIAS_RESTANTES'] = \
                     calcular_dias_para_entrega_vetorizado(df_edit_alt.loc[mask_prev, 'PREVISAO_ENTREGA'])
-            if 'DIAS_RESTANTES' não in df_edit_alt.columns:
+            if 'DIAS_RESTANTES' not in df_edit_alt.columns:
                 df_edit_alt['DIAS_RESTANTES'] = calcular_dias_para_entrega_vetorizado(df_edit_alt['PREVISAO_ENTREGA'])
 
         # 4. Verificar se PRIORIDADE precisa ser recalculada
@@ -606,7 +499,6 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
             if col in df_edit_alt.columns and col in df_orig_alt.columns:
                 mask_prio |= (df_orig_alt[col].fillna('') != df_edit_alt[col].fillna(''))
             elif col in df_edit_alt.columns:
-                # Se a coluna foi recém-calculada, considera-se alterada
                 mask_prio[:] = True
 
         if mask_prio.any():
@@ -649,7 +541,7 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
                     if col in df_orig_alt.columns:
                         is_different = str(df_orig_alt[col].iloc[idx]) != str(val)
                     else:
-                        is_different = True # Coluna não existia no original, deve ser salva
+                        is_different = True
 
                     if is_different:
                         updates[col] = None if (pd.isna(val) or val == '') else val
@@ -667,6 +559,8 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         import traceback
         st.code(traceback.format_exc())
         return 0
+
+@st.cache_data
 def load_latest_prospeccao(_db):
     meta = _db["prospeccao_meta"].find_one(sort=[("timestamp", -1)])
     if not meta:
@@ -679,12 +573,10 @@ def load_latest_prospeccao(_db):
         df["_id"] = [str(i) for i in range(len(df))]
     return df, meta
 
-
 def insert_new_record(db, new_data):
     try:
         collection = db["prospeccao_condominios"]
         doc = new_data.copy()
-
         if "ESTÁGIO" in doc:
             doc["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(pd.Series([doc["ESTÁGIO"]])).iloc[0]
         if "VIABILIDADE" in doc:
@@ -709,9 +601,7 @@ def insert_new_record(db, new_data):
         st.error(f"Erro ao inserir: {e}")
         return False
 
-
 # ==================== FUNÇÕES DE ANÁLISE ====================
-
 @st.cache_data
 def analisar_por_construtora(df_prospeccao):
     if df_prospeccao.empty or "CONSTRUTORA" not in df_prospeccao.columns:
@@ -719,19 +609,18 @@ def analisar_por_construtora(df_prospeccao):
     df_copy = df_prospeccao.copy()
     if "APTO" in df_copy.columns:
         df_copy["APTO"] = pd.to_numeric(df_copy["APTO"], errors='coerce')
-
     stats = df_copy.groupby("CONSTRUTORA").agg(
-        total_projetos      =("NOME", "count"),
-        total_apartamentos  =("APTO", "sum"),
-        projetos_entramos   =("FASE_CLASSIFICADA", lambda x: (x == "✅ Entramos").sum()),
-        projetos_negociacao =("FASE_CLASSIFICADA", lambda x: (x == "💼 Em Negociação").sum()),
-        projetos_lancamento =("FASE_CLASSIFICADA", lambda x: (x == "📢 Lançamento").sum()),
+        total_projetos=("NOME", "count"),
+        total_apartamentos=("APTO", "sum"),
+        projetos_entramos=("FASE_CLASSIFICADA", lambda x: (x == "✅ Entramos").sum()),
+        projetos_negociacao=("FASE_CLASSIFICADA", lambda x: (x == "💼 Em Negociação").sum()),
+        projetos_lancamento=("FASE_CLASSIFICADA", lambda x: (x == "📢 Lançamento").sum()),
         projetos_inicio_obra=("FASE_CLASSIFICADA", lambda x: (x == "🚧 Início de Obra").sum()),
-        projetos_andamento  =("FASE_CLASSIFICADA", lambda x: (x == "🔨 Obra em Andamento").sum()),
-        projetos_final_obra =("FASE_CLASSIFICADA", lambda x: (x == "🏁 Final de Obra").sum()),
-        projetos_entregue   =("FASE_CLASSIFICADA", lambda x: (x == "🎉 Entregue").sum()),
+        projetos_andamento=("FASE_CLASSIFICADA", lambda x: (x == "🔨 Obra em Andamento").sum()),
+        projetos_final_obra=("FASE_CLASSIFICADA", lambda x: (x == "🏁 Final de Obra").sum()),
+        projetos_entregue=("FASE_CLASSIFICADA", lambda x: (x == "🎉 Entregue").sum()),
         projetos_pronto_morar=("FASE_CLASSIFICADA", lambda x: (x == "🏡 Pronto Para Morar").sum()),
-        projetos_futuro     =("FASE_CLASSIFICADA", lambda x: (x == "📅 Futuro Lançamento").sum()),
+        projetos_futuro=("FASE_CLASSIFICADA", lambda x: (x == "📅 Futuro Lançamento").sum()),
         projetos_nao_entramos=("FASE_CLASSIFICADA", lambda x: (x == "❌ Não Entramos").sum()),
     ).reset_index()
 
@@ -740,7 +629,6 @@ def analisar_por_construtora(df_prospeccao):
     stats["percentual_oportunidades"]= ((stats["projetos_lancamento"] + stats["projetos_futuro"] + stats["projetos_negociacao"]) / stats["total_projetos"] * 100).round(1)
     return stats.sort_values("total_projetos", ascending=False).reset_index(drop=True)
 
-
 @st.cache_data
 def analisar_por_zona(df_prospeccao):
     if df_prospeccao.empty:
@@ -748,24 +636,22 @@ def analisar_por_zona(df_prospeccao):
     col_zona = "Região" if "Região" in df_prospeccao.columns else "ZONA" if "ZONA" in df_prospeccao.columns else None
     if not col_zona:
         return pd.DataFrame()
-
     df_copy = df_prospeccao.copy()
     if "APTO" in df_copy.columns:
         df_copy["APTO"] = pd.to_numeric(df_copy["APTO"], errors='coerce')
 
     stats = df_copy.groupby(col_zona).agg(
-        total_projetos    =("NOME", "count"),
+        total_projetos=("NOME", "count"),
         total_apartamentos=("APTO", "sum"),
-        projetos_em_obra  =("FASE_CLASSIFICADA", lambda x: x.isin(["🚧 Início de Obra", "🔨 Obra em Andamento", "🏁 Final de Obra"]).sum()),
-        projetos_entregue =("FASE_CLASSIFICADA", lambda x: x.isin(["🎉 Entregue", "🏡 Pronto Para Morar"]).sum()),
-        oportunidades     =("FASE_CLASSIFICADA", lambda x: x.isin(["📢 Lançamento", "📅 Futuro Lançamento", "💼 Em Negociação", "✅ Entramos"]).sum()),
+        projetos_em_obra=("FASE_CLASSIFICADA", lambda x: x.isin(["🚧 Início de Obra", "🔨 Obra em Andamento", "🏁 Final de Obra"]).sum()),
+        projetos_entregue=("FASE_CLASSIFICADA", lambda x: x.isin(["🎉 Entregue", "🏡 Pronto Para Morar"]).sum()),
+        oportunidades=("FASE_CLASSIFICADA", lambda x: x.isin(["📢 Lançamento", "📅 Futuro Lançamento", "💼 Em Negociação", "✅ Entramos"]).sum()),
     ).reset_index()
 
     stats["percentual_em_obra"]       = (stats["projetos_em_obra"] / stats["total_projetos"] * 100).round(1)
     stats["percentual_entregue"]      = (stats["projetos_entregue"] / stats["total_projetos"] * 100).round(1)
     stats["percentual_oportunidades"] = (stats["oportunidades"] / stats["total_projetos"] * 100).round(1)
     return stats.sort_values("total_projetos", ascending=False).reset_index(drop=True)
-
 
 @st.cache_data
 def timeline_entregas(df_prospeccao):
@@ -781,9 +667,7 @@ def timeline_entregas(df_prospeccao):
     df_t["MES_ENTREGA"]    = df_t["PREVISAO_ENTREGA"].dt.to_period('M')
     return df_t.sort_values("PREVISAO_ENTREGA")
 
-
 # ==================== EXPORTAÇÃO EXCEL (SISTEMA) ====================
-
 def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -839,27 +723,20 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
     output.seek(0)
     return output
 
-
 # ==================== INTERFACE STREAMLIT ====================
-
 def render_prospeccao_condominios():
     st.title("🏢 Prospecção de Condomínios")
     st.markdown("Acompanhamento de fases de construção por construtora e oportunidades de mercado")
-
     db = init_mongo()
-
     st.markdown("---")
 
     # ==================== FERRAMENTAS ADMINISTRATIVAS COM SENHA ====================
     with st.expander("🔐 FERRAMENTAS DE MANUTENÇÃO (Administrador)", expanded=False):
-
-        # --- Verificação de senha ---
         if not st.session_state.get("adm_autenticado", False):
             st.warning("🔒 Área restrita. Informe a senha de administrador para continuar.")
             col_pw, col_btn = st.columns([3, 1])
             with col_pw:
-                senha_input = st.text_input("Senha", type="password", key="input_senha_adm",
-                                            placeholder="Digite a senha de acesso")
+                senha_input = st.text_input("Senha", type="password", key="input_senha_adm", placeholder="Digite a senha de acesso")
             with col_btn:
                 st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
                 if st.button("🔓 Entrar", key="btn_entrar_adm", use_container_width=True):
@@ -868,12 +745,10 @@ def render_prospeccao_condominios():
                         st.rerun()
                     else:
                         st.error("❌ Senha incorreta.")
-            # Encerrar aqui — não mostra as ferramentas enquanto não autenticado
             return_early = not st.session_state.get("adm_autenticado", False)
         else:
             return_early = False
 
-        # --- Ferramentas visíveis somente após autenticação ---
         if not return_early:
             col_logout, _ = st.columns([1, 4])
             with col_logout:
@@ -882,7 +757,6 @@ def render_prospeccao_condominios():
                     st.rerun()
 
             st.warning("⚠️ Use estas ferramentas com cuidado! Elas removem dados permanentemente.")
-
             col_limpeza1, col_limpeza2, col_limpeza3 = st.columns(3)
 
             with col_limpeza1:
@@ -901,7 +775,6 @@ def render_prospeccao_condominios():
                 if st.button("🧹 Manter Apenas Último Lote", key="btn_manter_ultimo"):
                     st.session_state['confirmar_manter_ultimo'] = True
 
-            # Confirmação limpeza total
             if st.session_state.get('confirmar_limpeza_total', False):
                 st.error("🔴 CONFIRMAÇÃO NECESSÁRIA!")
                 total_atual, _ = verificar_duplicatas(db)
@@ -920,7 +793,6 @@ def render_prospeccao_condominios():
                         st.session_state['confirmar_limpeza_total'] = False
                         st.rerun()
 
-            # Confirmação manter apenas último lote
             if st.session_state.get('confirmar_manter_ultimo', False):
                 st.info("ℹ️ Isso irá manter apenas o batch mais recente e remover os antigos.")
                 col_c3, col_c4 = st.columns(2)
@@ -944,11 +816,8 @@ def render_prospeccao_condominios():
                         st.session_state['confirmar_manter_ultimo'] = False
                         st.rerun()
 
-            # ==================== BACKUP MANUAL + STATUS ====================
             st.markdown("---")
             st.markdown("#### 📧 Backup Manual por E-mail")
-
-            # Painel de status da flag de backup
             flag_info = obter_flag_backup(db)
             col_st1, col_st2, col_st3 = st.columns(3)
             with col_st1:
@@ -956,71 +825,48 @@ def render_prospeccao_condominios():
                 st.metric("Status", "⏳ Pendente" if pending else "✅ Em dia")
             with col_st2:
                 ult_edicao = flag_info.get("ultima_edicao_em")
-                st.metric("Última edição",
-                          ult_edicao.strftime("%d/%m %H:%M") if ult_edicao else "—")
+                st.metric("Última edição", ult_edicao.strftime("%d/%m %H:%M") if ult_edicao else "—")
             with col_st3:
                 ult_backup = flag_info.get("ultimo_backup_em")
-                st.metric("Último backup enviado",
-                          ult_backup.strftime("%d/%m %H:%M") if ult_backup else "—")
+                st.metric("Último backup enviado", ult_backup.strftime("%d/%m %H:%M") if ult_backup else "—")
 
             if flag_info.get("ultimo_motivo"):
                 st.caption(f"📝 Motivo pendente: *{flag_info['ultimo_motivo']}*")
 
-            st.info(
-                f"ℹ️ O backup diário automático é disparado todos os dias a partir das "
-                f"**{HORARIO_BACKUP_HORA:02d}h{HORARIO_BACKUP_MIN:02d}** quando há edições pendentes."
-            )
+            st.info(f"ℹ️ O backup diário automático é disparado todos os dias a partir das **{HORARIO_BACKUP_HORA:02d}h{HORARIO_BACKUP_MIN:02d}** quando há edições pendentes.")
 
-            # Botão de envio manual imediato
             df_adm = st.session_state.get("df_prospeccao_cached")
             if df_adm is not None and not df_adm.empty:
-                if st.button("📤 Enviar Backup Agora (manual)", key="btn_backup_manual",
-                             use_container_width=True, type="primary"):
+                if st.button("📤 Enviar Backup Agora (manual)", key="btn_backup_manual", use_container_width=True, type="primary"):
                     with st.spinner("📦 Gerando e enviando backup..."):
-                        ok, msg_bkp = executar_backup_manual(
-                            db, df_adm,
-                            motivo="envio manual pelo administrador"
-                        )
+                        ok, msg_bkp = executar_backup_manual(db, df_adm, motivo="envio manual pelo administrador")
                     if ok:
                         st.success(msg_bkp if msg_bkp else "✅ Backup enviado com sucesso!")
                     else:
                         st.error(msg_bkp)
 
-                    # Botões de download como fallback
                     try:
                         excel_trat = gerar_excel_tratado(df_adm)
                         excel_reim = gerar_excel_reimportavel(df_adm)
                         data_str   = datetime.now().strftime('%Y%m%d_%H%M%S')
                         col_dl1, col_dl2 = st.columns(2)
                         with col_dl1:
-                            st.download_button("📊 Download — Tratado",
-                                               data=excel_trat,
-                                               file_name=f"backup_tratado_{data_str}.xlsx",
-                                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                               use_container_width=True)
+                            st.download_button("📊 Download — Tratado", data=excel_trat, file_name=f"backup_tratado_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
                         with col_dl2:
-                            st.download_button("📋 Download — Reimportável",
-                                               data=excel_reim,
-                                               file_name=f"backup_reimportavel_{data_str}.xlsx",
-                                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                               use_container_width=True)
+                            st.download_button("📋 Download — Reimportável", data=excel_reim, file_name=f"backup_reimportavel_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
                     except Exception:
                         pass
             else:
                 st.warning("⚠️ Carregue os dados primeiro para habilitar o backup manual.")
 
     st.markdown("---")
-
     # ==================== GERENCIAMENTO DE DADOS ====================
     st.subheader("📂 Gerenciamento de Dados")
     col1, col2 = st.columns([3, 1])
 
     with col1:
-        uploaded_file = st.file_uploader(
-            "📥 Importar Planilha de Prospecção",
-            type=["xlsx", "xls"],
-            help="Planilha com colunas: Região, BAIRRO, ENDEREÇO, NOME, BLOCO, APTO, CONSTRUTORA, ESTÁGIO, VIABILIDADE, OBS",
-        )
+        uploaded_file = st.file_uploader("📥 Importar Planilha de Prospecção", type=["xlsx", "xls"],
+                                         help="Planilha com colunas: Região, BAIRRO, ENDEREÇO, NOME, BLOCO, APTO, CONSTRUTORA, ESTÁGIO, VIABILIDADE, OBS")
 
     with col2:
         if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
@@ -1059,8 +905,7 @@ def render_prospeccao_condominios():
                 progress_bar.progress(30)
                 if len(df_prospeccao) > 0:
                     primeira_linha = df_prospeccao.iloc[0].astype(str).str.lower()
-                    if all(val in [str(c).lower().strip() for c in df_prospeccao.columns] or val == 'nan'
-                           for val in primeira_linha):
+                    if all(val in [str(c).lower().strip() for c in df_prospeccao.columns] or val == 'nan' for val in primeira_linha):
                         df_prospeccao = df_prospeccao.iloc[1:].reset_index(drop=True)
 
                 progress_bar.progress(50)
@@ -1069,7 +914,6 @@ def render_prospeccao_condominios():
                     progress_bar.empty()
                     st.stop()
 
-                # Normalização de colunas
                 col_mapping = {
                     'região': 'Região', 'zona': 'Região', 'bairro': 'BAIRRO',
                     'endereço': 'ENDEREÇO', 'endereco': 'ENDEREÇO', 'nome': 'NOME',
@@ -1082,11 +926,7 @@ def render_prospeccao_condominios():
                 }
                 df_prospeccao.columns = [str(col).strip() for col in df_prospeccao.columns]
                 cols_lower_map = {c.lower(): c for c in df_prospeccao.columns}
-                rename_map = {
-                    cols_lower_map[k]: v
-                    for k, v in col_mapping.items()
-                    if k in cols_lower_map and cols_lower_map[k] != v
-                }
+                rename_map = {cols_lower_map[k]: v for k, v in col_mapping.items() if k in cols_lower_map and cols_lower_map[k] != v}
                 df_prospeccao = df_prospeccao.rename(columns=rename_map)
 
                 progress_bar.progress(70)
@@ -1099,7 +939,6 @@ def render_prospeccao_condominios():
                     if col in df_prospeccao.columns:
                         df_prospeccao = df_prospeccao.drop(columns=[col])
 
-                # Processamento vetorizado
                 df_prospeccao["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(df_prospeccao["ESTÁGIO"])
                 df_prospeccao["FASE_ORIGINAL"]     = df_prospeccao["ESTÁGIO"]
 
@@ -1109,84 +948,62 @@ def render_prospeccao_condominios():
                 if "Previsão de Entrega" in df_prospeccao.columns:
                     prev2 = extrair_previsao_entrega_vetorizado(df_prospeccao["Previsão de Entrega"])
                     if "PREVISAO_ENTREGA" in df_prospeccao.columns:
-                        df_prospeccao["PREVISAO_ENTREGA"] = df_prospeccao["PREVISAO_ENTREGA"].where(
-                            df_prospeccao["PREVISAO_ENTREGA"].notna(), prev2)
+                        df_prospeccao["PREVISAO_ENTREGA"] = df_prospeccao["PREVISAO_ENTREGA"].where(df_prospeccao["PREVISAO_ENTREGA"].notna(), prev2)
                     else:
                         df_prospeccao["PREVISAO_ENTREGA"] = prev2
 
                 progress_bar.progress(90)
-                df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(
-                    df_prospeccao.get("PREVISAO_ENTREGA"))
+                df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao.get("PREVISAO_ENTREGA"))
                 df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
 
                 for col in ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL']:
                     if col in df_prospeccao.columns:
                         df_prospeccao[col] = df_prospeccao[col].astype(str).fillna('')
-                        df_prospeccao[col] = df_prospeccao[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN'], '')
+                        df_prospeccao[col] = df_prospeccao[col].replace(['nan', 'NaT', 'None', 'nat', 'Na N'], '')
 
                 progress_bar.progress(95)
                 fases_count = df_prospeccao["FASE_CLASSIFICADA"].value_counts().to_dict()
                 metadata = {
-                    "timestamp":    datetime.now().replace(tzinfo=None),
-                    "batch_id":     f"prospeccao_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                    "filename":     uploaded_file.name,
-                    "fases":        fases_count,
-                    "construtoras": df_prospeccao["CONSTRUTORA"].dropna().unique().tolist()
-                                    if "CONSTRUTORA" in df_prospeccao.columns else [],
+                    "timestamp": datetime.now().replace(tzinfo=None),
+                    "batch_id": f"prospeccao_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    "filename": uploaded_file.name,
+                    "fases": fases_count,
+                    "construtoras": df_prospeccao["CONSTRUTORA"].dropna().unique().tolist() if "CONSTRUTORA" in df_prospeccao.columns else [],
                 }
 
                 progress_bar.progress(100)
 
                 if save_prospeccao_data(db, df_prospeccao, metadata):
-                    elapsed = time.time() - start_time
-                    st.success(
-                        f"✅ Dados importados! {len(df_prospeccao)} projetos de "
-                        f"{len(metadata['construtoras'])} construtoras (Tempo: {elapsed:.2f}s)"
-                    )
+                    elapsed  = time.time() - start_time
+                    st.success(f"✅ Dados importados! {len(df_prospeccao)} projetos de {len(metadata['construtoras'])} construtoras (Tempo: {elapsed:.2f}s)")
 
-                    # ==================== BACKUP AUTOMÁTICO ====================
                     with st.spinner("📦 Gerando backups e enviando por e-mail..."):
                         try:
                             excel_tratado      = gerar_excel_tratado(df_prospeccao)
                             excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
-
                             sucesso, msg_email = enviar_email_backup(
-                                arquivo_tratado      = excel_tratado.getvalue(),
-                                arquivo_reimportavel = excel_reimportavel.getvalue(),
-                                total_projetos       = len(df_prospeccao),
-                                nome_arquivo_original= uploaded_file.name,
+                                arquivo_tratado=excel_tratado.getvalue(),
+                                arquivo_reimportavel=excel_reimportavel.getvalue(),
+                                total_projetos=len(df_prospeccao),
+                                nome_arquivo_original=uploaded_file.name,
                             )
                             if sucesso:
                                 st.success(msg_email)
                             else:
                                 st.warning(f"⚠️ Backup gerado, mas falha no envio de e-mail: {msg_email}")
 
-                            # Botões de download manual como fallback
-                            st.markdown("##### 📥 Download manual dos backups (caso precise):")
+                            st.markdown("##### 📥 Download manual dos backups (caso preciso):")
                             col_dl1, col_dl2 = st.columns(2)
                             data_str = datetime.now().strftime('%Y%m%d_%H%M%S')
                             with col_dl1:
                                 excel_tratado.seek(0)
-                                st.download_button(
-                                    "📊 Backup Tratado (sistema)",
-                                    data=excel_tratado,
-                                    file_name=f"backup_tratado_{data_str}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True,
-                                )
+                                st.download_button("📊 Backup Tratado (sistema)", data=excel_tratado, file_name=f"backup_tratado_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
                             with col_dl2:
                                 excel_reimportavel.seek(0)
-                                st.download_button(
-                                    "📋 Backup Reimportável (original)",
-                                    data=excel_reimportavel,
-                                    file_name=f"backup_reimportavel_{data_str}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True,
-                                )
+                                st.download_button("📋 Backup Reimportável (original)", data=excel_reimportavel, file_name=f"backup_reimportavel_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
                         except Exception as e_backup:
                             st.warning(f"⚠️ Erro ao gerar backup: {e_backup}")
 
-                    # Marcar arquivo como importado
                     st.session_state["last_imported_file"] = file_key
                     st.cache_data.clear()
                     st.session_state.pop("df_prospeccao_cached", None)
@@ -1238,24 +1055,16 @@ def render_prospeccao_condominios():
         return
 
     # ==================== VERIFICAÇÃO DE BACKUP DIÁRIO AUTOMÁTICO ====================
-    # Executa silenciosamente a cada carregamento de página.
-    # Só envia email se: (1) há flag pendente E (2) passou do horário configurado
-    # e ainda não foi enviado hoje.
     _backup_enviou, _backup_msg = verificar_e_disparar_backup_diario(db, df_prospeccao)
     if _backup_enviou:
         st.toast(_backup_msg, icon="📧")
-    elif _backup_msg:  # houve erro
+    elif _backup_msg:
         st.toast(f"⚠️ {_backup_msg}", icon="⚠️")
 
     # ==================== ABAS PRINCIPAIS ====================
     tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5 = st.tabs([
-        "✏️ Atualizar Empreendimentos",
-        "➕ Novo Cadastro",
-        "📊 Por Construtora",
-        "🗺️ Por Região",
-        "⏱️ Timeline",
-        "🎯 Priorização",
-        "📋 Lista Completa",
+        "✏️ Atualizar Empreendimentos", "➕ Novo Cadastro", "📊 Por Construtora",
+        "🗺️ Por Região", "⏱️ Timeline", "🎯 Priorização", "📋 Lista Completa",
     ])
 
     # --- ABA: ATUALIZAR EMPREENDIMENTOS ---
@@ -1304,10 +1113,7 @@ def render_prospeccao_condominios():
                 )
             }
 
-            edited_df = st.data_editor(df_edit_display, key="editor_prospeccao_vectorized",
-                                       use_container_width=True, num_rows="fixed",
-                                       column_config=column_config)
-
+            edited_df = st.data_editor(df_edit_display, key="editor_prospeccao_vectorized", use_container_width=True, num_rows="fixed", column_config=column_config)
             st.warning("⚠️ Ao editar 'ESTÁGIO', a 'Fase Classificada' será recalculada ao salvar.")
 
             if st.button("💾 Salvar Alterações", type="primary", key="btn_save_updates"):
@@ -1317,7 +1123,6 @@ def render_prospeccao_condominios():
                     modified = update_records_batch_vectorized(db, df_original_edit, edited_df, cols_existing)
                     if modified > 0:
                         st.success(f"✅ {modified} registros atualizados!")
-                        # ✅ Marca flag de backup pendente no MongoDB
                         marcar_backup_pendente(db, motivo=f"edição de {modified} registro(s) na aba Atualizar Empreendimentos")
                         st.cache_data.clear()
                         st.session_state.pop("df_prospeccao_cached", None)
@@ -1371,19 +1176,16 @@ def render_prospeccao_condominios():
         if not df_construtoras.empty:
             construtoras_disp = df_construtoras["CONSTRUTORA"].dropna().unique().tolist()
             default_c = construtoras_disp[:5] if len(construtoras_disp) >= 5 else construtoras_disp
-            construtoras_sel = st.multiselect("Filtrar Construtoras", options=construtoras_disp,
-                                              default=default_c, key="construtoras_filter")
+            construtoras_sel = st.multiselect("Filtrar Construtoras", options=construtoras_disp, default=default_c, key="construtoras_filter")
             if construtoras_sel:
                 df_cf = df_construtoras[df_construtoras["CONSTRUTORA"].isin(construtoras_sel)]
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
-                    fig1 = px.bar(df_cf.head(10), x="total_projetos", y="CONSTRUTORA", orientation="h",
-                                  title="Top 10 por Projetos", color="total_projetos", color_continuous_scale="Blues")
+                    fig1 = px.bar(df_cf.head(10), x="total_projetos", y="CONSTRUTORA", orientation="h", title="Top 10 por Projetos", color="total_projetos", color_continuous_scale="Blues")
                     fig1.update_layout(height=400, yaxis={"categoryorder": "total ascending"})
                     st.plotly_chart(fig1, use_container_width=True)
                 with col_c2:
-                    fig2 = px.bar(df_cf.head(10), x="total_apartamentos", y="CONSTRUTORA", orientation="h",
-                                  title="Top 10 por APTs", color="total_apartamentos", color_continuous_scale="Greens")
+                    fig2 = px.bar(df_cf.head(10), x="total_apartamentos", y="CONSTRUTORA", orientation="h", title="Top 10 por APTs", color="total_apartamentos", color_continuous_scale="Greens")
                     fig2.update_layout(height=400, yaxis={"categoryorder": "total ascending"})
                     st.plotly_chart(fig2, use_container_width=True)
 
@@ -1395,14 +1197,13 @@ def render_prospeccao_condominios():
                                 "🔨 Andamento", "🏁 Final", "🎉 Entregue", "🏡 P/Morar", "📅 Futuro"]
                 df_fp = df_cf.head(8).copy().set_index("CONSTRUTORA")[fases_cols]
                 df_fp.columns = fases_labels
-                fig3 = px.bar(df_fp, barmode="stack", title="Distribuição de Fases (Top 8)",
-                              color_discrete_sequence=px.colors.qualitative.Set3)
+                fig3 = px.bar(df_fp, barmode="stack", title="Distribuição de Fases (Top 8)", color_discrete_sequence=px.colors.qualitative.Set3)
                 fig3.update_layout(height=500)
                 st.plotly_chart(fig3, use_container_width=True)
 
                 st.markdown("### Tabela Detalhada")
                 df_disp = df_cf[["CONSTRUTORA", "total_projetos", "total_apartamentos",
-                                 "percentual_entregue", "percentual_em_obra", "percentual_oportunidades"]].copy()
+                                  "percentual_entregue", "percentual_em_obra", "percentual_oportunidades"]].copy()
                 df_disp["total_apartamentos"]      = df_disp["total_apartamentos"].apply(lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "0")
                 df_disp["percentual_entregue"]     = df_disp["percentual_entregue"].apply(lambda x: f"{x:.1f}%")
                 df_disp["percentual_em_obra"]      = df_disp["percentual_em_obra"].apply(lambda x: f"{x:.1f}%")
@@ -1420,21 +1221,17 @@ def render_prospeccao_condominios():
             col_zona = df_zonas.columns[0]
             col_m1, col_m2 = st.columns(2)
             with col_m1:
-                fig_z = px.bar(df_zonas, x=col_zona, y="total_projetos", color="total_projetos",
-                               color_continuous_scale="Reds", title="Projetos por Região", text="total_projetos")
+                fig_z = px.bar(df_zonas, x=col_zona, y="total_projetos", color="total_projetos", color_continuous_scale="Reds", title="Projetos por Região", text="total_projetos")
                 fig_z.update_traces(texttemplate='%{text}', textposition='outside')
                 st.plotly_chart(fig_z, use_container_width=True)
             with col_m2:
-                fig_o = px.bar(df_zonas, x=col_zona, y="oportunidades", color="percentual_oportunidades",
-                               color_continuous_scale="Greens", title="Oportunidades por Região", text="oportunidades")
+                fig_o = px.bar(df_zonas, x=col_zona, y="oportunidades", color="percentual_oportunidades", color_continuous_scale="Greens", title="Oportunidades por Região", text="oportunidades")
                 fig_o.update_traces(texttemplate='%{text}', textposition='outside')
                 st.plotly_chart(fig_o, use_container_width=True)
             if "BAIRRO" in df_prospeccao.columns:
                 st.markdown("### Top 15 Bairros")
-                bairros_stats = (df_prospeccao.groupby("BAIRRO").agg(total_projetos=("NOME", "count"))
-                                 .reset_index().sort_values("total_projetos", ascending=False).head(15))
-                fig_b = px.bar(bairros_stats, x="total_projetos", y="BAIRRO", orientation="h",
-                               title="Top 15 Bairros", color="total_projetos", color_continuous_scale="Blues")
+                bairros_stats = (df_prospeccao.groupby("BAIRRO").agg(total_projetos=("NOME", "count")).reset_index().sort_values("total_projetos", ascending=False).head(15))
+                fig_b = px.bar(bairros_stats, x="total_projetos", y="BAIRRO", orientation="h", title="Top 15 Bairros", color="total_projetos", color_continuous_scale="Blues")
                 st.plotly_chart(fig_b, use_container_width=True)
             st.dataframe(df_zonas, use_container_width=True)
         else:
@@ -1447,18 +1244,13 @@ def render_prospeccao_condominios():
         if not df_timeline.empty and "PREVISAO_ENTREGA" in df_timeline.columns:
             anos_disp = sorted(df_timeline["ANO_ENTREGA"].dropna().unique().astype(int))
             if anos_disp:
-                ano_sel = st.selectbox("Filtrar por Ano de Entrega", options=anos_disp,
-                                       index=len(anos_disp) - 1)
+                ano_sel = st.selectbox("Filtrar por Ano de Entrega", options=anos_disp, index=len(anos_disp) - 1)
                 df_tl_filt = df_timeline[df_timeline["ANO_ENTREGA"] == ano_sel]
                 st.markdown(f"### 📅 Entregas Previstas para {int(ano_sel)}")
                 if not df_tl_filt.empty:
-                    ent_mes = (df_tl_filt.groupby("MES_ENTREGA")
-                               .agg(total_projetos=("NOME", "count"),
-                                    total_apartamentos=("APTO", lambda x: pd.to_numeric(x, errors='coerce').sum()))
-                               .reset_index())
+                    ent_mes = (df_tl_filt.groupby("MES_ENTREGA").agg(total_projetos=("NOME", "count"), total_apartamentos=("APTO", lambda x: pd.to_numeric(x, errors='coerce').sum())).reset_index())
                     ent_mes["MES_ENTREGA"] = ent_mes["MES_ENTREGA"].astype(str)
-                    fig_tl = px.bar(ent_mes, x="MES_ENTREGA", y="total_projetos",
-                                    color="total_apartamentos", title=f"Distribuição Mensal ({int(ano_sel)})")
+                    fig_tl = px.bar(ent_mes, x="MES_ENTREGA", y="total_projetos", color="total_apartamentos", title=f"Distribuição Mensal ({int(ano_sel)})")
                     st.plotly_chart(fig_tl, use_container_width=True)
 
                     st.markdown("### 🚨 Próximos 90 dias")
@@ -1488,24 +1280,16 @@ def render_prospeccao_condominios():
         if "PRIORIDADE" in df_prospeccao.columns:
             col_p1, col_p2 = st.columns(2)
             with col_p1:
-                fig_pri = px.pie(
-                    values=df_prospeccao["PRIORIDADE"].value_counts().values,
-                    names=df_prospeccao["PRIORIDADE"].value_counts().index,
-                    title="Distribuição de Prioridades",
-                    color_discrete_map={
-                        "🟢 Ação Imediata": "#2ecc71", "🟠 Alta Prioridade": "#d35400",
-                        "🔴 Urgente": "#e74c3c", "🟠 Alta": "#e67e22", "🟡 Média": "#f1c40f",
-                        "🟡 Acompanhamento": "#9b59b6", "🔵 Planejamento": "#3498db",
-                        "⚪ Arquivado": "#95a5a6", "⚪ Baixa": "#bdc3c7",
-                    })
+                fig_pri = px.pie(values=df_prospeccao["PRIORIDADE"].value_counts().values, names=df_prospeccao["PRIORIDADE"].value_counts().index, title="Distribuição de Prioridades",
+                                 color_discrete_map={"🟢 Ação Imediata": "#2ecc71", "🟠 Alta Prioridade": "#d35400", "🔴 Urgente": "#e74c3c", "🟠 Alta": "#e67e22", "🟡 Média": "#f1c40f",
+                                                     "🟡 Acompanhamento": "#9b59b6", "🔵 Planejamento": "#3498db", "⚪ Arquivado": "#95a5a6", "⚪ Baixa": "#bdc3c7"})
                 st.plotly_chart(fig_pri, use_container_width=True)
             with col_p2:
                 prioridades_disp = df_prospeccao["PRIORIDADE"].unique().tolist()
                 valid_defaults   = [p for p in ["🟢 Ação Imediata", "🟠 Alta Prioridade", "🔴 Urgente"] if p in prioridades_disp]
                 if not valid_defaults and prioridades_disp:
                     valid_defaults = [prioridades_disp[0]]
-                prioridade_sel = st.multiselect("Filtrar por Prioridade", options=prioridades_disp,
-                                                default=valid_defaults, key="prioridade_filter")
+                prioridade_sel = st.multiselect("Filtrar por Prioridade", options=prioridades_disp, default=valid_defaults, key="prioridade_filter")
                 if prioridade_sel:
                     df_prio = df_prospeccao[df_prospeccao["PRIORIDADE"].isin(prioridade_sel)]
                     st.metric("Projetos Prioritários", f"{len(df_prio):,}".replace(",", "."))
@@ -1519,9 +1303,7 @@ def render_prospeccao_condominios():
                     with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
                         df_show.to_excel(writer, index=False, sheet_name='Prioritários')
                     excel_buf.seek(0)
-                    st.download_button("📥 Exportar Lista Prioritária", excel_buf,
-                                       f"prioritarios_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    st.download_button("📥 Exportar Lista Prioritária", excel_buf, f"prioritarios_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else:
             st.warning("⚠️ Dados de prioridade indisponíveis")
 
@@ -1553,8 +1335,7 @@ def render_prospeccao_condominios():
         df_lista  = df_filt[cols_disp].copy()
         if "APTO" in df_lista.columns:
             df_lista["APTO"] = df_lista["APTO"].apply(lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "N/A")
-        df_lista = df_lista.rename(columns={"NOME": "Condomínio", "CONSTRUTORA": "Construtora", "BAIRRO": "Bairro",
-                                            "Região": "Região", "FASE_CLASSIFICADA": "Fase", "APTO": "APTs", "PRIORIDADE": "Prioridade"})
+        df_lista = df_lista.rename(columns={"NOME": "Condomínio", "CONSTRUTORA": "Construtora", "BAIRRO": "Bairro", "Região": "Região", "FASE_CLASSIFICADA": "Fase", "APTO": "APTs", "PRIORIDADE": "Prioridade"})
         st.dataframe(df_lista, use_container_width=True)
 
         st.markdown("---")
@@ -1564,13 +1345,7 @@ def render_prospeccao_condominios():
         excel_buf     = exportar_prospeccao_excel(df_filt, df_constr_res, df_zonas_res)
         col_e1, col_e2 = st.columns([3, 1])
         with col_e1:
-            st.download_button(
-                label="📥 Exportar Lista Completa (Excel com Abas por Fase)",
-                data=excel_buf,
-                file_name=f"prospeccao_completa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+            st.download_button(label="📥 Exportar Lista Completa (Excel com Abas por Fase)", data=excel_buf, file_name=f"prospeccao_completa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         with col_e2:
             st.info("""
             **Estrutura do Excel:**
@@ -1590,7 +1365,6 @@ def render_prospeccao_condominios():
     - A fase **🎉 Entregue** identifica projetos concluídos.
     - A exportação gera um Excel com **abas separadas por fase**.
     """)
-
 
 if __name__ == "__main__":
     render_prospeccao_condominios()
