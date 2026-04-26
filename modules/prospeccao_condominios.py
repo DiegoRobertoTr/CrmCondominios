@@ -1048,14 +1048,13 @@ def render_prospeccao_condominios():
                               "ESTÁGIO", "VIABILIDADE", "APTO", "OBS", "PREVISAO_ENTREGA"]
             cols_existing = [c for c in cols_editaveis if c in df_filtered.columns]
             
-            # Adiciona FASE_CLASSIFICADA para exibição (somente leitura)
+            # 🔑 CORREÇÃO: Incluir FASE_CLASSIFICADA no DataFrame original e de exibição
+            cols_para_exibir = cols_existing.copy()
             if "FASE_CLASSIFICADA" in df_filtered.columns:
-                cols_to_display = cols_existing + ["FASE_CLASSIFICADA"]
-            else:
-                cols_to_display = cols_existing
+                cols_para_exibir.append("FASE_CLASSIFICADA")
 
-            df_original_edit = df_filtered[cols_existing + ["_id"]].copy()
-            df_edit_display = df_filtered[cols_to_display].copy()
+            df_original_edit = df_filtered[cols_para_exibir + ["_id"]].copy()
+            df_edit_display  = df_filtered[cols_para_exibir].copy()
 
             column_config = {
                 "ESTÁGIO": st.column_config.SelectboxColumn(
@@ -1067,7 +1066,7 @@ def render_prospeccao_condominios():
                 ),
                 "FASE_CLASSIFICADA": st.column_config.TextColumn(
                     "Fase Atual (Calculada)",
-                    help="Esta coluna é calculada automaticamente com base no Estágio.",
+                    help="Calculada automaticamente com base no Estágio. Não editável.",
                     disabled=True
                 )
             }
