@@ -1054,7 +1054,11 @@ def render_prospeccao_condominios():
                 cols_para_exibir.append("FASE_CLASSIFICADA")
 
             df_original_edit = df_filtered[cols_para_exibir + ["_id"]].copy()
-            df_edit_display  = df_filtered[cols_para_exibir].copy()
+            df_edit_display = df_filtered[cols_para_exibir].copy()
+
+            # 🔄 Sincroniza o dropdown ESTÁGIO com a fase já classificada para não ficar vazio
+            if "FASE_CLASSIFICADA" in df_edit_display.columns and "ESTÁGIO" in df_edit_display.columns:
+                df_edit_display["ESTÁGIO"] = df_edit_display["FASE_CLASSIFICADA"]
 
             column_config = {
                 "ESTÁGIO": st.column_config.SelectboxColumn(
@@ -1074,7 +1078,7 @@ def render_prospeccao_condominios():
             edited_df = st.data_editor(df_edit_display, key="editor_prospeccao_vectorized", 
                                        use_container_width=True, num_rows="fixed", column_config=column_config)
 
-            st.warning("⚠️ Ao editar 'ESTÁGIO', a 'Fase Classificada' será recalculada automaticamente ao salvar.")
+            st.warning("⚠️ Ao alterar o 'Estágio da Obra', a fase será padronizada e salva automaticamente.")
 
             if st.button("💾 Salvar Alterações", type="primary", key="btn_save_updates"):
                 if isinstance(edited_df, dict):
