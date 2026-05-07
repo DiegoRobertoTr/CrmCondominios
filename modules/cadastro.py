@@ -111,6 +111,18 @@ MOTIVOS_RECUSA_ATIVACAO = [
     "Dados insuficientes para análise"
 ]
 
+# ============================================================================
+# PRODUTOS PARA INTERESSE (mesmo do leads_eventos)
+# ============================================================================
+PRODUTOS_INTERESSE = [
+    "Conecta e Protege (Câmeras + Internet + Bônus)",
+    "Câmeras de Segurança",
+    "Recarga de Carros Elétricos",
+    "Conectividade (Internet)",
+    "Automação Residencial",
+    "Automação Predial"
+]
+
 def copiar_para_area_de_transferencia(texto, botao_key):
     """Exibe um botão que copia o texto para a área de transferência usando JavaScript."""
     components.html(
@@ -137,8 +149,6 @@ def gerar_link_whatsapp_solicitacao(nome, celular, cpf=None):
     mensagem = f"Temos um cadastro novo:\nNome: {nome}\nTelefone: {celular}{cpf_texto}"
     mensagem_codificada = quote(mensagem)
     return f"https://wa.me/{WHATSAPP_LOJA}?text={mensagem_codificada}"
-
-# ✅ REMOVIDO: Função verificar_duplicidade() - NÃO EXISTE MAIS
 
 OPCOES_INTERNET = ["Selecione...", "Giga+", "Internet10", "TR Telecom", "Claro", "Não possui"]
 
@@ -383,6 +393,17 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     index=index_internet,
                     key=f"ja_possui_internet_{key_suffix}"
                 )
+
+            # 🛒 PRODUTOS DE INTERESSE - VISUALIZAR/EDITAR
+            st.markdown("### 🛒 Produtos de Interesse")
+            produtos_interesse_atual = cliente.get("produtos_interesse", [])
+            produtos_interesse = st.multiselect(
+                "Quais produtos despertaram interesse?",
+                PRODUTOS_INTERESSE,
+                default=produtos_interesse_atual,
+                key=f"produtos_interesse_{key_suffix}",
+                help="Selecione um ou mais produtos discutidos com o cliente"
+            )
 
             motivo_recusa, detalhes_recusa = render_motivo_recusa_ativacao(key_suffix, seguiu_ativacao, cliente)
 
@@ -784,6 +805,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "condominio_nome": st.session_state.get(f"condominio_nome_{key_suffix}"),
                             "bloco": bloco if bloco else None,
                             "apartamento": apartamento if apartamento else None,
+                            "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         }
                         if foto_documento:
                             foto_bytes = foto_documento.read()
@@ -826,8 +848,6 @@ def render_cadastro(clientes_collection):
     #if "indices_criados" not in st.session_state:
      #   criar_indices_performance(clientes_collection)
       #  st.session_state["indices_criados"] = True
-    
-    # ✅ REMOVIDO: session_state ultimo_cpf e ultimo_celular (verificação de duplicidade)
     
     if "mostrar_botao_novo" not in st.session_state:
         st.session_state["mostrar_botao_novo"] = False
@@ -912,6 +932,11 @@ def render_cadastro(clientes_collection):
                             st.write(f"**Bloco:** {cliente.get('bloco', 'N/A')}")
                         if cliente.get("apartamento"):
                             st.write(f"**Apartamento:** {cliente.get('apartamento', 'N/A')}")
+                        
+                        # Produtos de Interesse
+                        produtos_interesse_cliente = cliente.get("produtos_interesse", [])
+                        if produtos_interesse_cliente:
+                            st.write(f"**🛒 Produtos de Interesse:** {', '.join(produtos_interesse_cliente)}")
 
                         endereco_atual = (cliente.get("endereco") or "").strip()
                         numero_atual = (cliente.get("numero") or "").strip()
@@ -1035,7 +1060,6 @@ def render_cadastro(clientes_collection):
 
         col_tel1, col_tel2, col_tel3 = st.columns(3)
         with col_tel1:
-            # ✅ REMOVIDO: on_change=verificar_duplicidade
             celular_principal = st.text_input(
                 "Celular Principal*",
                 max_chars=15,
@@ -1074,9 +1098,6 @@ def render_cadastro(clientes_collection):
                 key=f"descricao_contato_2_{st.session_state['form_key']}"
             )
 
-        # ✅ REMOVIDO: Verificação de duplicidade
-        # cliente_existente, campo_duplicado = verificar_duplicidade()
-        
         cpf = st.text_input(
             "CPF*",
             max_chars=14,
@@ -1093,6 +1114,7 @@ def render_cadastro(clientes_collection):
         observacoes_followup_simples = ""
         motivo_recusa = None
         detalhes_recusa = None
+        produtos_interesse = []  # Inicializa lista vazia
 
         if tipo_cadastro == "Cadastro CRM":
             with st.container(border=True):
@@ -1155,6 +1177,16 @@ def render_cadastro(clientes_collection):
                         key=f"ja_possui_internet_novo_{st.session_state['form_key']}"
                     )
 
+                # 🛒 PRODUTOS DE INTERESSE - CADASTRO CRM
+                st.markdown("### 🛒 Produtos de Interesse")
+                produtos_interesse = st.multiselect(
+                    "Quais produtos despertaram interesse?",
+                    PRODUTOS_INTERESSE,
+                    default=get_valor_inicial("produtos_interesse", []),
+                    key=f"produtos_interesse_novo_{st.session_state['form_key']}",
+                    help="Selecione um ou mais produtos discutidos com o cliente"
+                )
+
                 motivo_recusa, detalhes_recusa = render_motivo_recusa_ativacao("novo", seguiu_ativacao)
 
                 codigo_indicador = st.text_input(
@@ -1207,6 +1239,17 @@ def render_cadastro(clientes_collection):
                         retorno_agendado = get_followup_date(followup_opcao_simples)
                     else:
                         retorno_agendado = ""
+                
+                # 🛒 PRODUTOS DE INTERESSE - CADASTRO SIMPLES
+                st.markdown("### 🛒 Produtos de Interesse (opcional)")
+                produtos_interesse = st.multiselect(
+                    "Quais produtos despertaram interesse?",
+                    PRODUTOS_INTERESSE,
+                    default=get_valor_inicial("produtos_interesse", []),
+                    key=f"produtos_interesse_simples_{st.session_state['form_key']}",
+                    help="Selecione um ou mais produtos de interesse"
+                )
+                
                 observacoes_followup_simples = st.text_area(
                     "Adicione observações iniciais para o follow-up",
                     placeholder="Ex: Cliente está em dúvida entre dois planos.",
@@ -1559,6 +1602,7 @@ def render_cadastro(clientes_collection):
             if st.form_submit_button("📝 Gerar Mensagem de Confirmação", type="secondary"):
                 cpf_limpo = limpar_cpf(cpf) or "Não informado"
                 tempo_moradia_texto = f"{tempo_moradia_valor} {tempo_moradia_unidade.lower()}" if tempo_moradia_valor > 0 else "Não informado"
+                produtos_texto = ", ".join(produtos_interesse) if produtos_interesse else "Nenhum"
                 campos = {
                     "Nome completo": nome_completo,
                     "Celular Principal": celular_principal,
@@ -1578,7 +1622,8 @@ def render_cadastro(clientes_collection):
                     "Tempo de Moradia": tempo_moradia_texto,
                     "Plano escolhido": plano_escolhido,
                     "Profissão": profissao,
-                    "Melhor data de vencimento": str(data_vencimento)
+                    "Melhor data de vencimento": str(data_vencimento),
+                    "Produtos de Interesse": produtos_texto
                 }
                 mensagem = "Os dados abaixo estão corretos?\n"
                 for chave, valor in campos.items():
@@ -1619,9 +1664,6 @@ def render_cadastro(clientes_collection):
                             st.info(f"📌 {endereco_completo}\nMotivo: {motivo}")
                             return
 
-                    # ✅ REMOVIDO: Verificação de duplicidade antes de salvar
-                    # cliente_existente, campo_duplicado = verificar_duplicidade()
-                    
                     if seguiu_ativacao == "Sim":
                         retorno_agendado = ""
                     codigo_indicacao = None
@@ -1690,6 +1732,7 @@ def render_cadastro(clientes_collection):
                         "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}"),
                         "bloco": bloco if bloco else None,
                         "apartamento": apartamento if apartamento else None,
+                        "produtos_interesse": produtos_interesse if produtos_interesse else [],
                     }
 
                     try:
