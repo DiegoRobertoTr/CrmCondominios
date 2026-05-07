@@ -1107,7 +1107,7 @@ def render_followup(clientes_collection):
     is_admin = (usuario_atual == "Diego Roberto")
     
     # =============== CARREGAR ESTADO DO MODO DELEGAÇÃO (CONSISTENTE) ===============
-    estado_delegacao = get_modo_delegação_estado(clientes_collection)
+    estado_delegacao = get_modo_delegacao_estado(clientes_collection)
     modo_delegacao_ativo = estado_delegacao["ativo"]
     atendente_delegado = estado_delegacao["atendente"]
     
