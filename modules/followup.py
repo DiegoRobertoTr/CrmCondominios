@@ -99,6 +99,137 @@ def carregar_config_delegacao(clientes_collection):
     }
 
 # ============================================================================
+# ✅ FUNÇÃO AUXILIAR: Renderizar configuração de delegação (REUTILIZÁVEL)
+# ============================================================================
+def render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix=""):
+    """
+    Renderiza o painel de configuração do Modo Delegação.
+    Pode ser chamado de qualquer aba.
+    """
+    if not is_admin:
+        return False, False
+    
+    # Carregar configuração atual do banco
+    config_banco = clientes_collection.database["configuracoes"].find_one({"tipo": "modo_delegacao"})
+    
+    # Inicializar session_state se necessário
+    if f"modo_delegacao_ativo_{key_suffix}" not in st.session_state:
+        st.session_state[f"modo_delegacao_ativo_{key_suffix}"] = config_banco.get("ativo", False) if config_banco else False
+        st.session_state[f"atendente_delegado_{key_suffix}"] = config_banco.get("atendente", "Todos os atendentes") if config_banco else "Todos os atendentes"
+    
+    modo_ativo = st.session_state[f"modo_delegacao_ativo_{key_suffix}"]
+    atendente_atual = st.session_state[f"atendente_delegado_{key_suffix}"]
+    
+    # Buscar lista de atendentes
+    todos_atendentes = clientes_collection.distinct("cadastrado_por", {
+        "seguiu_ativacao": { "$ne": "Sim"},
+        "restritivo": { "$ne": "Sim"},
+        "status_followup": { "$ne": "removido"}
+    })
+    todos_atendentes = [a for a in todos_atendentes if a]
+    opcoes_delegacao = ["Todos os atendentes"] + sorted(todos_atendentes)
+    
+    with st.expander("⚙️ Configurar Modo Delegação ", expanded=not modo_ativo):
+        col_del1, col_del2, col_del3 = st.columns([1, 2, 2])
+        
+        with col_del1:
+            modo_delegacao = st.toggle(
+                "🔄 Ativar ",
+                value=modo_ativo,
+                help="Ative para permitir que um atendente específico (ou todos) vejam todos os clientes do follow-up. ",
+                key=f"toggle_delegacao_{key_suffix}"
+            )
+            st.session_state[f"modo_delegacao_ativo_{key_suffix}"] = modo_delegacao
+            modo_ativo = modo_delegacao
+        
+        with col_del2:
+            if modo_delegacao:
+                atendente_delegado = st.selectbox(
+                    "👤 Quem recebe todos os clientes: ",
+                    options=opcoes_delegacao,
+                    index=opcoes_delegacao.index(atendente_atual) if atendente_atual in opcoes_delegacao else 0,
+                    key=f"select_atendente_delegado_{key_suffix}"
+                )
+                st.session_state[f"atendente_delegado_{key_suffix}"] = atendente_delegado
+                atendente_atual = atendente_delegado
+        
+        with col_del3:
+            persistir = st.checkbox(
+                "💾 Salvar configuração (persistente) ",
+                value=bool(config_banco),
+                help="Se marcado, a configuração permanece ativa mesmo após reiniciar o sistema. ",
+                key=f"check_persistir_{key_suffix}"
+            )
+            
+            if modo_delegacao:
+                if atendente_atual == "Todos os atendentes":
+                    st.info("💡 Todos os atendentes logados terão acesso à carteira completa. ")
+                else:
+                    st.info(f"💡 Apenas **{atendente_atual}** terá acesso à carteira completa. ")
+        
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("💾 Aplicar Configuração ", use_container_width=True, type="primary", key=f"aplicar_config_{key_suffix}"):
+                if persistir:
+                    clientes_collection.database["configuracoes"].update_one(
+                        {"tipo": "modo_delegacao"},
+                        {"$set": {
+                            "tipo": "modo_delegacao",
+                            "ativo": modo_ativo,
+                            "atendente": atendente_atual,
+                            "ativado_por": usuario_atual,
+                            "data_ativacao": datetime.now(timezone.utc).isoformat()
+                        }},
+                        upsert=True
+                    )
+                    st.success("✅ Configuração salva no banco de dados! ")
+                else:
+                    clientes_collection.database["configuracoes"].delete_one({"tipo": "modo_delegacao"})
+                    st.info("ℹ️ Configuração aplicada apenas para esta sessão. ")
+                
+                # Sincronizar com outras abas (atualizar session_state global)
+                st.session_state.modo_delegacao_global_ativo = modo_ativo
+                st.session_state.atendente_delegado_global = atendente_atual
+                st.rerun()
+        
+        with col_btn2:
+            if st.button("🗑️ Limpar Configuração do Banco ", use_container_width=True, type="secondary", key=f"limpar_config_{key_suffix}"):
+                clientes_collection.database["configuracoes"].delete_one({"tipo": "modo_delegacao"})
+                st.session_state[f"modo_delegacao_ativo_{key_suffix}"] = False
+                st.session_state[f"atendente_delegado_{key_suffix}"] = "Todos os atendentes"
+                st.session_state.modo_delegacao_global_ativo = False
+                st.session_state.atendente_delegado_global = "Todos os atendentes"
+                st.success("🗑️ Configuração removida do banco! ")
+                st.rerun()
+    
+    # Retornar o estado atual para uso na aba
+    return modo_ativo, atendente_atual
+
+# ============================================================================
+# ✅ FUNÇÃO AUXILIAR: Obter estado do modo delegação (consistente entre abas)
+# ============================================================================
+def get_modo_delegacao_estado(clientes_collection):
+    """
+    Retorna o estado atual do modo delegação, sincronizado entre abas.
+    Prioriza: 1. Session state global | 2. Banco de dados | 3. Padrão
+    """
+    # Verificar se há um estado global sincronizado
+    if "modo_delegacao_global_ativo" in st.session_state:
+        return {
+            "ativo": st.session_state.modo_delegacao_global_ativo,
+            "atendente": st.session_state.get("atendente_delegado_global", "Todos os atendentes")
+        }
+    
+    # Se não, carregar do banco
+    config = carregar_config_delegacao(clientes_collection)
+    
+    # Armazenar no estado global para consistência
+    st.session_state.modo_delegacao_global_ativo = config["ativo"]
+    st.session_state.atendente_delegado_global = config["atendente"]
+    
+    return config
+
+# ============================================================================
 # ✅ FUNÇÃO AUXILIAR: exibir cliente com touch tracking
 # ============================================================================
 def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
@@ -333,122 +464,18 @@ def formatar_data_cadastro(data_cad):
 # ============================================================================
 # ✅ FUNÇÃO: Painel de Ligações (CORRIGIDA)
 # ============================================================================
-def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual):
+def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual, modo_delegacao_ativo, atendente_delegado):
     """Renderiza o painel de ligações telefônicas com visualização e exportação"""
     st.subheader("📞 Painel de Ligações - Modo Call Center ")
-    # CARREGAR CONFIGURAÇÃO DO BANCO
-    config_banco = clientes_collection.database["configuracoes"].find_one({"tipo": "modo_delegacao"})
 
-    if "modo_delegacao_carregado_do_banco" not in st.session_state:
-        if config_banco and config_banco.get("ativo"):
-            st.session_state.modo_delegacao_ativo_sessao = config_banco.get("ativo", False)
-            st.session_state.atendente_delegado_sessao = config_banco.get("atendente", "Todos os atendentes")
-            st.session_state.persistir_delegacao = True
-        else:
-            st.session_state.modo_delegacao_ativo_sessao = False
-            st.session_state.atendente_delegado_sessao = "Todos os atendentes"
-            st.session_state.persistir_delegacao = False
-        st.session_state.modo_delegacao_carregado_do_banco = True
-
-    modo_delegacao_ativo = st.session_state.get("modo_delegacao_ativo_sessao", False)
-    atendente_delegado = st.session_state.get("atendente_delegado_sessao", "Todos os atendentes")
-
-    if config_banco:
-        banco_ativo = config_banco.get("ativo", False)
-        banco_atendente = config_banco.get("atendente", "Todos os atendentes")
-        
-        if banco_ativo != modo_delegacao_ativo or banco_atendente != atendente_delegado:
-            modo_delegacao_ativo = banco_ativo
-            atendente_delegado = banco_atendente   
-            st.session_state.modo_delegacao_ativo_sessao = modo_delegacao_ativo
-            st.session_state.atendente_delegado_sessao = atendente_delegado
-
-    # === CONTROLE DE DELEGAÇÃO (Só para Admin) ===
-    if is_admin:
-        if modo_delegacao_ativo:
-            if atendente_delegado == "Todos os atendentes":
-                st.error("🚨 **MODO DELEGAÇÃO ATIVO (PERSISTENTE)** - Todos os atendentes estão vendo TODOS os clientes! ")
-            else:
-                st.warning(f"🚨 **MODO DELEGAÇÃO ATIVO (PERSISTENTE)** - Apenas **{atendente_delegado}** está vendo TODOS os clientes! ")
-        
-        todos_atendentes = clientes_collection.distinct("cadastrado_por", {
-            "seguiu_ativacao": { "$ne": "Sim"},
-            "restritivo": { "$ne": "Sim"},
-            "status_followup": { "$ne": "removido"}
-        })
-        todos_atendentes = [a for a in todos_atendentes if a]
-        opcoes_delegacao = ["Todos os atendentes"] + sorted(todos_atendentes)
-        
-        with st.expander("⚙️ Configurar Modo Delegação ", expanded=not modo_delegacao_ativo):
-            col_del1, col_del2, col_del3 = st.columns([1, 2, 2])
-            
-            with col_del1:
-                modo_delegacao = st.toggle(
-                    "🔄 Ativar ",
-                    value=modo_delegacao_ativo,
-                    help="Ative para permitir que um atendente específico (ou todos) vejam todos os clientes do follow-up. ",
-                    key="toggle_delegacao"
-                )
-                st.session_state.modo_delegacao_ativo_sessao = modo_delegacao
-                modo_delegacao_ativo = modo_delegacao
-            
-            with col_del2:
-                if modo_delegacao:
-                    atendente_delegado = st.selectbox(
-                        "👤 Quem recebe todos os clientes: ",
-                        options=opcoes_delegacao,
-                        index=opcoes_delegacao.index(atendente_delegado) if atendente_delegado in opcoes_delegacao else 0,
-                        key="select_atendente_delegado"
-                    )
-                    st.session_state.atendente_delegado_sessao = atendente_delegado
-            
-            with col_del3:
-                persistir = st.checkbox(
-                    "💾 Salvar configuração (persistente) ",
-                    value=st.session_state.get("persistir_delegacao", bool(config_banco)),
-                    help="Se marcado, a configuração permanece ativa mesmo após reiniciar o sistema. ",
-                    key="check_persistir"
-                )
-                st.session_state.persistir_delegacao = persistir
-                
-                if modo_delegacao:
-                    if atendente_delegado == "Todos os atendentes":
-                        st.info("💡 Todos os atendentes logados terão acesso à carteira completa. ")
-                    else:
-                        st.info(f"💡 Apenas **{atendente_delegado}** terá acesso à carteira completa. ")
-            
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                if st.button("💾 Aplicar Configuração ", use_container_width=True, type="primary"):
-                    if persistir:
-                        clientes_collection.database["configuracoes"].update_one(
-                            {"tipo": "modo_delegacao"},
-                            {"$set": {
-                                "tipo": "modo_delegacao",
-                                "ativo": modo_delegacao,
-                                "atendente": atendente_delegado,
-                                "ativado_por": usuario_atual,
-                                "data_ativacao": datetime.now(timezone.utc).isoformat()
-                            }},
-                            upsert=True
-                        )
-                        st.success("✅ Configuração salva no banco de dados! ")
-                    else:
-                        clientes_collection.database["configuracoes"].delete_one({"tipo": "modo_delegacao"})
-                        st.info("ℹ️ Configuração aplicada apenas para esta sessão. ")
-                    st.rerun()
-            
-            with col_btn2:
-                if st.button("🗑️ Limpar Configuração do Banco ", use_container_width=True, type="secondary"):
-                    clientes_collection.database["configuracoes"].delete_one({"tipo": "modo_delegacao"})
-                    st.session_state.modo_delegacao_ativo_sessao = False
-                    st.session_state.atendente_delegado_sessao = "Todos os atendentes"
-                    st.success("🗑️ Configuração removida do banco! ")
-                    st.rerun()
-        
-        st.divider()
-
-    st.info("Visualize os clientes para ligação telefônica. Use os filtros para otimizar suas ligações. ")
+    # Mensagem de status do modo delegação
+    if modo_delegacao_ativo:
+        if atendente_delegado == "Todos os atendentes":
+            st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
+        elif atendente_delegado == usuario_atual:
+            st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! ")
+        elif is_admin:
+            st.warning(f"🚨 **Modo Delegação Ativo** - Apenas **{atendente_delegado}** está vendo TODOS os clientes! ")
 
     # === FILTROS AVANÇADOS ===
     st.markdown("### 🔍 Filtros Avançados de Ligação ")
@@ -1075,40 +1102,48 @@ def render_followup(clientes_collection):
     """Renderiza o módulo de Follow-up com tracking de touches"""
     st.title("📅 Follow-up de Clientes")
     st.info("Aqui você gerencia o acompanhamento dos clientes que ainda não seguiram para ativação e não são restritivos.")
-    tab1, tab2, tab3 = st.tabs(["📋 Lista de Follow-up ", "🗓️ Calendário Mensal ", "📞 Painel de Ligações "])
-
+    
     usuario_atual = st.session_state.get("nome_usuario", " ")
     is_admin = (usuario_atual == "Diego Roberto")
     
-    # =============== CONFIGURAÇÃO DE DELEGAÇÃO (COMPARTILHADA ENTRE TAB1 E TAB3) ===============
-    # Carregar configuração do banco para todas as abas
-    config_delegacao = carregar_config_delegacao(clientes_collection)
+    # =============== CARREGAR ESTADO DO MODO DELEGAÇÃO (CONSISTENTE) ===============
+    estado_delegacao = get_modo_delegação_estado(clientes_collection)
+    modo_delegacao_ativo = estado_delegacao["ativo"]
+    atendente_delegado = estado_delegacao["atendente"]
     
-    # Sincronizar com session_state se ainda não estiver
-    if "modo_delegacao_ativo_sessao" not in st.session_state:
-        st.session_state.modo_delegacao_ativo_sessao = config_delegacao["ativo"]
-        st.session_state.atendente_delegado_sessao = config_delegacao["atendente"]
-        st.session_state.persistir_delegacao = config_delegacao["ativo"]
-        st.session_state.modo_delegacao_carregado_do_banco = True
-    
-    modo_delegacao_ativo = st.session_state.get("modo_delegacao_ativo_sessao", False)
-    atendente_delegado = st.session_state.get("atendente_delegado_sessao", "Todos os atendentes")
-    
-    # Verifica se o admin pode ver todos os clientes
-    usuario_pode_ver_todos_tab1 = is_admin or (
+    # Calcular se o usuário atual pode ver todos os clientes
+    usuario_pode_ver_todos = is_admin or (
         modo_delegacao_ativo and (
             atendente_delegado == "Todos os atendentes" or 
             atendente_delegado == usuario_atual
         )
     )
-
+    
+    # Criar as abas
+    tab1, tab2, tab3 = st.tabs(["📋 Lista de Follow-up ", "🗓️ Calendário Mensal ", "📞 Painel de Ligações "])
+    
     # =============== TAB 1: LISTA TRADICIONAL ===============
     with tab1:
-        # ✅ ADICIONADO: Mostrar status do Modo Delegação na Tab1
+        # ✅ CONFIGURAÇÃO DE DELEGAÇÃO NA TAB 1 (Só para admin)
+        if is_admin:
+            modo_ativo, atendente_atual = render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix="tab1")
+            # Atualizar estado global se houver mudança
+            if modo_ativo != modo_delegacao_ativo or atendente_atual != atendente_delegado:
+                modo_delegacao_ativo = modo_ativo
+                atendente_delegado = atendente_atual
+                usuario_pode_ver_todos = is_admin or (
+                    modo_delegacao_ativo and (
+                        atendente_delegado == "Todos os atendentes" or 
+                        atendente_delegado == usuario_atual
+                    )
+                )
+            st.divider()
+        
+        # Mostrar status do modo delegação
         if modo_delegacao_ativo:
             if atendente_delegado == "Todos os atendentes":
                 st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
-            elif usuario_pode_ver_todos_tab1:
+            elif usuario_pode_ver_todos:
                 st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! (Delegado para: {atendente_delegado}) ")
         
         col_busca, col_tipo = st.columns([3, 1])
@@ -1186,7 +1221,7 @@ def render_followup(clientes_collection):
                     query["celular"] = { "$regex": celular_limpo, "$options": "i"}
 
         # ✅ ALTERADO: Filtro por usuário AGORA considera o MODO DELEGAÇÃO
-        if not usuario_pode_ver_todos_tab1:
+        if not usuario_pode_ver_todos:
             query["cadastrado_por"] = usuario_atual
 
         # Aplica filtros de data
@@ -1229,6 +1264,28 @@ def render_followup(clientes_collection):
 
     # =============== TAB 2: CALENDÁRIO MENSAL ===============
     with tab2:
+        # ✅ CONFIGURAÇÃO DE DELEGAÇÃO NA TAB 2 (Só para admin)
+        if is_admin:
+            modo_ativo, atendente_atual = render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix="tab2")
+            # Atualizar estado global se houver mudança
+            if modo_ativo != modo_delegacao_ativo or atendente_atual != atendente_delegado:
+                modo_delegacao_ativo = modo_ativo
+                atendente_delegado = atendente_atual
+                usuario_pode_ver_todos = is_admin or (
+                    modo_delegacao_ativo and (
+                        atendente_delegado == "Todos os atendentes" or 
+                        atendente_delegado == usuario_atual
+                    )
+                )
+            st.divider()
+        
+        # Mostrar status do modo delegação
+        if modo_delegacao_ativo:
+            if atendente_delegado == "Todos os atendentes":
+                st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
+            elif usuario_pode_ver_todos:
+                st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! (Delegado para: {atendente_delegado}) ")
+        
         st.subheader("🗓️ Calendário Mensal de Follow-up ")
 
         query_agenda = {
@@ -1239,7 +1296,7 @@ def render_followup(clientes_collection):
         }
 
         # ✅ ALTERADO: Calendário também respeita o modo delegação
-        if not usuario_pode_ver_todos_tab1:
+        if not usuario_pode_ver_todos:
             query_agenda["cadastrado_por"] = usuario_atual
 
         clientes_agenda = list(clientes_collection.find(query_agenda))
@@ -1403,4 +1460,18 @@ def render_followup(clientes_collection):
 
     # =============== TAB 3: PAINEL DE LIGAÇÕES ===============
     with tab3:
-        render_painel_ligacoes(clientes_collection, is_admin, usuario_atual)
+        # ✅ CONFIGURAÇÃO DE DELEGAÇÃO NA TAB 3 (Só para admin)
+        if is_admin:
+            modo_ativo, atendente_atual = render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix="tab3")
+            # Atualizar estado global se houver mudança
+            if modo_ativo != modo_delegacao_ativo or atendente_atual != atendente_delegado:
+                modo_delegacao_ativo = modo_ativo
+                atendente_delegado = atendente_atual
+                usuario_pode_ver_todos = is_admin or (
+                    modo_delegacao_ativo and (
+                        atendente_delegado == "Todos os atendentes" or 
+                        atendente_delegado == usuario_atual
+                    )
+                )
+        
+        render_painel_ligacoes(clientes_collection, is_admin, usuario_atual, modo_delegacao_ativo, atendente_delegado)
