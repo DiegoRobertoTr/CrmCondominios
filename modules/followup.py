@@ -82,6 +82,23 @@ def get_condominios_com_contagem(clientes_collection, forcar_atualizacao=False):
     return st.session_state.get(cache_key, {"Todos": "Todos"})
 
 # ============================================================================
+# ✅ FUNÇÃO AUXILIAR: Carregar configuração de delegação do banco
+# ============================================================================
+def carregar_config_delegacao(clientes_collection):
+    """Carrega a configuração de delegação do banco de dados"""
+    config_banco = clientes_collection.database["configuracoes"].find_one({"tipo": "modo_delegacao"})
+    
+    if config_banco and config_banco.get("ativo"):
+        return {
+            "ativo": config_banco.get("ativo", False),
+            "atendente": config_banco.get("atendente", "Todos os atendentes")
+        }
+    return {
+        "ativo": False,
+        "atendente": "Todos os atendentes"
+    }
+
+# ============================================================================
 # ✅ FUNÇÃO AUXILIAR: exibir cliente com touch tracking
 # ============================================================================
 def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
@@ -1062,9 +1079,38 @@ def render_followup(clientes_collection):
 
     usuario_atual = st.session_state.get("nome_usuario", " ")
     is_admin = (usuario_atual == "Diego Roberto")
+    
+    # =============== CONFIGURAÇÃO DE DELEGAÇÃO (COMPARTILHADA ENTRE TAB1 E TAB3) ===============
+    # Carregar configuração do banco para todas as abas
+    config_delegacao = carregar_config_delegacao(clientes_collection)
+    
+    # Sincronizar com session_state se ainda não estiver
+    if "modo_delegacao_ativo_sessao" not in st.session_state:
+        st.session_state.modo_delegacao_ativo_sessao = config_delegacao["ativo"]
+        st.session_state.atendente_delegado_sessao = config_delegacao["atendente"]
+        st.session_state.persistir_delegacao = config_delegacao["ativo"]
+        st.session_state.modo_delegacao_carregado_do_banco = True
+    
+    modo_delegacao_ativo = st.session_state.get("modo_delegacao_ativo_sessao", False)
+    atendente_delegado = st.session_state.get("atendente_delegado_sessao", "Todos os atendentes")
+    
+    # Verifica se o admin pode ver todos os clientes
+    usuario_pode_ver_todos_tab1 = is_admin or (
+        modo_delegacao_ativo and (
+            atendente_delegado == "Todos os atendentes" or 
+            atendente_delegado == usuario_atual
+        )
+    )
 
     # =============== TAB 1: LISTA TRADICIONAL ===============
     with tab1:
+        # ✅ ADICIONADO: Mostrar status do Modo Delegação na Tab1
+        if modo_delegacao_ativo:
+            if atendente_delegado == "Todos os atendentes":
+                st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
+            elif usuario_pode_ver_todos_tab1:
+                st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! (Delegado para: {atendente_delegado}) ")
+        
         col_busca, col_tipo = st.columns([3, 1])
         with col_tipo:
             tipo_busca = st.selectbox(
@@ -1139,8 +1185,8 @@ def render_followup(clientes_collection):
                 if celular_limpo:
                     query["celular"] = { "$regex": celular_limpo, "$options": "i"}
 
-        # Filtro por usuário
-        if not is_admin and usuario_atual:
+        # ✅ ALTERADO: Filtro por usuário AGORA considera o MODO DELEGAÇÃO
+        if not usuario_pode_ver_todos_tab1:
             query["cadastrado_por"] = usuario_atual
 
         # Aplica filtros de data
@@ -1192,7 +1238,8 @@ def render_followup(clientes_collection):
             "retorno_agendado": { "$ne": "", "$exists": True}
         }
 
-        if not is_admin and usuario_atual:
+        # ✅ ALTERADO: Calendário também respeita o modo delegação
+        if not usuario_pode_ver_todos_tab1:
             query_agenda["cadastrado_por"] = usuario_atual
 
         clientes_agenda = list(clientes_collection.find(query_agenda))
