@@ -214,4 +214,24 @@ def render_admin_marketing():
                     st.success("✅ Marketing do condomínio atualizado com sucesso!")
                     st.balloons()
                 except Exception as e:
-                   
+                    st.error(f"❌ Erro ao salvar: {e}")
+    
+    with tab_listar:
+        st.subheader("📋 Condomínios com Marketing")
+        
+        # Buscar condomínios que têm marketing
+        com_marketing = list(condominios_coll.find(
+            {"marketing": {"$exists": True}}
+        ).sort("nome", 1))
+        
+        if com_marketing:
+            for c in com_marketing:
+                mkt = c.get("marketing", {})
+                with st.expander(f"🏢 {c['nome']} - {c.get('bairro', 'N/A')}", expanded=False):
+                    st.write(f"**Folder:** {'✅ Cadastrado' if mkt.get('folder_url') else '❌ Não cadastrado'}")
+                    st.write(f"**Promoções:** {len(mkt.get('promocoes', []))}")
+                    st.write(f"**Planos Especiais:** {len(mkt.get('planos_especiais', []))}")
+                    if mkt.get("ultima_atualizacao"):
+                        st.caption(f"Última atualização: {mkt['ultima_atualizacao'].strftime('%d/%m/%Y %H:%M')}")
+        else:
+            st.info("📭 Nenhum condomínio com marketing cadastrado ainda.")
