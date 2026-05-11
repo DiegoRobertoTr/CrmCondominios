@@ -1,5 +1,7 @@
+# app.py - Condomínios Tracecom
+# ✅ Atualizado com módulo de Pendências
 import streamlit as st
-from modules import auth, cadastro, followup, agendamentos, leads_eventos
+from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias
 from pymongo import MongoClient
 import urllib.parse
 from datetime import datetime
@@ -81,7 +83,7 @@ else:
     """, unsafe_allow_html=True)
 
 # ============================================================================
-#  Configuração da página
+# ⭐ Configuração da página
 # ============================================================================
 st.set_page_config(
     page_title="Condominios Tracecom",
@@ -161,6 +163,10 @@ if "clientes_collection" not in st.session_state:
     st.session_state["clientes_collection"] = auth.get_db_connection()
 clientes_collection = st.session_state["clientes_collection"]
 
+# --- Conexão com usuários (para o módulo de pendências) ---
+if "usuarios_collection" not in st.session_state:
+    st.session_state["usuarios_collection"] = get_usuarios_collection()
+
 # Garante índices
 try:
     clientes_collection.create_index("celular", unique=True)
@@ -213,7 +219,7 @@ if not st.session_state["logado"]:
                 auth.remove_local_storage_token()
                 st.warning("⚠️ Sessão expirada. Faça login novamente.")
         except Exception as e:
-            st.warning("️ Erro ao validar sessão. Faça login novamente.")
+            st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
 
 # ============================================================================
@@ -229,6 +235,23 @@ if not st.session_state["logado"]:
 # ============================================================================
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
 
+# --- 🎯 Badge de pendências no menu lateral ---
+perfil = st.session_state["perfil"]
+try:
+    from modules.permissoes import get_perfis_pendencias
+    perfis_pendencias = get_perfis_pendencias()
+    
+    if perfil in perfis_pendencias:
+        pendencias_coll = clientes_collection.database.pendencias
+        count_pendencias = pendencias_coll.count_documents({
+            "responsavel": perfil,
+            "status": {"$in": ["pendente", "em_andamento"]}
+        })
+        if count_pendencias > 0:
+            st.sidebar.warning(f"📋 Você tem {count_pendencias} pendência(s) ativa(s)!")
+except Exception:
+    pass  # Coleção ainda não existe ou erro de conexão
+
 if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     chaves_para_deletar = [k for k in st.session_state.keys() if not k.startswith("__")]
     for k in chaves_para_deletar:
@@ -238,14 +261,11 @@ if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.header(" Módulos")
+st.sidebar.header("📋 Módulos")
 
 # ============================================================================
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
 # ============================================================================
-perfil = st.session_state["perfil"]
-
-# ✅ Importa permissões centralizadas
 try:
     from modules.permissoes import get_modulos_permitidos
     opcoes_modulos = get_modulos_permitidos(perfil)
@@ -257,29 +277,32 @@ except ImportError:
         "pap": ["Cadastro Porta a Porta"],
         "revenda": ["Painel Revenda"],
         "admin": [
-            "Cadastro", "Follow-up", "Agendamentos",
+            "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
             "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "recepcao": [
-            "Cadastro", "Follow-up", "Agendamentos",
+            "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "atendente_n1": [
-            "Cadastro", "Follow-up", "Agendamentos",
+            "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "supervisao_n1": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"
+            "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+            "Roteiro de Vendas", "Leads & Eventos"
         ],
         "supervisao_n2": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+            "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+            "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"
         ],
         "supervisao_n3": [
-            "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+            "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+            "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
             "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"
         ],
@@ -310,7 +333,7 @@ if st.sidebar.button("🚪 Logout"):
     st.rerun()
 
 # ============================================================================
-# ---  Cabeçalho ---
+# --- 🏢 Cabeçalho ---
 # ============================================================================
 col1, col2 = st.columns([1, 5])
 with col1:
@@ -319,7 +342,7 @@ with col2:
     st.title("🏢 Condomínios Tracecom")
 
 # ============================================================================
-# ---  Carregamento de módulos ---
+# --- 📦 Carregamento de módulos ---
 # ============================================================================
 try:
     if modulo == "Cadastro":
@@ -330,6 +353,10 @@ try:
         
     elif modulo == "Agendamentos":
         agendamentos.render_agendamentos(clientes_collection)
+        
+    # ✅ NOVO: Módulo de Pendências
+    elif modulo == "Pendências":
+        pendencias.render_pendencias(clientes_collection)
         
     elif modulo == "Relatórios" and perfil in ["admin", "supervisao_n3"]:
         from modules import relatorios
@@ -392,9 +419,9 @@ try:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
         
-    # ✅ NOVO MÓDULO: LEADS & EVENTOS (COM ABAS INTEGRADAS)
+    # ✅ LEADS & EVENTOS (COM ABAS INTEGRADAS)
     elif modulo == "Leads & Eventos":
-        st.title("Gestão de Leads & Eventos")
+        st.title("📋 Gestão de Leads & Eventos")
         
         # Cria as abas aqui no app principal para garantir que ambas apareçam
         tab_cadastro, tab_agenda = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
@@ -418,5 +445,5 @@ except ImportError as e:
     st.error(f"⚠️ Módulo não encontrado ou importação falhou: `{e}`")
     st.info("Verifique se o arquivo está na pasta correta (`modules/`) e se o nome da função `render` está correto.")
 except Exception as e:
-    st.error("️ Erro ao carregar o módulo.")
+    st.error("⚠️ Erro ao carregar o módulo.")
     st.exception(e)
