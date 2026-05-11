@@ -1759,8 +1759,8 @@ def render_cadastro(clientes_collection):
                                 cpf_limpo
                             )
                             st.markdown(
-                                f'<a href="{link_whatsapp}" target="_blank"'
-                                f'style="display: inline-block; padding: 0.5em 1em; background-color: #25D366;'
+                                f'<a href="{link_whatsapp}" target="_blank" '
+                                f'style="display: inline-block; padding: 0.5em 1em; background-color: #25D366; '
                                 f'color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">'
                                 f'📲 Solicitar Análise</a>',
                                 unsafe_allow_html=True
