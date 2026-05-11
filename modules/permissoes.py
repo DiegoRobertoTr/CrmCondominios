@@ -1,38 +1,54 @@
+# modules/permissoes.py
 """
 Configuração central de permissões por perfil
+✅ Inclui módulo de Pendências para perfis internos
 """
+
 PERMISSOES_POR_PERFIL = {
     # --- Equipe Interna ---
     "admin": [
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+        "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+        "Roteiro de Vendas",
         "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
         "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios",
-        "Endereços Bloqueados", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
-        "Leads & Eventos"  # ✅ NOVO
+        "HotSpots WiFi", "Satisfação", "Monitoramento de E-mails",
+        "Teste de Integração", "Endereços Bloqueados",
+        "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
+        "Leads & Eventos"
     ],
     "recepcao": [
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-        "Endereços Bloqueados", "Leads & Eventos"  # ✅ NOVO
+        "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+        "Roteiro de Vendas",
+        "HotSpots WiFi", "Satisfação", "Endereços Bloqueados",
+        "Leads & Eventos"
     ],
     "atendente_n1": [
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-        "Endereços Bloqueados", "Leads & Eventos"  # ✅ NOVO
+        "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+        "Roteiro de Vendas",
+        "HotSpots WiFi", "Satisfação", "Endereços Bloqueados",
+        "Leads & Eventos"
     ],
     "supervisao_n1": [
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas", "Leads & Eventos"  # ✅ NOVO
+        "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+        "Roteiro de Vendas",
+        "Leads & Eventos"
     ],
     "supervisao_n2": [
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
-        "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"  # ✅ NOVO
+        "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+        "Roteiro de Vendas",
+        "Admin Embaixadores", "Admin PaP", "Admin Revendas",
+        "Leads & Eventos"
     ],
     "supervisao_n3": [
-        "Cadastro", "Follow-up", "Agendamentos", "Roteiro de Vendas",
+        "Cadastro", "Follow-up", "Agendamentos", "Pendências",
+        "Roteiro de Vendas",
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-        "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"  # ✅ NOVO
+        "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios",
+        "Leads & Eventos"
     ],
     # --- NOVO PERFIL: DIRETORIA ---
     "diretoria": [
-        "Relatórios Condomínios",
+        "Relatórios Condomínios", 
         "Prospecção Condomínios"
     ],
     # --- Parceiros Externos ---
@@ -56,4 +72,14 @@ def get_perfis_internos():
         "admin", "recepcao", "atendente_n1",
         "supervisao_n1", "supervisao_n2", "supervisao_n3",
         "diretoria"
+    ]
+
+def get_perfis_pendencias():
+    """
+    ✅ Retorna perfis que podem criar/receber pendências
+    (Todos os internos, exceto diretoria)
+    """
+    return [
+        "admin", "recepcao", "atendente_n1",
+        "supervisao_n1", "supervisao_n2", "supervisao_n3"
     ]
