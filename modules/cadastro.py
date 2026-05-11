@@ -97,7 +97,7 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
 # ============================================================================
 # CONFIGURAÇÕES GERAIS
 # ============================================================================
-WHATSAPP_LOJA = "5524992035540"
+WHATSAPP_LOJA = "552135000188"
 
 MOTIVOS_RECUSA_ATIVACAO = [
     "Selecione...",
