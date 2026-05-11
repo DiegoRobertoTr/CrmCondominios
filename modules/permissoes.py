@@ -1,7 +1,7 @@
 # modules/permissoes.py
 """
 Configuração central de permissões por perfil
-✅ Inclui módulo de Pendências para perfis internos
+✅ Inclui módulo de Pendências e Marketing Condomínios para perfis internos
 """
 
 PERMISSOES_POR_PERFIL = {
@@ -14,6 +14,7 @@ PERMISSOES_POR_PERFIL = {
         "HotSpots WiFi", "Satisfação", "Monitoramento de E-mails",
         "Teste de Integração", "Endereços Bloqueados",
         "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
+        "Marketing Condomínios",
         "Leads & Eventos"
     ],
     "recepcao": [
@@ -31,12 +32,14 @@ PERMISSOES_POR_PERFIL = {
     "supervisao_n1": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
+        "Marketing Condomínios",
         "Leads & Eventos"
     ],
     "supervisao_n2": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
+        "Marketing Condomínios",
         "Leads & Eventos"
     ],
     "supervisao_n3": [
@@ -44,9 +47,10 @@ PERMISSOES_POR_PERFIL = {
         "Roteiro de Vendas",
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
         "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios",
+        "Marketing Condomínios",
         "Leads & Eventos"
     ],
-    # --- NOVO PERFIL: DIRETORIA ---
+    # --- DIRETORIA ---
     "diretoria": [
         "Relatórios Condomínios", 
         "Prospecção Condomínios"
@@ -82,4 +86,12 @@ def get_perfis_pendencias():
     return [
         "admin", "recepcao", "atendente_n1",
         "supervisao_n1", "supervisao_n2", "supervisao_n3"
+    ]
+
+def get_perfis_marketing():
+    """
+    ✅ Retorna perfis que podem editar marketing dos condomínios
+    """
+    return [
+        "admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"
     ]
