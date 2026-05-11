@@ -1,5 +1,5 @@
 # app.py - Condomínios Tracecom
-# ✅ Atualizado com módulo de Pendências
+# ✅ Atualizado com módulo de Pendências e Marketing Condomínios
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias
 from pymongo import MongoClient
@@ -281,7 +281,8 @@ except ImportError:
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
             "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
+            "Roteiro de Vendas", "Endereços Bloqueados",
+            "Marketing Condomínios", "Leads & Eventos"
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
@@ -293,18 +294,21 @@ except ImportError:
         ],
         "supervisao_n1": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
-            "Roteiro de Vendas", "Leads & Eventos"
+            "Roteiro de Vendas",
+            "Marketing Condomínios", "Leads & Eventos"
         ],
         "supervisao_n2": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas",
-            "Admin Embaixadores", "Admin PaP", "Admin Revendas", "Leads & Eventos"
+            "Admin Embaixadores", "Admin PaP", "Admin Revendas",
+            "Marketing Condomínios", "Leads & Eventos"
         ],
         "supervisao_n3": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios", "Leads & Eventos"
+            "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios",
+            "Marketing Condomínios", "Leads & Eventos"
         ],
         "diretoria": [
             "Relatórios Condomínios", "Prospecção Condomínios"
@@ -312,9 +316,9 @@ except ImportError:
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Adiciona módulos extras apenas para admin (caso precise de ajustes finos no fallback)
+# ✅ Adiciona módulos extras para admin (caso precise de ajustes finos no fallback)
 if perfil == "admin":
-    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios"]
+    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", "Marketing Condomínios"]
     for mod in extras_admin:
         if mod not in opcoes_modulos:
             opcoes_modulos.append(mod)
@@ -354,9 +358,14 @@ try:
     elif modulo == "Agendamentos":
         agendamentos.render_agendamentos(clientes_collection)
         
-    # ✅ NOVO: Módulo de Pendências
+    # ✅ Módulo de Pendências
     elif modulo == "Pendências":
         pendencias.render_pendencias(clientes_collection)
+        
+    # ✅ Módulo de Marketing Condomínios
+    elif modulo == "Marketing Condomínios" and perfil in ["admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
+        from modules import admin_condominios_marketing
+        admin_condominios_marketing.render_admin_marketing()
         
     elif modulo == "Relatórios" and perfil in ["admin", "supervisao_n3"]:
         from modules import relatorios
@@ -423,15 +432,12 @@ try:
     elif modulo == "Leads & Eventos":
         st.title("📋 Gestão de Leads & Eventos")
         
-        # Cria as abas aqui no app principal para garantir que ambas apareçam
         tab_cadastro, tab_agenda = st.tabs(["📝 Cadastro de Leads", "📅 Agenda & Lista"])
         
         with tab_cadastro:
-            # Chama a função de cadastro
             leads_eventos.render_registro_lead()
             
         with tab_agenda:
-            # Chama a função da agenda/lista
             leads_eventos.render_agenda_leads()
             
     elif modulo == "Endereços Bloqueados" and perfil in ["admin", "recepcao", "atendente_n1"]:
