@@ -1,6 +1,7 @@
 # modules/roteiro_vendas.py
 import streamlit as st
 from datetime import datetime
+from modules.condominios import get_condominios_collection
 
 def render_roteiro_vendas(clientes_collection):
     """Módulo de roteiro de vendas com checklist interativo e textos prontos"""
@@ -8,7 +9,7 @@ def render_roteiro_vendas(clientes_collection):
     st.title("🧭 Roteiro de Vendas - WhatsApp")
     st.caption("Guia passo a passo para atendimento eficaz")
 
-    # Criar as 6 abas (adicionada Anti-Fraude)
+    # Criar as 6 abas
     tab_checklist, tab_planos, tab_confirmacao, tab_antifraude, tab_orientacoes, tab_recusa = st.tabs([
         "✅ Checklist de Abordagem", 
         "💰 Planos", 
@@ -138,7 +139,7 @@ def render_roteiro_vendas(clientes_collection):
             sum(st.session_state.checklist_objecao.values()) +
             sum(st.session_state.checklist_regra_ouro.values())
         )
-        total_items = 10  # 3 + 2 + 1 + 1 + 1 + 1 + 1
+        total_items = 10
         progresso = total_checks / total_items
         
         st.progress(progresso, text=f"Progresso: {int(progresso * 100)}%")
@@ -147,95 +148,220 @@ def render_roteiro_vendas(clientes_collection):
             st.success("🎉 Checklist completo! Venda bem conduzida!")
             st.balloons()
 
-        # Estrutura para memorizar
         st.divider()
         st.info("""
         **📌 ESTRUTURA PARA MEMORIZAR:**  
         VALIDA → DIAGNOSTICA → RECOMENDA → DIRECIONA
         """)
 
-    # ==================== ABA 2: PLANOS ====================
+    # ==================== ABA 2: PLANOS (NOVA VERSÃO) ====================
     with tab_planos:
-        st.header("💰 Planos Tracecom")
-        st.caption("Clique no botão ao lado para copiar")
+        st.header("💰 Planos e Promoções")
         
-        # Planos principais (destaque) - LAYOUT EXPANDIDO
-        st.subheader("🎯 Planos Principais")
+        # ✅ NOVO: Busca de condomínio
+        st.subheader("🏢 Buscar Condomínio")
         
-        planos_principais = [
-            ("600 Mbps Residencial PS + Trace Canais — R$109,99", "🎯 600 Mbps Residencial PS + Trace Canais — R$109,99"),
-            ("600 Mbps Residencial PS + Trace Canais + GloboPlay — R$119,99", "🎯 600 Mbps Residencial PS + Trace Canais + GloboPlay — R$119,99"),
-            ("800 Mbps Residencial PS + Trace Canais — R$129,99", "🎯 800 Mbps Residencial PS + Trace Canais — R$129,99"),
-        ]
+        condominios_coll = get_condominios_collection()
+        todos_condominios = list(condominios_coll.find({}).sort("nome", 1))
         
-        # Botão para copiar os 3 planos principais de uma vez
-        texto_tres_planos = "\n\n".join([texto for _, texto in planos_principais])
+        if todos_condominios:
+            # Campo de busca
+            busca = st.text_input(
+                "🔍 Digite o nome do condomínio:",
+                placeholder="Ex: Residencial Parque das Flores",
+                key="busca_condominio_planos"
+            )
+            
+            if busca:
+                # Filtrar condomínios
+                condominios_filtrados = [
+                    c for c in todos_condominios 
+                    if busca.lower() in c.get("nome", "").lower()
+                ]
+                
+                if condominios_filtrados:
+                    # Selecionar condomínio
+                    opcoes = {f"🏢 {c['nome']} - {c.get('bairro', 'N/A')}": c for c in condominios_filtrados}
+                    selecionado_label = st.selectbox(
+                        "Selecione o condomínio:",
+                        options=list(opcoes.keys()),
+                        key="select_condominio_planos"
+                    )
+                    
+                    if selecionado_label:
+                        condominio = opcoes[selecionado_label]
+                        marketing = condominio.get("marketing", {})
+                        
+                        st.divider()
+                        
+                        # ========== PAINEL DO CONDOMÍNIO ==========
+                        st.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            border-radius: 15px;
+                            padding: 20px;
+                            color: white;
+                            margin: 10px 0;
+                        ">
+                            <h2 style="color: white; margin: 0;">🏢 {condominio['nome']}</h2>
+                            <p style="margin: 5px 0; opacity: 0.9;">
+                                📍 {condominio.get('endereco', '')}, {condominio.get('numero', '')} - {condominio.get('bairro', '')}
+                            </p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Folder do condomínio
+                        folder_url = marketing.get("folder_url", "")
+                        
+                        if folder_url:
+                            st.subheader("📋 Folder do Condomínio")
+                            
+                            # Tentar carregar imagem
+                            try:
+                                # Se for URL externa
+                                if folder_url.startswith("http"):
+                                    st.image(folder_url, use_container_width=True)
+                                    st.download_button(
+                                        "📥 Baixar Folder",
+                                        data=folder_url,
+                                        file_name=f"folder_{condominio['nome'].lower().replace(' ', '_')}.jpg",
+                                        mime="image/jpeg",
+                                        key=f"download_folder_{condominio['_id']}"
+                                    )
+                                # Se for caminho local
+                                else:
+                                    try:
+                                        st.image(folder_url, use_container_width=True)
+                                    except:
+                                        st.warning(f"⚠️ Imagem não encontrada: {folder_url}")
+                                        st.info("💡 O administrador precisa fazer upload da imagem do folder.")
+                            except Exception as e:
+                                st.warning(f"⚠️ Não foi possível carregar a imagem: {e}")
+                        else:
+                            st.info("📷 Nenhum folder cadastrado para este condomínio ainda.")
+                            st.caption("Solicite ao supervisor para cadastrar o folder promocional.")
+                        
+                        st.divider()
+                        
+                        # ========== PROMOÇÕES ATIVAS ==========
+                        promocoes = marketing.get("promocoes", [])
+                        promocoes_ativas = [p for p in promocoes if p.get("ativa", True)]
+                        
+                        if promocoes_ativas:
+                            st.subheader("🎯 Promoções Ativas")
+                            
+                            for promo in promocoes_ativas:
+                                validade = promo.get("validade", "")
+                                vencido = False
+                                
+                                if validade:
+                                    try:
+                                        data_validade = datetime.strptime(validade, "%Y-%m-%d")
+                                        vencido = data_validade < datetime.now()
+                                    except:
+                                        pass
+                                
+                                if vencido:
+                                    continue  # Pular promoções vencidas
+                                
+                                with st.container(border=True):
+                                    col1, col2 = st.columns([4, 1])
+                                    with col1:
+                                        st.markdown(f"### 🔥 {promo['descricao']}")
+                                    with col2:
+                                        if validade:
+                                            st.caption(f"⏰ Válido até {datetime.strptime(validade, '%Y-%m-%d').strftime('%d/%m/%Y')}")
+                                    
+                                    # Botão para copiar
+                                    if st.button("📋 Copiar Promoção", key=f"copiar_promo_{promo.get('id', '')}", use_container_width=True):
+                                        st.code(promo['descricao'], language=None)
+                                        st.toast("✅ Promoção copiada!", icon="📋")
+                        else:
+                            st.info("📢 Nenhuma promoção ativa no momento.")
+                        
+                        st.divider()
+                        
+                        # ========== PLANOS ESPECIAIS DO CONDOMÍNIO ==========
+                        planos_especiais = marketing.get("planos_especiais", [])
+                        planos_ativos = [p for p in planos_especiais if p.get("ativo", True)]
+                        
+                        if planos_ativos:
+                            st.subheader("💎 Planos Especiais para este Condomínio")
+                            
+                            for plano in planos_ativos:
+                                with st.container(border=True):
+                                    col1, col2, col3 = st.columns([3, 2, 1])
+                                    
+                                    with col1:
+                                        st.markdown(f"**{plano.get('nome', 'Plano Especial')}**")
+                                        if plano.get("destaque"):
+                                            st.caption(f"✨ {plano['destaque']}")
+                                    
+                                    with col2:
+                                        preco = plano.get("preco", "Sob consulta")
+                                        preco_normal = plano.get("preco_normal", "")
+                                        
+                                        if preco_normal:
+                                            st.markdown(f"<span style='text-decoration: line-through; color: #999;'>{preco_normal}</span>", unsafe_allow_html=True)
+                                        st.markdown(f"### {preco}")
+                                    
+                                    with col3:
+                                        texto_plano = f"{plano.get('nome', '')} - {preco}"
+                                        if plano.get("destaque"):
+                                            texto_plano += f" ({plano['destaque']})"
+                                        
+                                        if st.button("📋 Copiar", key=f"copiar_plano_{plano.get('id', '')}", use_container_width=True):
+                                            st.code(texto_plano, language=None)
+                                            st.toast("✅ Plano copiado!", icon="📋")
+                        
+                        # Planos padrão (fallback se não houver planos especiais)
+                        if not planos_ativos:
+                            st.subheader("📋 Planos Padrão")
+                            st.info("Este condomínio não possui planos especiais cadastrados.")
+                            st.caption("Os planos padrão da Tracecom se aplicam.")
+                            
+                            # Mostrar planos padrão resumidos
+                            with st.expander("📄 Ver Planos Padrão", expanded=False):
+                                st.markdown("""
+                                🎯 **600 Mbps Residencial PS + Trace Canais** — R$109,99  
+                                🎯 **800 Mbps Residencial PS + Trace Canais** — R$129,99  
+                                🎯 **600 Mbps Residencial PS + Trace Canais + GloboPlay** — R$119,99
+                                """)
+                else:
+                    st.warning("🔍 Nenhum condomínio encontrado com esse nome.")
+                    st.info("Tente buscar por parte do nome (ex: 'Parque' em vez de 'Residencial Parque das Flores')")
+        else:
+            st.warning("⚠️ Nenhum condomínio cadastrado no sistema ainda.")
         
-        if st.button("📋 Copiar os 3 Planos Principais", key="copiar_tres_principais", type="primary", use_container_width=True):
-            st.code(texto_tres_planos, language=None)
-            st.toast("✅ 3 planos principais copiados!", icon="📋")
-        
-        st.divider()
-        
-        # Lista individual dos 3 planos principais - LAYOUT HORIZONTAL EXPANDIDO
-        for idx, (titulo, texto) in enumerate(planos_principais):
-            with st.container(border=True):
-                # Usar proporção 5:1 para dar mais espaço ao texto
-                col1, col2 = st.columns([5, 1])
-                with col1:
-                    st.markdown(f"**{texto}**")
-                with col2:
-                    # Botão de copiar diretamente visível
-                    if st.button("📋 Copiar", key=f"copiar_principal_{idx}", use_container_width=True):
-                        st.code(texto, language=None)
-                        st.toast(f"✅ Plano copiado!", icon="📋")
-
-        # Todos os planos
-        st.divider()
-        st.subheader("📋 Todos os Planos")
-        
-        todos_planos = [
-            "🎯 600 Mbps Residencial PS + Trace Canais — R$109,99",
-            "🎯 800 Mbps Residencial PS + Trace Canais — R$129,99",
-            "🎯 600 Mbps Residencial PS + Trace Canais + Telemedicina + Teleconsulta + GloboPlay ou Max ou Disney — R$139,99",
-            "🎯 600 Mbps Residencial PS + Trace Canais + Telemedicina + GloboPlay ou Max ou Disney — R$119,99",
-            "🎯 800 Mbps Residencial PS + Trace Canais + Telemedicina + GloboPlay ou Max ou Disney — R$139,99",
-            "🎯 600 Mbps Residencial PS + Trace Canais + Telemedicina + Teleconsulta + GloboPlay + Max — R$159,99",
-            "🎯 800 Mbps Residencial PS + Trace Canais + Telemedicina + Teleconsulta + GloboPlay ou Max ou Disney — R$159,99",
-            "🎯 800 Mbps Residencial PS + Trace Canais + Telemedicina + Teleconsulta + GloboPlay + Max — R$179,99",
-        ]
-        
-        texto_todos = "\n\n".join(todos_planos)
-        
-        with st.expander("📄 Ver todos os planos", expanded=False):
-            for plano in todos_planos:
-                st.markdown(plano)
-        
-        if st.button("📋 Copiar Todos os Planos", key="copiar_todos", use_container_width=True):
-            st.code(texto_todos, language=None)
-            st.toast("✅ Todos os planos copiados!", icon="📋")
-        
-        # Telefonia fixa
-        st.divider()
-        st.subheader("☎️ Adicional")
-        telefonia_texto = "Telefonia Fixa Ilimitada: R$19,99"
-        col_tel1, col_tel2 = st.columns([5, 1])
-        with col_tel1:
-            st.markdown(f"**{telefonia_texto}**")
-        with col_tel2:
-            if st.button("📋 Copiar", key="copiar_tel", use_container_width=True):
-                st.code(telefonia_texto, language=None)
-                st.toast("✅ Telefonia copiada!", icon="📋")
+        # Se não houver busca, mostrar planos padrão
+        if not st.session_state.get("busca_condominio_planos"):
+            st.divider()
+            st.subheader("📋 Planos Padrão Tracecom")
+            st.caption("Busque um condomínio acima para ver promoções exclusivas!")
+            
+            planos_padrao = [
+                "🎯 600 Mbps Residencial PS + Trace Canais — R$109,99",
+                "🎯 800 Mbps Residencial PS + Trace Canais — R$129,99",
+                "🎯 600 Mbps Residencial PS + Trace Canais + GloboPlay — R$119,99",
+            ]
+            
+            for plano in planos_padrao:
+                with st.container(border=True):
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(plano)
+                    with col2:
+                        if st.button("📋 Copiar", key=f"copiar_padrao_{plano[:20]}", use_container_width=True):
+                            st.code(plano, language=None)
+                            st.toast("✅ Plano copiado!", icon="📋")
 
     # ==================== ABA 3: CONFIRMAÇÃO DE VENDA ====================
     with tab_confirmacao:
         st.header("📝 Confirmação de Venda")
         st.caption("Texto para solicitar dados do cliente")
         
-        # Campo para personalizar nome (opcional)
         nome_cliente = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_conf")
         
-        # Montar mensagem
         if nome_cliente:
             saudacao = f"Olá {nome_cliente}!\n\n"
         else:
@@ -268,24 +394,20 @@ Profissão:
 
 Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposição!"""
 
-        # Container com borda para a mensagem
         with st.container(border=True):
             st.markdown(mensagem)
             
-            # Botão de copiar DENTRO do container, logo abaixo da mensagem
             if st.button("📋 Copiar Mensagem Completa", type="primary", key="copiar_confirm", use_container_width=True):
                 st.code(mensagem, language=None)
                 st.toast("✅ Mensagem de confirmação copiada!", icon="📋")
 
-    # ==================== ABA 4: ANTI-FRAUDE (NOVA) ====================
+    # ==================== ABA 4: ANTI-FRAUDE ====================
     with tab_antifraude:
         st.header("🛡️ Validação Anti-Fraude")
         st.caption("Mensagem para validação presencial obrigatória")
         
-        # Campo para personalizar nome (opcional)
         nome_cliente_af = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_af")
         
-        # Montar mensagem
         if nome_cliente_af:
             saudacao_af = f"Olá {nome_cliente_af}!\n\n"
         else:
@@ -293,11 +415,9 @@ Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposiç
             
         mensagem_antifraude = f"""{saudacao_af}Para darmos continuidade à sua solicitação, será necessária a validação presencial mediante comparecimento à nossa loja com documento original com foto para assinatura do contrato."""
 
-        # Container com borda para a mensagem
         with st.container(border=True):
             st.markdown(mensagem_antifraude)
             
-            # Botão de copiar DENTRO do container
             if st.button("📋 Copiar Mensagem Anti-Fraude", type="primary", key="copiar_af", use_container_width=True):
                 st.code(mensagem_antifraude, language=None)
                 st.toast("✅ Mensagem anti-fraude copiada!", icon="🛡️")
@@ -307,10 +427,8 @@ Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposiç
         st.header("📋 Orientações Iniciais")
         st.caption("Mensagem para clientes com instalação agendada")
         
-        # Campo para personalizar nome (opcional)
         nome_cliente_ori = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_ori")
         
-        # Montar mensagem de orientações
         if nome_cliente_ori:
             saudacao_ori = f"Olá {nome_cliente_ori}!\n\n"
         else:
@@ -344,33 +462,17 @@ Ficamos muito felizes em ter você com a gente!
 Seja bem-vinda à Tracecom 🚀
         """
         
-        # Container com borda para a mensagem
         with st.container(border=True):
             st.markdown(mensagem_orientacoes)
             
-            # Botão de copiar DENTRO do container
             if st.button("📋 Copiar Orientações", type="primary", key="copiar_orientacoes", use_container_width=True):
                 st.code(mensagem_orientacoes, language=None)
                 st.toast("✅ Orientações copiadas!", icon="📋")
 
     # ==================== ABA 6: RECUSA ====================
     with tab_recusa:
-        # Container vermelho para destacar
-        st.markdown("""
-        <style>
-        .recusa-box {
-            background-color: #fee2e2;
-            border: 2px solid #ef4444;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 10px 0;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
         st.header("❌ Recusa por Restrição")
         
-        # Campo para personalizar nome (opcional)
         nome_recusa = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_rec")
         
         if nome_recusa:
@@ -389,16 +491,22 @@ Tracecom"""
 
         with st.container(border=True):
             # Aplicar estilo vermelho
-            st.markdown(f'<div class="recusa-box">{mensagem_recusa.replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="
+                background-color: #fee2e2;
+                border: 2px solid #ef4444;
+                border-radius: 10px;
+                padding: 20px;
+                margin: 10px 0;
+            ">{mensagem_recusa.replace(chr(10), '<br>')}</div>
+            """, unsafe_allow_html=True)
             
-            # Botão de copiar abaixo da mensagem
             if st.button("📋 Copiar Mensagem de Recusa", key="copiar_rec", use_container_width=True):
                 st.code(mensagem_recusa, language=None)
                 st.toast("✅ Mensagem de recusa copiada!", icon="📋")
         
         st.divider()
         if st.button("🔄 Resetar Checklist", type="secondary"):
-            # Limpar todos os estados do checklist
             keys_to_clear = [
                 "checklist_abertura", "checklist_diagnostico", "checklist_recomendacao",
                 "checklist_valor", "checklist_fechamento", "checklist_objecao", "checklist_regra_ouro"
