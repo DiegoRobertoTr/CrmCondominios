@@ -1,5 +1,5 @@
 # modules/roteiro_vendas.py
-# ✅ OTIMIZADO - Com carregamento sob demanda e cache
+# ✅ VERSÃO FINAL - Lazy loading, sem travamentos
 import streamlit as st
 from datetime import datetime
 from modules.condominios import get_condominios_collection
@@ -155,41 +155,38 @@ def render_roteiro_vendas(clientes_collection):
         VALIDA → DIAGNOSTICA → RECOMENDA → DIRECIONA
         """)
 
-    # ==================== ABA 2: PLANOS (OTIMIZADO COM CACHE) ====================
+    # ==================== ABA 2: PLANOS (LAZY LOADING) ====================
     with tab_planos:
         st.header("💰 Planos e Promoções por Condomínio")
         st.caption("Busque um condomínio para ver promoções e planos exclusivos")
         
-        # Função com cache para carregar condomínios
-        @st.cache_data(ttl=300, show_spinner=False)  # Cache por 5 minutos
-        def carregar_condominios():
-            """Carrega condomínios do banco com campos essenciais apenas"""
-            try:
-                condominios_coll = get_condominios_collection()
-                # Buscar apenas campos necessários para performance
-                condominios = list(condominios_coll.find(
-                    {}, 
-                    {
-                        "nome": 1, 
-                        "bairro": 1, 
-                        "endereco": 1, 
-                        "numero": 1, 
-                        "cidade": 1,
-                        "marketing": 1
-                    }
-                ).sort("nome", 1))
-                return condominios
-            except Exception as e:
-                st.error(f"Erro ao carregar condomínios: {e}")
-                return []
+        # Flag para saber se já carregou os dados
+        if "planos_carregado" not in st.session_state:
+            st.session_state.planos_carregado = False
+            st.session_state.todos_condominios = []
         
-        # Carregar condomínios com spinner
-        with st.spinner("📡 Carregando condomínios..."):
-            todos_condominios = carregar_condominios()
+        # Botão para carregar (ou carregar automaticamente ao clicar na aba)
+        if not st.session_state.planos_carregado:
+            if st.button("📡 Carregar Condomínios", type="primary", use_container_width=True):
+                with st.spinner("Carregando lista de condomínios..."):
+                    try:
+                        condominios_coll = get_condominios_collection()
+                        st.session_state.todos_condominios = list(condominios_coll.find({}).sort("nome", 1))
+                        st.session_state.planos_carregado = True
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao carregar: {e}")
+            else:
+                st.info("👆 Clique no botão acima para carregar os condomínios cadastrados.")
+                return
         
-        if not todos_condominios:
+        # Se já carregou, mostra o conteúdo
+        if not st.session_state.todos_condominios:
             st.warning("⚠️ Nenhum condomínio cadastrado no sistema ainda.")
             st.info("Solicite ao administrador o cadastro dos condomínios.")
+            if st.button("🔄 Tentar novamente"):
+                st.session_state.planos_carregado = False
+                st.rerun()
             return
         
         # Campo de busca
@@ -203,22 +200,16 @@ def render_roteiro_vendas(clientes_collection):
             st.info("👆 Digite o nome de um condomínio para buscar promoções e planos exclusivos.")
             return
         
-        # Filtrar condomínios (busca case-insensitive)
-        busca_lower = busca.lower()
+        # Filtrar condomínios
         condominios_filtrados = [
-            c for c in todos_condominios 
-            if busca_lower in c.get("nome", "").lower()
+            c for c in st.session_state.todos_condominios 
+            if busca.lower() in c.get("nome", "").lower()
         ]
         
         if not condominios_filtrados:
             st.warning(f"🔍 Nenhum condomínio encontrado com: '{busca}'")
             st.info("Tente buscar por parte do nome (ex: 'Parque' em vez de 'Residencial Parque das Flores')")
             return
-        
-        # Limitar a 20 resultados para não sobrecarregar
-        if len(condominios_filtrados) > 20:
-            st.info(f"📋 Encontrados {len(condominios_filtrados)} condomínios. Mostrando os 20 primeiros.")
-            condominios_filtrados = condominios_filtrados[:20]
         
         # Selecionar condomínio
         opcoes = {}
@@ -269,7 +260,6 @@ def render_roteiro_vendas(clientes_collection):
             try:
                 if folder_url.startswith("http"):
                     st.image(folder_url, use_container_width=True)
-                    # Botão para abrir em nova aba
                     st.link_button("🔗 Abrir Folder", folder_url)
                 else:
                     try:
@@ -289,7 +279,6 @@ def render_roteiro_vendas(clientes_collection):
         promocoes = marketing.get("promocoes", [])
         promocoes_ativas = [p for p in promocoes if p.get("ativa", True)]
         
-        # Filtrar promoções não vencidas
         promocoes_validas = []
         for promo in promocoes_ativas:
             validade = promo.get("validade", "")
@@ -297,9 +286,9 @@ def render_roteiro_vendas(clientes_collection):
                 try:
                     data_validade = datetime.strptime(validade, "%Y-%m-%d")
                     if data_validade < datetime.now():
-                        continue  # Vencida, pular
+                        continue
                 except:
-                    pass  # Data inválida, mostrar mesmo assim
+                    pass
             promocoes_validas.append(promo)
         
         if promocoes_validas:
@@ -319,7 +308,6 @@ def render_roteiro_vendas(clientes_collection):
                             except:
                                 pass
                     
-                    # Botão para copiar com chave única
                     promo_id = promo.get('id', f'promo_{idx}')
                     if st.button("📋 Copiar Promoção", key=f"copiar_promo_{promo_id}", use_container_width=True):
                         st.code(promo['descricao'], language=None)
@@ -329,7 +317,7 @@ def render_roteiro_vendas(clientes_collection):
         
         st.divider()
         
-        # ========== PLANOS ESPECIAIS DO CONDOMÍNIO ==========
+        # ========== PLANOS ESPECIAIS ==========
         planos_especiais = marketing.get("planos_especiais", [])
         planos_ativos = [p for p in planos_especiais if p.get("ativo", True)]
         
@@ -366,7 +354,7 @@ def render_roteiro_vendas(clientes_collection):
             st.info("💎 Nenhum plano especial cadastrado para este condomínio.")
             st.caption("Os supervisores podem cadastrar planos especiais no módulo 'Marketing Condomínios'.")
         
-        # Rodapé informativo
+        # Rodapé
         st.divider()
         with st.expander("ℹ️ Informações de Contato", expanded=False):
             st.markdown("""
@@ -374,6 +362,12 @@ def render_roteiro_vendas(clientes_collection):
             📱 **WhatsApp:** (21) 3500-0188  
             🌐 **Site:** www.tracecom.net
             """)
+        
+        # Botão para resetar cache
+        if st.button("🔄 Resetar cache de condomínios", type="secondary"):
+            st.session_state.planos_carregado = False
+            st.session_state.todos_condominios = []
+            st.rerun()
 
     # ==================== ABA 3: CONFIRMAÇÃO DE VENDA ====================
     with tab_confirmacao:
