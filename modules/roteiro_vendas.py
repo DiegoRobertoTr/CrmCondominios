@@ -1,12 +1,11 @@
 # modules/roteiro_vendas.py
-# ✅ VERSÃO FINAL - Lazy loading, sem travamentos
+# ✅ VERSÃO FINAL - Lazy loading, sem travamentos, fluxo corrigido
 import streamlit as st
 from datetime import datetime
 from modules.condominios import get_condominios_collection
 
 def render_roteiro_vendas(clientes_collection):
     """Módulo de roteiro de vendas com checklist interativo e textos prontos"""
-    
     st.title("🧭 Roteiro de Vendas - WhatsApp")
     st.caption("Guia passo a passo para atendimento eficaz")
 
@@ -14,9 +13,9 @@ def render_roteiro_vendas(clientes_collection):
     tab_checklist, tab_planos, tab_confirmacao, tab_antifraude, tab_orientacoes, tab_recusa = st.tabs([
         "✅ Checklist de Abordagem", 
         "💰 Planos", 
-        "📝 Confirmação de Venda",
-        "🛡️ Anti-Fraude",
-        "📋 Orientações Iniciais",
+        " Confirmação de Venda",
+        "️ Anti-Fraude",
+        " Orientações Iniciais",
         "❌ Recusa"
     ])
 
@@ -24,7 +23,6 @@ def render_roteiro_vendas(clientes_collection):
     with tab_checklist:
         st.header("CHECKLIST – ABORDAGEM DE VENDAS WHATSAPP")
         
-        # Inicializar estados dos checkboxes se não existirem
         if "checklist_abertura" not in st.session_state:
             st.session_state.checklist_abertura = {"cumprimento": False, "intencao": False, "nome": False}
         if "checklist_diagnostico" not in st.session_state:
@@ -70,7 +68,7 @@ def render_roteiro_vendas(clientes_collection):
 
         # 3) RECOMENDAÇÃO
         with st.container(border=True):
-            st.subheader("3️⃣ RECOMENDAÇÃO (NUNCA LISTA)")
+            st.subheader("3️ RECOMENDAÇÃO (NUNCA LISTA)")
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.markdown("""
@@ -160,14 +158,13 @@ def render_roteiro_vendas(clientes_collection):
         st.header("💰 Planos e Promoções por Condomínio")
         st.caption("Busque um condomínio para ver promoções e planos exclusivos")
         
-        # Flag para saber se já carregou os dados
         if "planos_carregado" not in st.session_state:
             st.session_state.planos_carregado = False
             st.session_state.todos_condominios = []
         
-        # Botão para carregar (ou carregar automaticamente ao clicar na aba)
+        # Lógica de carregamento (sem return)
         if not st.session_state.planos_carregado:
-            if st.button("📡 Carregar Condomínios", type="primary", use_container_width=True):
+            if st.button(" Carregar Condomínios", type="primary", use_container_width=True):
                 with st.spinner("Carregando lista de condomínios..."):
                     try:
                         condominios_coll = get_condominios_collection()
@@ -178,196 +175,179 @@ def render_roteiro_vendas(clientes_collection):
                         st.error(f"Erro ao carregar: {e}")
             else:
                 st.info("👆 Clique no botão acima para carregar os condomínios cadastrados.")
-                return
-        
-        # Se já carregou, mostra o conteúdo
-        if not st.session_state.todos_condominios:
-            st.warning("⚠️ Nenhum condomínio cadastrado no sistema ainda.")
-            st.info("Solicite ao administrador o cadastro dos condomínios.")
-            if st.button("🔄 Tentar novamente"):
-                st.session_state.planos_carregado = False
-                st.rerun()
-            return
-        
-        # Campo de busca
-        busca = st.text_input(
-            "🔍 Digite o nome do condomínio:",
-            placeholder="Ex: Residencial Parque das Flores",
-            key="busca_condominio_planos"
-        )
-        
-        if not busca:
-            st.info("👆 Digite o nome de um condomínio para buscar promoções e planos exclusivos.")
-            return
-        
-        # Filtrar condomínios
-        condominios_filtrados = [
-            c for c in st.session_state.todos_condominios 
-            if busca.lower() in c.get("nome", "").lower()
-        ]
-        
-        if not condominios_filtrados:
-            st.warning(f"🔍 Nenhum condomínio encontrado com: '{busca}'")
-            st.info("Tente buscar por parte do nome (ex: 'Parque' em vez de 'Residencial Parque das Flores')")
-            return
-        
-        # Selecionar condomínio
-        opcoes = {}
-        for i, c in enumerate(condominios_filtrados):
-            label = f"🏢 {c['nome']} - {c.get('bairro', 'N/A')}"
-            opcoes[label] = c
-        
-        selecionado_label = st.selectbox(
-            "Selecione o condomínio:",
-            options=list(opcoes.keys()),
-            key="select_condominio_planos"
-        )
-        
-        if not selecionado_label:
-            return
-        
-        condominio = opcoes[selecionado_label]
-        marketing = condominio.get("marketing", {})
-        
-        st.divider()
-        
-        # ========== PAINEL DO CONDOMÍNIO ==========
-        endereco_completo = f"{condominio.get('endereco', '')}, {condominio.get('numero', '')}"
-        bairro = condominio.get('bairro', '')
-        cidade = condominio.get('cidade', 'Rio de Janeiro')
-        
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 15px;
-            padding: 20px;
-            color: white;
-            margin: 10px 0;
-        ">
-            <h2 style="color: white; margin: 0;">🏢 {condominio['nome']}</h2>
-            <p style="margin: 5px 0; opacity: 0.9;">
-                📍 {endereco_completo} - {bairro} - {cidade}
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # ========== FOLDER DO CONDOMÍNIO ==========
-        folder_url = marketing.get("folder_url", "")
-        
-        if folder_url:
-            st.subheader("📋 Folder Promocional")
-            
-            try:
-                if folder_url.startswith("http"):
-                    st.image(folder_url, use_container_width=True)
-                    st.link_button("🔗 Abrir Folder", folder_url)
+        else:
+            # Já carregou os dados
+            if not st.session_state.todos_condominios:
+                st.warning("⚠️ Nenhum condomínio cadastrado no sistema ainda.")
+                st.info("Solicite ao administrador o cadastro dos condomínios.")
+                if st.button("🔄 Tentar novamente"):
+                    st.session_state.planos_carregado = False
+                    st.rerun()
+            else:
+                # Campo de busca
+                busca = st.text_input(
+                    "🔍 Digite o nome do condomínio:",
+                    placeholder="Ex: Residencial Parque das Flores",
+                    key="busca_condominio_planos"
+                )
+                
+                if not busca:
+                    st.info("👆 Digite o nome de um condomínio para buscar promoções e planos exclusivos.")
                 else:
-                    try:
-                        st.image(folder_url, use_container_width=True)
-                    except:
-                        st.warning(f"⚠️ Imagem não encontrada no caminho: {folder_url}")
-                        st.info("💡 O supervisor precisa atualizar o caminho da imagem do folder.")
-            except Exception as e:
-                st.warning(f"⚠️ Não foi possível carregar a imagem. Erro: {e}")
-        else:
-            st.info("📷 Nenhum folder cadastrado para este condomínio ainda.")
-            st.caption("Solicite ao supervisor para cadastrar o folder promocional.")
-        
-        st.divider()
-        
-        # ========== PROMOÇÕES ATIVAS ==========
-        promocoes = marketing.get("promocoes", [])
-        promocoes_ativas = [p for p in promocoes if p.get("ativa", True)]
-        
-        promocoes_validas = []
-        for promo in promocoes_ativas:
-            validade = promo.get("validade", "")
-            if validade:
-                try:
-                    data_validade = datetime.strptime(validade, "%Y-%m-%d")
-                    if data_validade < datetime.now():
-                        continue
-                except:
-                    pass
-            promocoes_validas.append(promo)
-        
-        if promocoes_validas:
-            st.subheader("🎯 Promoções Ativas")
-            
-            for idx, promo in enumerate(promocoes_validas):
-                with st.container(border=True):
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.markdown(f"### 🔥 {promo['descricao']}")
-                    with col2:
-                        validade = promo.get("validade", "")
-                        if validade:
-                            try:
-                                data_val = datetime.strptime(validade, "%Y-%m-%d")
-                                st.caption(f"⏰ Até {data_val.strftime('%d/%m/%Y')}")
-                            except:
-                                pass
+                    # Filtrar condomínios
+                    condominios_filtrados = [
+                        c for c in st.session_state.todos_condominios 
+                        if busca.lower() in c.get("nome", "").lower()
+                    ]
                     
-                    promo_id = promo.get('id', f'promo_{idx}')
-                    if st.button("📋 Copiar Promoção", key=f"copiar_promo_{promo_id}", use_container_width=True):
-                        st.code(promo['descricao'], language=None)
-                        st.toast("✅ Promoção copiada!", icon="📋")
-        else:
-            st.info("📢 Nenhuma promoção ativa no momento para este condomínio.")
-        
-        st.divider()
-        
-        # ========== PLANOS ESPECIAIS ==========
-        planos_especiais = marketing.get("planos_especiais", [])
-        planos_ativos = [p for p in planos_especiais if p.get("ativo", True)]
-        
-        if planos_ativos:
-            st.subheader("💎 Planos Especiais para este Condomínio")
-            
-            for idx, plano in enumerate(planos_ativos):
-                with st.container(border=True):
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    
-                    with col1:
-                        st.markdown(f"**{plano.get('nome', 'Plano Especial')}**")
-                        if plano.get("destaque"):
-                            st.caption(f"✨ {plano['destaque']}")
-                    
-                    with col2:
-                        preco = plano.get("preco", "Sob consulta")
-                        preco_normal = plano.get("preco_normal", "")
+                    if not condominios_filtrados:
+                        st.warning(f"🔍 Nenhum condomínio encontrado com: '{busca}'")
+                        st.info("Tente buscar por parte do nome (ex: 'Parque' em vez de 'Residencial Parque das Flores')")
+                    else:
+                        # Selecionar condomínio
+                        opcoes = {}
+                        for i, c in enumerate(condominios_filtrados):
+                            label = f"🏢 {c['nome']} - {c.get('bairro', 'N/A')}"
+                            opcoes[label] = c
                         
-                        if preco_normal:
-                            st.markdown(f"<span style='text-decoration: line-through; color: #999;'>{preco_normal}</span>", unsafe_allow_html=True)
-                        st.markdown(f"### {preco}")
-                    
-                    with col3:
-                        texto_plano = f"{plano.get('nome', '')} - {preco}"
-                        if plano.get("destaque"):
-                            texto_plano += f" ({plano['destaque']})"
+                        selecionado_label = st.selectbox(
+                            "Selecione o condomínio:",
+                            options=list(opcoes.keys()),
+                            key="select_condominio_planos"
+                        )
                         
-                        plano_id = plano.get('id', f'plano_{idx}')
-                        if st.button("📋 Copiar", key=f"copiar_plano_{plano_id}", use_container_width=True):
-                            st.code(texto_plano, language=None)
-                            st.toast("✅ Plano copiado!", icon="📋")
-        else:
-            st.info("💎 Nenhum plano especial cadastrado para este condomínio.")
-            st.caption("Os supervisores podem cadastrar planos especiais no módulo 'Marketing Condomínios'.")
-        
-        # Rodapé
-        st.divider()
-        with st.expander("ℹ️ Informações de Contato", expanded=False):
-            st.markdown("""
-            📞 **Suporte Tracecom:** (21) 3500-0188  
-            📱 **WhatsApp:** (21) 3500-0188  
-            🌐 **Site:** www.tracecom.net
-            """)
-        
-        # Botão para resetar cache
-        if st.button("🔄 Resetar cache de condomínios", type="secondary"):
-            st.session_state.planos_carregado = False
-            st.session_state.todos_condominios = []
-            st.rerun()
+                        if selecionado_label:
+                            condominio = opcoes[selecionado_label]
+                            marketing = condominio.get("marketing", {})
+                            
+                            st.divider()
+                            
+                            # ========== PAINEL DO CONDOMÍNIO ==========
+                            endereco_completo = f"{condominio.get('endereco', '')}, {condominio.get('numero', '')}"
+                            bairro = condominio.get('bairro', '')
+                            cidade = condominio.get('cidade', 'Rio de Janeiro')
+                            
+                            st.markdown(f"""
+                            <div style="
+                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                border-radius: 15px;
+                                padding: 20px;
+                                color: white;
+                                margin: 10px 0;
+                            ">
+                                <h2 style="color: white; margin: 0;">🏢 {condominio['nome']}</h2>
+                                <p style="margin: 5px 0; opacity: 0.9;">
+                                    📍 {endereco_completo} - {bairro} - {cidade}
+                                </p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            # ========== FOLDER DO CONDOMÍNIO ==========
+                            folder_url = marketing.get("folder_url", "")
+                            if folder_url:
+                                st.subheader("📋 Folder Promocional")
+                                try:
+                                    if folder_url.startswith("http"):
+                                        st.image(folder_url, use_container_width=True)
+                                        st.link_button(" Abrir Folder", folder_url)
+                                    else:
+                                        try:
+                                            st.image(folder_url, use_container_width=True)
+                                        except:
+                                            st.warning(f"⚠️ Imagem não encontrada no caminho: {folder_url}")
+                                            st.info("💡 O supervisor precisa atualizar o caminho da imagem do folder.")
+                                except Exception as e:
+                                    st.warning(f"⚠️ Não foi possível carregar a imagem. Erro: {e}")
+                            else:
+                                st.info("📷 Nenhum folder cadastrado para este condomínio ainda.")
+                                st.caption("Solicite ao supervisor para cadastrar o folder promocional.")
+                            
+                            st.divider()
+                            
+                            # ========== PROMOÇÕES ATIVAS ==========
+                            promocoes = marketing.get("promocoes", [])
+                            promocoes_ativas = [p for p in promocoes if p.get("ativa", True)]
+                            promocoes_validas = []
+                            for promo in promocoes_ativas:
+                                validade = promo.get("validade", "")
+                                if validade:
+                                    try:
+                                        data_validade = datetime.strptime(validade, "%Y-%m-%d")
+                                        if data_validade < datetime.now():
+                                            continue
+                                    except:
+                                        pass
+                                promocoes_validas.append(promo)
+                            
+                            if promocoes_validas:
+                                st.subheader("🎯 Promoções Ativas")
+                                for idx, promo in enumerate(promocoes_validas):
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([4, 1])
+                                        with col1:
+                                            st.markdown(f"### 🔥 {promo['descricao']}")
+                                        with col2:
+                                            validade = promo.get("validade", "")
+                                            if validade:
+                                                try:
+                                                    data_val = datetime.strptime(validade, "%Y-%m-%d")
+                                                    st.caption(f"⏰ Até {data_val.strftime('%d/%m/%Y')}")
+                                                except:
+                                                    pass
+                                        promo_id = promo.get('id', f'promo_{idx}')
+                                        if st.button("📋 Copiar Promoção", key=f"copiar_promo_{promo_id}", use_container_width=True):
+                                            st.code(promo['descricao'], language=None)
+                                            st.toast("✅ Promoção copiada!", icon="📋")
+                            else:
+                                st.info("📢 Nenhuma promoção ativa no momento para este condomínio.")
+                            
+                            st.divider()
+                            
+                            # ========== PLANOS ESPECIAIS ==========
+                            planos_especiais = marketing.get("planos_especiais", [])
+                            planos_ativos = [p for p in planos_especiais if p.get("ativo", True)]
+                            
+                            if planos_ativos:
+                                st.subheader("💎 Planos Especiais para este Condomínio")
+                                for idx, plano in enumerate(planos_ativos):
+                                    with st.container(border=True):
+                                        col1, col2, col3 = st.columns([3, 2, 1])
+                                        with col1:
+                                            st.markdown(f"**{plano.get('nome', 'Plano Especial')}**")
+                                            if plano.get("destaque"):
+                                                st.caption(f"✨ {plano['destaque']}")
+                                        with col2:
+                                            preco = plano.get("preco", "Sob consulta")
+                                            preco_normal = plano.get("preco_normal", "")
+                                            if preco_normal:
+                                                st.markdown(f"<span style='text-decoration: line-through; color: #999;'>{preco_normal}</span>", unsafe_allow_html=True)
+                                            st.markdown(f"### {preco}")
+                                        with col3:
+                                            texto_plano = f"{plano.get('nome', '')} - {preco}"
+                                            if plano.get("destaque"):
+                                                texto_plano += f" ({plano['destaque']})"
+                                            plano_id = plano.get('id', f'plano_{idx}')
+                                            if st.button("📋 Copiar", key=f"copiar_plano_{plano_id}", use_container_width=True):
+                                                st.code(texto_plano, language=None)
+                                                st.toast("✅ Plano copiado!", icon="📋")
+                            else:
+                                st.info("💎 Nenhum plano especial cadastrado para este condomínio.")
+                                st.caption("Os supervisores podem cadastrar planos especiais no módulo 'Marketing Condomínios'.")
+                            
+                            # Rodapé
+                            st.divider()
+                            with st.expander("ℹ️ Informações de Contato", expanded=False):
+                                st.markdown("""
+                                📞 **Suporte Tracecom:** (21) 3500-0188  
+                                📱 **WhatsApp:** (21) 3500-0188  
+                                🌐 **Site:** www.tracecom.net
+                                """)
+                            
+                            # Botão para resetar cache
+                            if st.button("🔄 Resetar cache de condomínios", type="secondary"):
+                                st.session_state.planos_carregado = False
+                                st.session_state.todos_condominios = []
+                                st.rerun()
 
     # ==================== ABA 3: CONFIRMAÇÃO DE VENDA ====================
     with tab_confirmacao:
@@ -382,13 +362,9 @@ def render_roteiro_vendas(clientes_collection):
             saudacao = "Olá!\n\n"
             
         mensagem = f"""{saudacao}Vamos enviar os dados para o cadastro e análise, ok?
-
 📌 Por favor, envie:
-
 1️⃣ Uma foto segurando um documento com foto.
-
 2️⃣ Os dados abaixo preenchidos de uma só vez, para facilitar o seu cadastro:
-
 Nome completo:
 Celular:
 Celular de contato (Grau de Parentesco):
@@ -405,12 +381,10 @@ Tipo de Moradia:
 Tempo de Moradia:
 Plano escolhido:
 Profissão:
-
 Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposição!"""
-
+        
         with st.container(border=True):
             st.markdown(mensagem)
-            
             if st.button("📋 Copiar Mensagem Completa", type="primary", key="copiar_confirm", use_container_width=True):
                 st.code(mensagem, language=None)
                 st.toast("✅ Mensagem de confirmação copiada!", icon="📋")
@@ -431,7 +405,6 @@ Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposiç
 
         with st.container(border=True):
             st.markdown(mensagem_antifraude)
-            
             if st.button("📋 Copiar Mensagem Anti-Fraude", type="primary", key="copiar_af", use_container_width=True):
                 st.code(mensagem_antifraude, language=None)
                 st.toast("✅ Mensagem anti-fraude copiada!", icon="🛡️")
@@ -449,37 +422,23 @@ Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposiç
             saudacao_ori = "Olá!\n\n"
             
         mensagem_orientacoes = f"""{saudacao_ori}Sua instalação está agendada.
-
-📌 Informações Importantes:
-
+ Informações Importantes:
 📡 Suporte e Acesso:
-
 Após a instalação, você poderá solicitar seu login do Tracecanais pelo WhatsApp 21 3500-0188 (opção 5).
-
 Em caso de travamento por queda de energia, retire o equipamento da tomada por 15 segundos e reconecte.
-
 Se o serviço não normalizar, nosso suporte técnico está disponível pelo WhatsApp 21 3500-0188 (opção 5).
-
 💳 Faturamento:
-
 Sua primeira fatura vencerá 30 dias após a instalação e ativação do contrato.
-
 A fatura poderá ser enviada para o e-mail cadastrado, retirada impressa em nossa loja ou solicitada pelo WhatsApp 21 3500-0188 (opção 1 – Segunda Via).
-
 📱 Aplicativo:
-
 Nosso aplicativo já está disponível. Acesse pelo link abaixo e acompanhe suas faturas, consumo e outras informações da sua conexão:
-
 https://play.google.com/store/apps/details?id=br.net.tracecom.ixc&utm_source=latam_Med
-
 Ficamos muito felizes em ter você com a gente!
 Seja bem-vinda à Tracecom 🚀
-        """
-        
+"""
         with st.container(border=True):
             st.markdown(mensagem_orientacoes)
-            
-            if st.button("📋 Copiar Orientações", type="primary", key="copiar_orientacoes", use_container_width=True):
+            if st.button(" Copiar Orientações", type="primary", key="copiar_orientacoes", use_container_width=True):
                 st.code(mensagem_orientacoes, language=None)
                 st.toast("✅ Orientações copiadas!", icon="📋")
 
@@ -495,14 +454,12 @@ Seja bem-vinda à Tracecom 🚀
             saudacao_rec = "Olá,\n\n"
             
         mensagem_recusa = f"""{saudacao_rec}Agradecemos pelo seu interesse em nossos serviços de internet!
-
 Informamos que, neste momento, não foi possível dar continuidade à contratação.
 Mas não se preocupe! Você poderá realizar uma nova solicitação após 30 dias.
 Esperamos poder atendê-lo em breve!
-
 Atenciosamente,
 Tracecom"""
-
+        
         with st.container(border=True):
             st.markdown(f"""
             <div style="
