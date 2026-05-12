@@ -1,5 +1,5 @@
 # modules/roteiro_vendas.py
-# ✅ CORRIGIDO - Sem planos padrão, chaves únicas garantidas
+# ✅ OTIMIZADO - Com carregamento sob demanda e cache
 import streamlit as st
 from datetime import datetime
 from modules.condominios import get_condominios_collection
@@ -155,14 +155,37 @@ def render_roteiro_vendas(clientes_collection):
         VALIDA → DIAGNOSTICA → RECOMENDA → DIRECIONA
         """)
 
-    # ==================== ABA 2: PLANOS (BUSCA POR CONDOMÍNIO) ====================
+    # ==================== ABA 2: PLANOS (OTIMIZADO COM CACHE) ====================
     with tab_planos:
         st.header("💰 Planos e Promoções por Condomínio")
         st.caption("Busque um condomínio para ver promoções e planos exclusivos")
         
-        # Busca de condomínio
-        condominios_coll = get_condominios_collection()
-        todos_condominios = list(condominios_coll.find({}).sort("nome", 1))
+        # Função com cache para carregar condomínios
+        @st.cache_data(ttl=300, show_spinner=False)  # Cache por 5 minutos
+        def carregar_condominios():
+            """Carrega condomínios do banco com campos essenciais apenas"""
+            try:
+                condominios_coll = get_condominios_collection()
+                # Buscar apenas campos necessários para performance
+                condominios = list(condominios_coll.find(
+                    {}, 
+                    {
+                        "nome": 1, 
+                        "bairro": 1, 
+                        "endereco": 1, 
+                        "numero": 1, 
+                        "cidade": 1,
+                        "marketing": 1
+                    }
+                ).sort("nome", 1))
+                return condominios
+            except Exception as e:
+                st.error(f"Erro ao carregar condomínios: {e}")
+                return []
+        
+        # Carregar condomínios com spinner
+        with st.spinner("📡 Carregando condomínios..."):
+            todos_condominios = carregar_condominios()
         
         if not todos_condominios:
             st.warning("⚠️ Nenhum condomínio cadastrado no sistema ainda.")
@@ -180,16 +203,22 @@ def render_roteiro_vendas(clientes_collection):
             st.info("👆 Digite o nome de um condomínio para buscar promoções e planos exclusivos.")
             return
         
-        # Filtrar condomínios
+        # Filtrar condomínios (busca case-insensitive)
+        busca_lower = busca.lower()
         condominios_filtrados = [
             c for c in todos_condominios 
-            if busca.lower() in c.get("nome", "").lower()
+            if busca_lower in c.get("nome", "").lower()
         ]
         
         if not condominios_filtrados:
             st.warning(f"🔍 Nenhum condomínio encontrado com: '{busca}'")
             st.info("Tente buscar por parte do nome (ex: 'Parque' em vez de 'Residencial Parque das Flores')")
             return
+        
+        # Limitar a 20 resultados para não sobrecarregar
+        if len(condominios_filtrados) > 20:
+            st.info(f"📋 Encontrados {len(condominios_filtrados)} condomínios. Mostrando os 20 primeiros.")
+            condominios_filtrados = condominios_filtrados[:20]
         
         # Selecionar condomínio
         opcoes = {}
