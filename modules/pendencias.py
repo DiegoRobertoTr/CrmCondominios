@@ -36,11 +36,236 @@ def formatar_data(dt):
     return dt.strftime('%d/%m/%Y')
 
 # ============================================================================
+# 🔐 HIERARQUIA DE PERFIS (para controle de edição)
+# ============================================================================
+HIERARQUIA_PERFIS = {
+    "admin": 100,
+    "supervisao_n3": 80,
+    "supervisao_n2": 60,
+    "supervisao_n1": 40,
+    "recepcao": 20,
+    "atendente_n1": 10,
+}
+
+def pode_editar_pendencia(perfil_usuario, perfil_criador):
+    """
+    Verifica se o usuário pode editar uma pendência baseado na hierarquia.
+    
+    Regras:
+    - Admin pode editar tudo
+    - Usuário pode editar a própria pendência
+    - Supervisores podem editar pendências de níveis iguais ou inferiores
+    """
+    if perfil_usuario == "admin":
+        return True
+    
+    # Se for o próprio criador
+    if perfil_usuario == perfil_criador:
+        return True
+    
+    # Supervisores podem editar níveis iguais ou inferiores
+    nivel_usuario = HIERARQUIA_PERFIS.get(perfil_usuario, 0)
+    nivel_criador = HIERARQUIA_PERFIS.get(perfil_criador, 0)
+    
+    # Supervisor N3 pode editar N3, N2, N1, recepcao, atendente
+    # Supervisor N2 pode editar N2, N1, recepcao, atendente
+    # Supervisor N1 pode editar apenas o próprio
+    if nivel_usuario >= 60:  # supervisor_n2 ou superior
+        return nivel_usuario >= nivel_criador
+    
+    return False
+
+def pode_excluir_pendencia(perfil_usuario):
+    """Apenas admin pode excluir pendências"""
+    return perfil_usuario == "admin"
+
+def pode_ver_todas_pendencias(perfil_usuario):
+    """Perfis que podem ver a aba 'Todas as Pendências'"""
+    perfis_autorizados = ["admin", "supervisao_n3", "supervisao_n2", "supervisao_n1", "recepcao"]
+    return perfil_usuario in perfis_autorizados
+
+# ============================================================================
 # 📋 CONEXÃO COM A COLEÇÃO DE PENDÊNCIAS
 # ============================================================================
 def get_pendencias_collection(clientes_collection):
     """Retorna a coleção de pendências (mesmo banco do CRM)"""
     return clientes_collection.database.pendencias
+
+# ============================================================================
+# 🗑️ EXCLUIR PENDÊNCIA
+# ============================================================================
+def excluir_pendencia(pendencias_coll, pendencia_id, nome_usuario):
+    """Exclui uma pendência (apenas admin)"""
+    pendencias_coll.delete_one({"_id": pendencia_id})
+    st.success("🗑️ Pendência excluída permanentemente!")
+    st.toast(f"🗑️ Pendência excluída por {nome_usuario}", icon="🗑️")
+    st.rerun()
+
+# ============================================================================
+# ✏️ MODAL DE EDIÇÃO DE PENDÊNCIA
+# ============================================================================
+@st.dialog("✏️ Editar Pendência")
+def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usuario):
+    """Modal para editar pendência com controle de acesso hierárquico e log detalhado"""
+    
+    # ✅ VERIFICAÇÃO DE PERMISSÃO HIERÁRQUICA
+    solicitante = pendencia.get('solicitante', '')
+    criador_nome = pendencia.get('solicitante_nome', solicitante)
+    perfil_criador = pendencia.get('solicitante_perfil', solicitante)
+    
+    if not pode_editar_pendencia(perfil_usuario, perfil_criador):
+        st.error(f"❌ **Acesso negado!**")
+        st.warning(f"Esta pendência foi criada por **{criador_nome}** ({perfil_criador}).")
+        
+        nivel_usuario = HIERARQUIA_PERFIS.get(perfil_usuario, 0)
+        nivel_criador = HIERARQUIA_PERFIS.get(perfil_criador, 0)
+        
+        if nivel_usuario < nivel_criador:
+            st.info("💡 Você não tem nível hierárquico suficiente para editar esta pendência.")
+        else:
+            st.info("💡 Apenas o criador da pendência ou níveis superiores podem editá-la.")
+        
+        if st.button("❌ Fechar", use_container_width=True):
+            st.rerun()
+        return
+    
+    # Mostrar info de quem está editando
+    if perfil_usuario == "admin":
+        st.info(f"🔑 **Modo Admin**: Editando pendência criada por {criador_nome} ({perfil_criador})")
+    elif perfil_usuario != perfil_criador:
+        nivel_usuario_nome = HIERARQUIA_PERFIS.get(perfil_usuario, 0)
+        nivel_criador_nome = HIERARQUIA_PERFIS.get(perfil_criador, 0)
+        if nivel_usuario_nome > nivel_criador_nome:
+            st.info(f"👔 **Modo Supervisor**: Editando pendência de {criador_nome} ({perfil_criador})")
+    
+    st.write(f"Editando: **{pendencia['titulo']}**")
+    st.caption(f"Criada por: {criador_nome} em {formatar_data_hora(pendencia['data_criacao'])}")
+    
+    titulo = st.text_input("📌 Título", value=pendencia['titulo'])
+    descricao = st.text_area("📝 Descrição", value=pendencia['descricao'], height=120)
+    
+    prioridade_opcoes = ["baixa", "média", "alta", "urgente"]
+    prioridade_atual = pendencia.get('prioridade', 'média')
+    prioridade = st.selectbox(
+        "🔴 Prioridade",
+        prioridade_opcoes,
+        index=prioridade_opcoes.index(prioridade_atual) if prioridade_atual in prioridade_opcoes else 1
+    )
+    
+    # Data limite
+    data_limite_atual = pendencia['data_limite']
+    if isinstance(data_limite_atual, datetime):
+        data_limite = st.date_input("📅 Data Limite", value=data_limite_atual.date())
+    else:
+        data_limite = st.date_input("📅 Data Limite", value=data_limite_atual)
+    
+    # Apenas admin e supervisores N3/N2 podem alterar o responsável
+    if perfil_usuario in ["admin", "supervisao_n3", "supervisao_n2"]:
+        st.divider()
+        st.markdown("### 👤 Reatribuir Responsável (Supervisor/Admin)")
+        
+        usuarios = obter_usuarios_disponiveis()
+        responsavel_atual = pendencia.get('responsavel', '')
+        
+        # Encontrar o nome do responsável atual
+        responsavel_nome_atual = responsavel_atual
+        for u in usuarios:
+            if u['login'] == responsavel_atual or u['perfil'] == responsavel_atual:
+                responsavel_nome_atual = f"{u['nome']} ({u['perfil_nome']})"
+                break
+        
+        opcoes_usuarios = {}
+        for u in usuarios:
+            label = f"{u['nome']} ({u['perfil_nome']})"
+            if u.get("login") and u['login'] != u['perfil']:
+                label += f" - @{u['login']}"
+            opcoes_usuarios[label] = u['login'] if u['login'] else u['perfil']
+        
+        # Encontrar o índice do responsável atual
+        opcoes_labels = list(opcoes_usuarios.keys())
+        try:
+            index_atual = opcoes_labels.index(responsavel_nome_atual) if responsavel_nome_atual in opcoes_labels else 0
+        except:
+            index_atual = 0
+        
+        novo_responsavel_opcao = st.selectbox(
+            "Novo Responsável:",
+            options=opcoes_labels,
+            index=index_atual
+        )
+        novo_responsavel = opcoes_usuarios[novo_responsavel_opcao]
+    else:
+        novo_responsavel = None
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("💾 Salvar Alterações", use_container_width=True, type="primary"):
+            # ✅ REGISTRAR APENAS O QUE REALMENTE MUDOU
+            alteracoes = {}
+            log_detalhes = []
+            
+            if titulo != pendencia['titulo']:
+                alteracoes['titulo'] = titulo
+                log_detalhes.append(f"Título: '{pendencia['titulo']}' → '{titulo}'")
+            
+            if descricao != pendencia['descricao']:
+                alteracoes['descricao'] = descricao
+                log_detalhes.append(f"Descrição alterada")
+            
+            if prioridade != pendencia.get('prioridade', 'média'):
+                alteracoes['prioridade'] = prioridade
+                log_detalhes.append(f"Prioridade: '{pendencia.get('prioridade', 'média')}' → '{prioridade}'")
+            
+            nova_data = datetime.combine(data_limite, datetime.min.time())
+            if nova_data != pendencia['data_limite']:
+                alteracoes['data_limite'] = nova_data
+                data_antiga = pendencia['data_limite'].strftime('%d/%m/%Y') if isinstance(pendencia['data_limite'], datetime) else str(pendencia['data_limite'])
+                data_nova = nova_data.strftime('%d/%m/%Y')
+                log_detalhes.append(f"Data limite: '{data_antiga}' → '{data_nova}'")
+            
+            # Verificar mudança de responsável (apenas supervisores/admin)
+            if novo_responsavel and novo_responsavel != pendencia.get('responsavel', ''):
+                alteracoes['responsavel'] = novo_responsavel
+                log_detalhes.append(f"Responsável: '{pendencia.get('responsavel', '')}' → '{novo_responsavel}'")
+            
+            if not alteracoes:
+                st.warning("⚠️ Nenhuma alteração detectada!")
+                return
+            
+            # Adiciona metadados de edição
+            alteracoes['data_edicao'] = agora_brasilia()
+            alteracoes['editado_por'] = nome_usuario
+            alteracoes['editado_por_perfil'] = perfil_usuario
+            
+            # ✅ LOG RESUMIDO (economiza espaço no MongoDB Free Tier)
+            log_entry = {
+                "acao": "Pendência editada",
+                "data": agora_brasilia(),
+                "usuario": nome_usuario,
+                "perfil": perfil_usuario,
+                "detalhes": " | ".join(log_detalhes),
+                "campos_alterados": [k for k in alteracoes.keys() if k not in ['data_edicao', 'editado_por', 'editado_por_perfil']]
+            }
+            
+            pendencias_coll.update_one(
+                {"_id": pendencia["_id"]},
+                {
+                    "$set": alteracoes,
+                    "$push": {
+                        "historico": log_entry
+                    }
+                }
+            )
+            
+            campos_alterados = len([k for k in alteracoes.keys() if k not in ['data_edicao', 'editado_por', 'editado_por_perfil']])
+            st.success(f"✅ {campos_alterados} campo(s) atualizado(s) com sucesso!")
+            st.toast(f"✏️ Pendência editada por {nome_usuario}", icon="✅")
+            st.rerun()
+    
+    with col2:
+        if st.button("❌ Cancelar", use_container_width=True):
+            st.rerun()
 
 # ============================================================================
 # 👥 USUÁRIOS DISPONÍVEIS PARA PENDÊNCIAS
@@ -68,7 +293,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
         if "usuarios" in st.secrets:
             secrets_usuarios = st.secrets["usuarios"]
             
-            # Admin
             if "admin_login" in secrets_usuarios:
                 usuarios.append({
                     "login": secrets_usuarios["admin_login"],
@@ -78,7 +302,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
                     "origem": "Fixo (secrets)"
                 })
             
-            # Recepção
             if "recepcao_login" in secrets_usuarios:
                 usuarios.append({
                     "login": secrets_usuarios["recepcao_login"],
@@ -88,7 +311,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
                     "origem": "Fixo (secrets)"
                 })
     except Exception:
-        # Fallback
         usuarios.append({
             "login": "admin", "nome": "Administrador", 
             "perfil": "admin", "perfil_nome": "Administrador"
@@ -111,7 +333,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
                 usuarios_coll = None
         
         if usuarios_coll is not None:
-            # Define perfis internos que podem receber pendências
             perfis_internos_pendencias = [
                 "admin", "recepcao", "atendente_n1",
                 "supervisao_n1", "supervisao_n2", "supervisao_n3"
@@ -119,10 +340,9 @@ def obter_usuarios_disponiveis(clientes_collection=None):
             
             todos_usuarios = list(usuarios_coll.find({
                 "perfil": {"$in": perfis_internos_pendencias},
-                "ativo": {"$ne": False}  # Apenas usuários ativos
+                "ativo": {"$ne": False}
             }))
             
-            # Tradução de perfis para nomes amigáveis
             perfil_nomes = {
                 "admin": "Administrador",
                 "recepcao": "Recepção",
@@ -137,7 +357,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
                 nome = u.get("nome_exibicao", login or "Usuário sem nome")
                 perfil = u.get("perfil", "desconhecido")
                 
-                # Pular se já foi adicionado pelos secrets (evitar duplicatas)
                 if any(user["login"] == login for user in usuarios):
                     continue
                 
@@ -149,7 +368,7 @@ def obter_usuarios_disponiveis(clientes_collection=None):
                     "origem": "MongoDB"
                 })
     except Exception:
-        pass  # Pelo menos admin e recepção já estão na lista
+        pass
     
     # ✅ Ordenação hierárquica
     ordem_perfil = {
@@ -179,25 +398,44 @@ def render_pendencias(clientes_collection):
     pendencias_coll.create_index("status")
     pendencias_coll.create_index("data_limite")
     
-    # Abas do módulo
-    tab_criar, tab_minhas, tab_todas, tab_calendario = st.tabs([
-        "➕ Nova Pendência",
-        "👤 Minhas Pendências",
-        "📋 Todas as Pendências",
-        "📅 Calendário"
-    ])
+    perfil = st.session_state.get("perfil", "")
     
-    with tab_criar:
-        criar_pendencia(pendencias_coll, clientes_collection)
-    
-    with tab_minhas:
-        mostrar_minhas_pendencias(pendencias_coll, clientes_collection)
-    
-    with tab_todas:
-        mostrar_todas_pendencias(pendencias_coll, clientes_collection)
-    
-    with tab_calendario:
-        mostrar_calendario_pendencias(pendencias_coll)
+    # Definir abas baseado no perfil
+    if pode_ver_todas_pendencias(perfil):
+        tab_criar, tab_minhas, tab_todas, tab_calendario = st.tabs([
+            "➕ Nova Pendência",
+            "👤 Minhas Pendências",
+            "📋 Todas as Pendências",
+            "📅 Calendário"
+        ])
+        
+        with tab_criar:
+            criar_pendencia(pendencias_coll, clientes_collection)
+        
+        with tab_minhas:
+            mostrar_minhas_pendencias(pendencias_coll, clientes_collection)
+        
+        with tab_todas:
+            mostrar_todas_pendencias(pendencias_coll, clientes_collection)
+        
+        with tab_calendario:
+            mostrar_calendario_pendencias(pendencias_coll)
+    else:
+        # Atendente N1 só vê suas pendências
+        tab_criar, tab_minhas, tab_calendario = st.tabs([
+            "➕ Nova Pendência",
+            "👤 Minhas Pendências",
+            "📅 Calendário"
+        ])
+        
+        with tab_criar:
+            criar_pendencia(pendencias_coll, clientes_collection)
+        
+        with tab_minhas:
+            mostrar_minhas_pendencias(pendencias_coll, clientes_collection)
+        
+        with tab_calendario:
+            mostrar_calendario_pendencias(pendencias_coll)
 
 # ============================================================================
 # ➕ CRIAR PENDÊNCIA
@@ -209,7 +447,6 @@ def criar_pendencia(pendencias_coll, clientes_collection):
     perfil = st.session_state.get("perfil", "")
     nome_usuario = st.session_state.get("nome_usuario", perfil)
     
-    # Mostrar hora atual de Brasília
     agora = agora_brasilia()
     st.caption(f"👤 Logado como: **{nome_usuario}** ({perfil}) | 🕐 {agora.strftime('%d/%m/%Y %H:%M')}")
     
@@ -255,12 +492,10 @@ def criar_pendencia(pendencias_coll, clientes_collection):
             if not usuarios:
                 st.error("❌ Nenhum usuário interno encontrado no sistema!")
             else:
-                # Mostrar contagem
                 total_fixos = sum(1 for u in usuarios if u.get("origem") == "Fixo (secrets)")
                 total_dinamicos = sum(1 for u in usuarios if u.get("origem") == "MongoDB")
                 st.caption(f"📊 {len(usuarios)} colaboradores disponíveis ({total_fixos} fixos + {total_dinamicos} cadastrados)")
                 
-                # Criar dicionário de opções
                 opcoes_usuarios = {}
                 for u in usuarios:
                     label = f"{u['nome']} ({u['perfil_nome']})"
@@ -268,7 +503,6 @@ def criar_pendencia(pendencias_coll, clientes_collection):
                         label += f" - @{u['login']}"
                     opcoes_usuarios[label] = u['login'] if u['login'] else u['perfil']
                 
-                # Dropdown de seleção
                 responsavel_opcao = st.selectbox(
                     "👤 Selecione o Responsável *",
                     options=list(opcoes_usuarios.keys()),
@@ -277,10 +511,8 @@ def criar_pendencia(pendencias_coll, clientes_collection):
                 responsavel = opcoes_usuarios[responsavel_opcao]
                 st.success(f"✅ Pendência será direcionada para: **{responsavel_opcao}**")
         else:
-            # Para mim mesmo
             responsavel = perfil
             
-            # Para admin e recepção, usar o login específico do secrets
             if perfil == "admin":
                 try:
                     responsavel = st.secrets["usuarios"]["admin_login"]
@@ -296,7 +528,7 @@ def criar_pendencia(pendencias_coll, clientes_collection):
         
         st.divider()
         
-        # Cliente/Condomínio relacionado (opcional)
+        # Condomínio relacionado (opcional)
         st.markdown("### 🏢 Condomínio Relacionado (opcional)")
         
         vincular_condominio = st.checkbox(
@@ -318,7 +550,6 @@ def criar_pendencia(pendencias_coll, clientes_collection):
             )
             
             if busca:
-                # Busca na coleção de condomínios (se existir) ou clientes
                 try:
                     condominios_coll = clientes_collection.database.condominios
                     encontrados = list(condominios_coll.find({
@@ -344,7 +575,6 @@ def criar_pendencia(pendencias_coll, clientes_collection):
                     else:
                         st.warning("🔍 Nenhum condomínio encontrado.")
                 except Exception:
-                    # Fallback: busca na coleção de clientes
                     encontrados = list(clientes_collection.find({
                         "nome_completo": {"$regex": busca, "$options": "i"}
                     }).limit(10))
@@ -400,6 +630,7 @@ def criar_pendencia(pendencias_coll, clientes_collection):
                     "descricao": descricao.strip(),
                     "solicitante": perfil,
                     "solicitante_nome": nome_usuario,
+                    "solicitante_perfil": perfil,  # ✅ Salvar perfil do criador para controle hierárquico
                     "responsavel": responsavel,
                     "data_criacao": agora_brasilia(),
                     "data_limite": datetime.combine(data_limite, datetime.min.time()),
@@ -414,7 +645,7 @@ def criar_pendencia(pendencias_coll, clientes_collection):
                         "acao": "Pendência criada",
                         "data": agora_brasilia(),
                         "usuario": nome_usuario,
-                        "detalhes": f"Solicitante: {nome_usuario} → Responsável: {responsavel}"
+                        "detalhes": f"Solicitante: {nome_usuario} ({perfil}) → Responsável: {responsavel}"
                     }]
                 }
                 
@@ -438,10 +669,8 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
     
     st.caption(f"🕐 Horário atual: {agora_brasilia().strftime('%d/%m/%Y %H:%M')}")
     
-    # Query base: pendências onde sou responsável
     query = {"responsavel": perfil}
     
-    # Para perfis do secrets, buscar também pelo login real
     if perfil == "admin":
         try:
             admin_login = st.secrets["usuarios"]["admin_login"]
@@ -480,7 +709,6 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
             key="minhas_periodo"
         )
     
-    # Aplicar filtros
     if status_filter:
         if "$or" in query:
             query = {"$and": [{"$or": query["$or"]}, {"status": {"$in": status_filter}}]}
@@ -544,7 +772,6 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
             with col1:
                 st.markdown(f"**📝 Descrição:** {pendencia['descricao']}")
                 
-                # Data limite
                 data_limite_str = pendencia['data_limite'].strftime('%d/%m/%Y')
                 if vencida:
                     dias_atraso = (datetime.now() - pendencia['data_limite']).days
@@ -552,26 +779,58 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
                 else:
                     st.info(f"📅 **Data Limite:** {data_limite_str}")
                 
-                # Solicitante
                 st.write(f"👤 **Solicitante:** {pendencia.get('solicitante_nome', pendencia['solicitante'])}")
                 
-                # Condomínio relacionado
                 if pendencia.get("condominio_relacionado_nome"):
                     st.write(f"🏢 **Condomínio:** {pendencia['condominio_relacionado_nome']}")
                 elif pendencia.get("cliente_relacionado_nome"):
                     st.write(f"👤 **Cliente:** {pendencia['cliente_relacionado_nome']}")
                 
-                # Data de criação
                 st.caption(f"🕐 Criada em: {formatar_data_hora(pendencia['data_criacao'])}")
                 
-                # Histórico
+                # ✅ Data de edição
+                if pendencia.get("data_edicao"):
+                    st.caption(f"✏️ Última edição por {pendencia.get('editado_por', 'N/A')} em: {formatar_data_hora(pendencia['data_edicao'])}")
+                
+                # ✅ Histórico detalhado
                 if pendencia.get("historico"):
                     with st.expander("📋 Ver Histórico"):
                         for h in pendencia["historico"]:
                             st.write(f"• {formatar_data_hora(h['data'])} - {h['acao']} por {h['usuario']}")
+                            if h.get("detalhes"):
+                                st.caption(f"  {h['detalhes']}")
+                            if h.get("perfil") and h['perfil'] in ["admin", "supervisao_n3", "supervisao_n2"]:
+                                st.caption(f"  👔 Realizado por {h['perfil']}")
             
             with col2:
                 st.markdown("**Ações:**")
+                
+                # ✏️ Botão Editar (com verificação de permissão hierárquica)
+                perfil_criador = pendencia.get('solicitante_perfil', pendencia.get('solicitante', ''))
+                if pode_editar_pendencia(perfil, perfil_criador):
+                    if st.button("✏️ Editar", key=f"edit_{pendencia['_id']}", use_container_width=True):
+                        dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil)
+                
+                # 🗑️ Botão Excluir (apenas Admin)
+                if pode_excluir_pendencia(perfil):
+                    confirm_key = f"confirm_delete_{pendencia['_id']}"
+                    if st.session_state.get(confirm_key, False):
+                        st.error(f"⚠️ Tem certeza que deseja excluir permanentemente?")
+                        st.write(f"**{pendencia['titulo']}**")
+                        col_del1, col_del2 = st.columns(2)
+                        with col_del1:
+                            if st.button("✅ Sim, excluir", key=f"confirm_yes_{pendencia['_id']}", type="primary"):
+                                excluir_pendencia(pendencias_coll, pendencia["_id"], nome_usuario)
+                        with col_del2:
+                            if st.button("❌ Cancelar", key=f"confirm_no_{pendencia['_id']}"):
+                                st.session_state[confirm_key] = False
+                                st.rerun()
+                    else:
+                        if st.button("🗑️ Excluir", key=f"del_{pendencia['_id']}", use_container_width=True, type="secondary"):
+                            st.session_state[confirm_key] = True
+                            st.rerun()
+                
+                st.divider()
                 
                 if pendencia["status"] == "pendente":
                     if st.button("▶️ Iniciar", key=f"start_{pendencia['_id']}", use_container_width=True):
@@ -634,6 +893,11 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
     st.subheader("📋 Todas as Pendências")
     
     perfil = st.session_state.get("perfil", "")
+    nome_usuario = st.session_state.get("nome_usuario", perfil)
+    
+    if not pode_ver_todas_pendencias(perfil):
+        st.warning("⚠️ Você não tem permissão para visualizar todas as pendências.")
+        return
     
     # Filtros
     col1, col2, col3 = st.columns(3)
@@ -662,7 +926,6 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
             key="todas_prioridade"
         )
     
-    # Construir query
     query = {}
     if status_filter:
         query["status"] = {"$in": status_filter}
@@ -716,7 +979,7 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
             with col1:
                 st.write(f"**Descrição:** {pendencia['descricao']}")
                 st.write(f"**Responsável:** {pendencia['responsavel']}")
-                st.write(f"**Solicitante:** {pendencia.get('solicitante_nome', pendencia['solicitante'])}")
+                st.write(f"**Solicitante:** {pendencia.get('solicitante_nome', pendencia['solicitante'])} ({pendencia.get('solicitante_perfil', 'N/A')})")
                 st.write(f"**Data Limite:** {pendencia['data_limite'].strftime('%d/%m/%Y')}")
                 
                 if pendencia.get("condominio_relacionado_nome"):
@@ -725,6 +988,9 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
                     st.write(f"👤 **Cliente:** {pendencia['cliente_relacionado_nome']}")
                 
                 st.caption(f"🕐 Criada em: {formatar_data_hora(pendencia['data_criacao'])}")
+                
+                if pendencia.get("data_edicao"):
+                    st.caption(f"✏️ Última edição por {pendencia.get('editado_por', 'N/A')} ({pendencia.get('editado_por_perfil', '')}) em: {formatar_data_hora(pendencia['data_edicao'])}")
                 
                 if pendencia.get("data_conclusao"):
                     st.write(f"✅ **Concluída em:** {formatar_data_hora(pendencia['data_conclusao'])}")
@@ -736,8 +1002,48 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
                 if vencida:
                     dias_atraso = (datetime.now() - pendencia['data_limite']).days
                     st.error(f"⚠️ Vencida há {dias_atraso} dias!")
+                
+                # Histórico
+                if pendencia.get("historico"):
+                    with st.expander("📋 Ver Histórico"):
+                        for h in pendencia["historico"]:
+                            st.write(f"• {formatar_data_hora(h['data'])} - {h['acao']} por {h['usuario']}")
+                            if h.get("detalhes"):
+                                st.caption(f"  {h['detalhes']}")
+                            if h.get("perfil") and h['perfil'] in ["admin", "supervisao_n3", "supervisao_n2"]:
+                                st.caption(f"  👔 Realizado por {h['perfil']}")
             
             with col2:
+                st.markdown("**Ações:**")
+                
+                # ✏️ Botão Editar (com verificação de permissão)
+                perfil_criador = pendencia.get('solicitante_perfil', pendencia.get('solicitante', ''))
+                if pode_editar_pendencia(perfil, perfil_criador):
+                    if st.button("✏️ Editar", key=f"edit_all_{pendencia['_id']}", use_container_width=True):
+                        dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil)
+                
+                # 🗑️ Botão Excluir (apenas Admin)
+                if pode_excluir_pendencia(perfil):
+                    confirm_key = f"confirm_delete_all_{pendencia['_id']}"
+                    if st.session_state.get(confirm_key, False):
+                        st.error(f"⚠️ Tem certeza que deseja excluir permanentemente?")
+                        st.write(f"**{pendencia['titulo']}**")
+                        col_del1, col_del2 = st.columns(2)
+                        with col_del1:
+                            if st.button("✅ Sim, excluir", key=f"confirm_yes_all_{pendencia['_id']}", type="primary"):
+                                excluir_pendencia(pendencias_coll, pendencia["_id"], nome_usuario)
+                        with col_del2:
+                            if st.button("❌ Cancelar", key=f"confirm_no_all_{pendencia['_id']}"):
+                                st.session_state[confirm_key] = False
+                                st.rerun()
+                    else:
+                        if st.button("🗑️ Excluir", key=f"del_all_{pendencia['_id']}", use_container_width=True, type="secondary"):
+                            st.session_state[confirm_key] = True
+                            st.rerun()
+                
+                st.divider()
+                
+                # Botão Cancelar
                 if pendencia['status'] != 'concluida':
                     if st.button("❌ Cancelar", key=f"cancel_all_{pendencia['_id']}"):
                         pendencias_coll.update_one(
@@ -776,7 +1082,6 @@ def mostrar_calendario_pendencias(pendencias_coll):
     ano = mes_atual.year
     mes = mes_atual.month
     
-    # Navegação
     col1, col2, col3 = st.columns([1, 3, 1])
     with col1:
         if st.button("◀️ Mês Anterior", key="prev_mes_pend"):
@@ -790,7 +1095,6 @@ def mostrar_calendario_pendencias(pendencias_coll):
             st.session_state.mes_pendencias = (mes_atual.replace(day=28) + timedelta(days=4)).replace(day=1)
             st.rerun()
     
-    # Buscar pendências do mês
     inicio_mes = datetime(ano, mes, 1)
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     fim_mes = datetime(ano, mes, ultimo_dia, 23, 59, 59)
