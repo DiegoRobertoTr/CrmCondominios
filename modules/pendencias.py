@@ -59,17 +59,12 @@ def pode_editar_pendencia(perfil_usuario, perfil_criador):
     if perfil_usuario == "admin":
         return True
     
-    # Se for o próprio criador
     if perfil_usuario == perfil_criador:
         return True
     
-    # Supervisores podem editar níveis iguais ou inferiores
     nivel_usuario = HIERARQUIA_PERFIS.get(perfil_usuario, 0)
     nivel_criador = HIERARQUIA_PERFIS.get(perfil_criador, 0)
     
-    # Supervisor N3 pode editar N3, N2, N1, recepcao, atendente
-    # Supervisor N2 pode editar N2, N1, recepcao, atendente
-    # Supervisor N1 pode editar apenas o próprio
     if nivel_usuario >= 60:  # supervisor_n2 ou superior
         return nivel_usuario >= nivel_criador
     
@@ -108,7 +103,6 @@ def excluir_pendencia(pendencias_coll, pendencia_id, nome_usuario):
 def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usuario):
     """Modal para editar pendência com controle de acesso hierárquico e log detalhado"""
     
-    # ✅ VERIFICAÇÃO DE PERMISSÃO HIERÁRQUICA
     solicitante = pendencia.get('solicitante', '')
     criador_nome = pendencia.get('solicitante_nome', solicitante)
     perfil_criador = pendencia.get('solicitante_perfil', solicitante)
@@ -129,7 +123,6 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
             st.rerun()
         return
     
-    # Mostrar info de quem está editando
     if perfil_usuario == "admin":
         st.info(f"🔑 **Modo Admin**: Editando pendência criada por {criador_nome} ({perfil_criador})")
     elif perfil_usuario != perfil_criador:
@@ -152,14 +145,12 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
         index=prioridade_opcoes.index(prioridade_atual) if prioridade_atual in prioridade_opcoes else 1
     )
     
-    # Data limite
     data_limite_atual = pendencia['data_limite']
     if isinstance(data_limite_atual, datetime):
         data_limite = st.date_input("📅 Data Limite", value=data_limite_atual.date())
     else:
         data_limite = st.date_input("📅 Data Limite", value=data_limite_atual)
     
-    # Apenas admin e supervisores N3/N2 podem alterar o responsável
     if perfil_usuario in ["admin", "supervisao_n3", "supervisao_n2"]:
         st.divider()
         st.markdown("### 👤 Reatribuir Responsável (Supervisor/Admin)")
@@ -167,7 +158,6 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
         usuarios = obter_usuarios_disponiveis()
         responsavel_atual = pendencia.get('responsavel', '')
         
-        # Encontrar o nome do responsável atual
         responsavel_nome_atual = responsavel_atual
         for u in usuarios:
             if u['login'] == responsavel_atual or u['perfil'] == responsavel_atual:
@@ -181,7 +171,6 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
                 label += f" - @{u['login']}"
             opcoes_usuarios[label] = u['login'] if u['login'] else u['perfil']
         
-        # Encontrar o índice do responsável atual
         opcoes_labels = list(opcoes_usuarios.keys())
         try:
             index_atual = opcoes_labels.index(responsavel_nome_atual) if responsavel_nome_atual in opcoes_labels else 0
@@ -201,7 +190,6 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
     
     with col1:
         if st.button("💾 Salvar Alterações", use_container_width=True, type="primary"):
-            # ✅ REGISTRAR APENAS O QUE REALMENTE MUDOU
             alteracoes = {}
             log_detalhes = []
             
@@ -224,7 +212,6 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
                 data_nova = nova_data.strftime('%d/%m/%Y')
                 log_detalhes.append(f"Data limite: '{data_antiga}' → '{data_nova}'")
             
-            # Verificar mudança de responsável (apenas supervisores/admin)
             if novo_responsavel and novo_responsavel != pendencia.get('responsavel', ''):
                 alteracoes['responsavel'] = novo_responsavel
                 log_detalhes.append(f"Responsável: '{pendencia.get('responsavel', '')}' → '{novo_responsavel}'")
@@ -233,12 +220,10 @@ def dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil_usu
                 st.warning("⚠️ Nenhuma alteração detectada!")
                 return
             
-            # Adiciona metadados de edição
             alteracoes['data_edicao'] = agora_brasilia()
             alteracoes['editado_por'] = nome_usuario
             alteracoes['editado_por_perfil'] = perfil_usuario
             
-            # ✅ LOG RESUMIDO (economiza espaço no MongoDB Free Tier)
             log_entry = {
                 "acao": "Pendência editada",
                 "data": agora_brasilia(),
@@ -281,14 +266,9 @@ def obter_usuarios_disponiveis(clientes_collection=None):
     - supervisao_n1 (MongoDB)
     - supervisao_n2 (MongoDB)
     - supervisao_n3 (MongoDB)
-    
-    Perfis excluídos:
-    - diretoria (apenas visualiza relatórios)
-    - embaixador, tecnico, pap, revenda (externos)
     """
     usuarios = []
     
-    # ✅ PASSO 1: Adicionar usuários FIXOS do secrets
     try:
         if "usuarios" in st.secrets:
             secrets_usuarios = st.secrets["usuarios"]
@@ -320,7 +300,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
             "perfil": "recepcao", "perfil_nome": "Recepção"
         })
     
-    # ✅ PASSO 2: Adicionar usuários DINÂMICOS do MongoDB (apenas internos)
     try:
         usuarios_coll = st.session_state.get("usuarios_collection")
         
@@ -370,7 +349,6 @@ def obter_usuarios_disponiveis(clientes_collection=None):
     except Exception:
         pass
     
-    # ✅ Ordenação hierárquica
     ordem_perfil = {
         "admin": 0,
         "recepcao": 1,
@@ -392,7 +370,6 @@ def render_pendencias(clientes_collection):
     
     pendencias_coll = get_pendencias_collection(clientes_collection)
     
-    # Garantir índices
     pendencias_coll.create_index("responsavel")
     pendencias_coll.create_index("solicitante")
     pendencias_coll.create_index("status")
@@ -400,7 +377,6 @@ def render_pendencias(clientes_collection):
     
     perfil = st.session_state.get("perfil", "")
     
-    # Definir abas baseado no perfil
     if pode_ver_todas_pendencias(perfil):
         tab_criar, tab_minhas, tab_todas, tab_calendario = st.tabs([
             "➕ Nova Pendência",
@@ -421,7 +397,6 @@ def render_pendencias(clientes_collection):
         with tab_calendario:
             mostrar_calendario_pendencias(pendencias_coll)
     else:
-        # Atendente N1 só vê suas pendências
         tab_criar, tab_minhas, tab_calendario = st.tabs([
             "➕ Nova Pendência",
             "👤 Minhas Pendências",
@@ -528,126 +503,102 @@ def criar_pendencia(pendencias_coll, clientes_collection):
         
         st.divider()
         
-        # ✅ Condomínio relacionado (opcional) - CORRIGIDO
+        # ✅ Condomínio relacionado - CORRIGIDO (sempre visível)
         st.markdown("### 🏢 Condomínio Relacionado (opcional)")
-        
-        vincular_opcao = st.selectbox(
-            "Vincular a um condomínio?",
-            ["❌ Não vincular", "📋 Selecionar da lista", "🔍 Buscar por nome"],
-            help="Escolha como deseja associar esta pendência a um condomínio"
-        )
         
         condominio_id = None
         condominio_nome = None
         cliente_id = None
         cliente_nome = None
         
-        if vincular_opcao == "📋 Selecionar da lista":
-            # ✅ CARREGAR LISTA COMPLETA DE CONDOMÍNIOS
-            try:
-                from modules.condominios import get_condominio_options
-                opcoes_condominios = get_condominio_options()
+        # Tentar carregar lista de condomínios
+        try:
+            from modules.condominios import get_condominio_options
+            opcoes_condominios = get_condominio_options()
+            
+            if opcoes_condominios:
+                # Criar dicionário com opção "Não vincular" + todos os condomínios
+                opcoes_finais = {"❌ Não vincular a condomínio": None}
+                opcoes_finais.update(opcoes_condominios)
                 
-                if not opcoes_condominios:
-                    st.warning("📭 Nenhum condomínio cadastrado! Cadastre primeiro no módulo de Condomínios.")
-                else:
-                    condominio_escolhido = st.selectbox(
-                        "🏢 Selecione o condomínio:",
-                        options=["Selecione..."] + list(opcoes_condominios.keys()),
-                        key="condominio_lista_pendencia"
-                    )
-                    
-                    if condominio_escolhido != "Selecione...":
-                        condominio_id = opcoes_condominios[condominio_escolhido]
-                        condominio_nome = condominio_escolhido.split(" - ")[0].strip()
-                        st.success(f"✅ Condomínio vinculado: **{condominio_nome}**")
-            except ImportError:
-                st.warning("⚠️ Módulo de condomínios não disponível. Use a busca por nome.")
-            except Exception as e:
-                st.error(f"❌ Erro ao carregar condomínios: {e}")
-        
-        elif vincular_opcao == "🔍 Buscar por nome":
-            busca = st.text_input(
-                "🔍 Digite o nome do condomínio:",
-                placeholder="Ex: Residencial Parque das Flores",
-                key="busca_condominio_pendencia"
+                condominio_escolhido = st.selectbox(
+                    "🏢 Selecione o condomínio:",
+                    options=list(opcoes_finais.keys()),
+                    help="Escolha um condomínio para vincular a esta pendência",
+                    key="condominio_select_pendencia"
+                )
+                
+                if condominio_escolhido != "❌ Não vincular a condomínio":
+                    condominio_id = opcoes_finais[condominio_escolhido]
+                    condominio_nome = condominio_escolhido.split(" - ")[0].strip()
+                    st.success(f"✅ Condomínio vinculado: **{condominio_nome}**")
+            else:
+                st.warning("📭 Nenhum condomínio cadastrado no sistema.")
+        except ImportError:
+            st.info("💡 Módulo de condomínios não disponível. Busca manual ativada.")
+            
+            # Fallback: busca manual
+            busca_manual = st.text_input(
+                "🔍 Buscar condomínio ou cliente:",
+                placeholder="Digite o nome para buscar...",
+                key="busca_manual_pendencia"
             )
             
-            if busca:
+            if busca_manual:
                 try:
                     condominios_coll = clientes_collection.database.condominios
                     encontrados = list(condominios_coll.find({
-                        "nome": {"$regex": busca, "$options": "i"}
+                        "nome": {"$regex": busca_manual, "$options": "i"}
                     }).limit(10))
                     
                     if encontrados:
-                        opcoes = {}
+                        opcoes_busca = {"Selecione...": None}
                         for c in encontrados:
                             cidade = c.get('cidade', '')
                             label = f"🏢 {c['nome']}"
                             if cidade:
                                 label += f" - {cidade}"
-                            opcoes[label] = c['_id']
+                            opcoes_busca[label] = c['_id']
                         
                         escolhido = st.selectbox(
-                            "Selecione o condomínio:",
-                            options=list(opcoes.keys()),
-                            key="condominio_busca_pendencia"
+                            "Resultados da busca:",
+                            options=list(opcoes_busca.keys()),
+                            key="busca_condominio_result"
                         )
                         
-                        if escolhido:
-                            condominio_id = opcoes[escolhido]
+                        if escolhido != "Selecione..." and opcoes_busca[escolhido]:
+                            condominio_id = opcoes_busca[escolhido]
                             condominio_nome = escolhido.replace("🏢 ", "").split(" - ")[0].strip()
                             st.success(f"✅ Condomínio vinculado: **{condominio_nome}**")
                     else:
-                        st.warning("🔍 Nenhum condomínio encontrado com esse nome.")
+                        st.info("🔍 Nenhum condomínio encontrado. Buscando clientes...")
                         
-                        # Fallback: buscar na coleção de clientes
                         encontrados_clientes = list(clientes_collection.find({
-                            "nome_completo": {"$regex": busca, "$options": "i"}
+                            "nome_completo": {"$regex": busca_manual, "$options": "i"}
                         }).limit(10))
                         
                         if encontrados_clientes:
-                            st.info("💡 Resultados encontrados na base de clientes:")
-                            opcoes_clientes = {
-                                f"📞 {c['nome_completo']} - {c.get('celular', 'Sem tel')}": c['_id']
-                                for c in encontrados_clientes
-                            }
+                            opcoes_clientes = {"Selecione...": None}
+                            for c in encontrados_clientes:
+                                label = f"📞 {c['nome_completo']} - {c.get('celular', 'Sem tel')}"
+                                opcoes_clientes[label] = c['_id']
                             
                             cliente_escolhido = st.selectbox(
-                                "Selecione o cliente:",
+                                "Clientes encontrados:",
                                 options=list(opcoes_clientes.keys()),
-                                key="cliente_busca_pendencia"
+                                key="busca_cliente_result"
                             )
                             
-                            if cliente_escolhido:
+                            if cliente_escolhido != "Selecione..." and opcoes_clientes[cliente_escolhido]:
                                 cliente_id = opcoes_clientes[cliente_escolhido]
                                 cliente_nome = cliente_escolhido.split(" - ")[0].replace("📞 ", "")
                                 st.success(f"✅ Cliente vinculado: **{cliente_nome}**")
-                
+                        else:
+                            st.warning("🔍 Nenhum resultado encontrado.")
                 except Exception as e:
-                    st.warning(f"⚠️ Erro ao buscar condomínios. Tentando busca alternativa...")
-                    # Fallback simples
-                    encontrados = list(clientes_collection.find({
-                        "nome_completo": {"$regex": busca, "$options": "i"}
-                    }).limit(10))
-                    
-                    if encontrados:
-                        opcoes = {
-                            f"📞 {c['nome_completo']} - {c.get('celular', 'Sem tel')}": c['_id']
-                            for c in encontrados
-                        }
-                        
-                        escolhido = st.selectbox(
-                            "Selecione:",
-                            options=list(opcoes.keys()),
-                            key="cliente_fallback_pendencia"
-                        )
-                        
-                        if escolhido:
-                            cliente_id = opcoes[escolhido]
-                            cliente_nome = escolhido.split(" - ")[0].replace("📞 ", "")
-                            st.success(f"✅ Cliente vinculado: **{cliente_nome}**")
+                    st.error(f"❌ Erro na busca: {e}")
+        except Exception as e:
+            st.error(f"❌ Erro ao carregar condomínios: {e}")
         
         st.divider()
         
@@ -737,7 +688,6 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
         except:
             pass
     
-    # Filtros
     col1, col2, col3 = st.columns(3)
     with col1:
         status_filter = st.multiselect(
@@ -792,7 +742,6 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
         st.info("✅ Nenhuma pendência encontrada para você!")
         return
     
-    # Resumo
     pendentes = sum(1 for p in pendencias if p['status'] == 'pendente')
     em_andamento = sum(1 for p in pendencias if p['status'] == 'em_andamento')
     concluidas = sum(1 for p in pendencias if p['status'] == 'concluida')
@@ -806,7 +755,6 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
     
     st.divider()
     
-    # Cards de pendências
     for pendencia in pendencias:
         vencida = pendencia['data_limite'] < datetime.now() and pendencia['status'] in ['pendente', 'em_andamento']
         
@@ -839,11 +787,9 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
                 
                 st.caption(f"🕐 Criada em: {formatar_data_hora(pendencia['data_criacao'])}")
                 
-                # Data de edição
                 if pendencia.get("data_edicao"):
                     st.caption(f"✏️ Última edição por {pendencia.get('editado_por', 'N/A')} em: {formatar_data_hora(pendencia['data_edicao'])}")
                 
-                # Histórico detalhado
                 if pendencia.get("historico"):
                     with st.expander("📋 Ver Histórico"):
                         for h in pendencia["historico"]:
@@ -856,13 +802,11 @@ def mostrar_minhas_pendencias(pendencias_coll, clientes_collection):
             with col2:
                 st.markdown("**Ações:**")
                 
-                # Botão Editar (com verificação de permissão hierárquica)
                 perfil_criador = pendencia.get('solicitante_perfil', pendencia.get('solicitante', ''))
                 if pode_editar_pendencia(perfil, perfil_criador):
                     if st.button("✏️ Editar", key=f"edit_{pendencia['_id']}", use_container_width=True):
                         dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil)
                 
-                # Botão Excluir (apenas Admin)
                 if pode_excluir_pendencia(perfil):
                     confirm_key = f"confirm_delete_{pendencia['_id']}"
                     if st.session_state.get(confirm_key, False):
@@ -950,7 +894,6 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
         st.warning("⚠️ Você não tem permissão para visualizar todas as pendências.")
         return
     
-    # Filtros
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -997,7 +940,6 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
         st.info("📭 Nenhuma pendência encontrada!")
         return
     
-    # Dashboard
     total = len(pendencias)
     pendentes = sum(1 for p in pendencias if p['status'] == 'pendente')
     em_andamento = sum(1 for p in pendencias if p['status'] == 'em_andamento')
@@ -1013,7 +955,6 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
     
     st.divider()
     
-    # Lista
     for pendencia in pendencias:
         vencida = pendencia['data_limite'] < datetime.now() and pendencia['status'] in ['pendente', 'em_andamento']
         
@@ -1054,7 +995,6 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
                     dias_atraso = (datetime.now() - pendencia['data_limite']).days
                     st.error(f"⚠️ Vencida há {dias_atraso} dias!")
                 
-                # Histórico
                 if pendencia.get("historico"):
                     with st.expander("📋 Ver Histórico"):
                         for h in pendencia["historico"]:
@@ -1067,13 +1007,11 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
             with col2:
                 st.markdown("**Ações:**")
                 
-                # Botão Editar (com verificação de permissão)
                 perfil_criador = pendencia.get('solicitante_perfil', pendencia.get('solicitante', ''))
                 if pode_editar_pendencia(perfil, perfil_criador):
                     if st.button("✏️ Editar", key=f"edit_all_{pendencia['_id']}", use_container_width=True):
                         dialog_editar_pendencia(pendencia, pendencias_coll, nome_usuario, perfil)
                 
-                # Botão Excluir (apenas Admin)
                 if pode_excluir_pendencia(perfil):
                     confirm_key = f"confirm_delete_all_{pendencia['_id']}"
                     if st.session_state.get(confirm_key, False):
@@ -1094,7 +1032,6 @@ def mostrar_todas_pendencias(pendencias_coll, clientes_collection):
                 
                 st.divider()
                 
-                # Botão Cancelar
                 if pendencia['status'] != 'concluida':
                     if st.button("❌ Cancelar", key=f"cancel_all_{pendencia['_id']}"):
                         pendencias_coll.update_one(
