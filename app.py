@@ -1,5 +1,6 @@
 # app.py - Condomínios Tracecom
 # ✅ Atualizado com módulo de Pendências e Marketing Condomínios
+# ✅ Atualizado com módulo de Visitas Vendedoras
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias
 from pymongo import MongoClient
@@ -212,6 +213,8 @@ if not st.session_state["logado"]:
                     st.session_state["login_tecnico"] = usuario["login"]
                 elif perfil == "revenda":
                     st.session_state["codigo_revenda"] = usuario["codigo_revenda"]
+                elif perfil == "vendedora":
+                    st.session_state["nome_vendedora"] = usuario["nome_exibicao"]
                 
                 st.toast("✅ Sessão restaurada automaticamente.", icon="🔓")
                 st.rerun()
@@ -276,49 +279,57 @@ except ImportError:
         "tecnico": ["Painel Técnico"],
         "pap": ["Cadastro Porta a Porta"],
         "revenda": ["Painel Revenda"],
+        "vendedora": ["Visitas Vendedoras"],  # NOVO
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
             "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "Endereços Bloqueados",
-            "Marketing Condomínios", "Leads & Eventos"
+            "Marketing Condomínios", "Leads & Eventos",
+            "Visitas Vendedoras"  # NOVO
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos",
+            "Visitas Vendedoras"  # NOVO
         ],
         "atendente_n1": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos",
+            "Visitas Vendedoras"  # NOVO
         ],
         "supervisao_n1": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas",
-            "Marketing Condomínios", "Leads & Eventos"
+            "Marketing Condomínios", "Leads & Eventos",
+            "Visitas Vendedoras"  # NOVO
         ],
         "supervisao_n2": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
-            "Marketing Condomínios", "Leads & Eventos"
+            "Marketing Condomínios", "Leads & Eventos",
+            "Visitas Vendedoras"  # NOVO
         ],
         "supervisao_n3": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Roteiro de Vendas",
             "Admin Embaixadores", "Admin PaP", "Admin Revendas",
             "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios",
-            "Marketing Condomínios", "Leads & Eventos"
+            "Marketing Condomínios", "Leads & Eventos",
+            "Visitas Vendedoras"  # NOVO
         ],
         "diretoria": [
-            "Relatórios Condomínios", "Prospecção Condomínios"
+            "Relatórios Condomínios", "Prospecção Condomínios",
+            "Visitas Vendedoras"  # NOVO
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
 # ✅ Adiciona módulos extras para admin (caso precise de ajustes finos no fallback)
 if perfil == "admin":
-    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", "Marketing Condomínios"]
+    extras_admin = ["Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios", "Marketing Condomínios", "Visitas Vendedoras"]
     for mod in extras_admin:
         if mod not in opcoes_modulos:
             opcoes_modulos.append(mod)
@@ -366,6 +377,11 @@ try:
     elif modulo == "Marketing Condomínios" and perfil in ["admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
         from modules import admin_condominios_marketing
         admin_condominios_marketing.render_admin_marketing()
+        
+    # ✅ Módulo de Visitas Vendedoras (NOVO)
+    elif modulo == "Visitas Vendedoras":
+        from modules.visitas_vendedoras import render_visitas_vendedoras
+        render_visitas_vendedoras(clientes_collection)
         
     elif modulo == "Relatórios" and perfil in ["admin", "supervisao_n3"]:
         from modules import relatorios
