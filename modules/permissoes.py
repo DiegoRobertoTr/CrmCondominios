@@ -2,6 +2,7 @@
 """
 Configuração central de permissões por perfil
 ✅ Inclui módulo de Pendências e Marketing Condomínios para perfis internos
+✅ Inclui módulo de Visitas Vendedoras
 """
 
 PERMISSOES_POR_PERFIL = {
@@ -15,63 +16,102 @@ PERMISSOES_POR_PERFIL = {
         "Teste de Integração", "Endereços Bloqueados",
         "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
         "Marketing Condomínios",
-        "Leads & Eventos"
+        "Leads & Eventos",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     "recepcao": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
         "HotSpots WiFi", "Satisfação", "Endereços Bloqueados",
-        "Leads & Eventos"
+        "Leads & Eventos",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     "atendente_n1": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
         "HotSpots WiFi", "Satisfação", "Endereços Bloqueados",
-        "Leads & Eventos"
+        "Leads & Eventos",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     "supervisao_n1": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
         "Marketing Condomínios",
-        "Leads & Eventos"
+        "Leads & Eventos",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     "supervisao_n2": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
         "Marketing Condomínios",
-        "Leads & Eventos"
+        "Leads & Eventos",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     "supervisao_n3": [
         "Cadastro", "Follow-up", "Agendamentos", "Pendências",
         "Roteiro de Vendas",
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
         "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios",
         "Marketing Condomínios",
-        "Leads & Eventos"
+        "Leads & Eventos",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     # --- DIRETORIA ---
     "diretoria": [
         "Relatórios Condomínios", 
-        "Prospecção Condomínios"
+        "Prospecção Condomínios",
+        "Visitas Vendedoras"  # NOVO
     ],
+    
     # --- Parceiros Externos ---
     "embaixador": ["Painel Embaixador"],
     "tecnico": ["Painel Técnico"],
     "pap": ["Cadastro Porta a Porta"],
-    "revenda": ["Painel Revenda"]
+    "revenda": ["Painel Revenda"],
+    
+    # --- NOVO PERFIL: Vendedora ---
+    "vendedora": ["Visitas Vendedoras"]
 }
 
 def get_modulos_permitidos(perfil):
-    """Retorna lista de módulos que o perfil pode acessar"""
+    """
+    Retorna lista de módulos que o perfil pode acessar
+    
+    Args:
+        perfil (str): Nome do perfil do usuário
+        
+    Returns:
+        list: Lista de módulos permitidos para o perfil
+    """
     return PERMISSOES_POR_PERFIL.get(perfil, [])
 
 def pode_acessar_modulo(perfil, modulo):
-    """Verifica se perfil tem acesso ao módulo"""
+    """
+    Verifica se perfil tem acesso ao módulo específico
+    
+    Args:
+        perfil (str): Nome do perfil do usuário
+        modulo (str): Nome do módulo a ser verificado
+        
+    Returns:
+        bool: True se o perfil pode acessar o módulo, False caso contrário
+    """
     return modulo in get_modulos_permitidos(perfil)
 
 def get_perfis_internos():
-    """Retorna perfis que são funcionários internos (para cadastro)"""
+    """
+    Retorna perfis que são funcionários internos (para cadastro)
+    
+    Returns:
+        list: Lista de perfis internos
+    """
     return [
         "admin", "recepcao", "atendente_n1",
         "supervisao_n1", "supervisao_n2", "supervisao_n3",
@@ -80,8 +120,11 @@ def get_perfis_internos():
 
 def get_perfis_pendencias():
     """
-    ✅ Retorna perfis que podem criar/receber pendências
+    Retorna perfis que podem criar/receber pendências
     (Todos os internos, exceto diretoria)
+    
+    Returns:
+        list: Lista de perfis que podem gerenciar pendências
     """
     return [
         "admin", "recepcao", "atendente_n1",
@@ -90,8 +133,81 @@ def get_perfis_pendencias():
 
 def get_perfis_marketing():
     """
-    ✅ Retorna perfis que podem editar marketing dos condomínios
+    Retorna perfis que podem editar marketing dos condomínios
+    
+    Returns:
+        list: Lista de perfis com acesso ao marketing de condomínios
     """
     return [
         "admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"
     ]
+
+def get_perfis_visitas_vendedoras():
+    """
+    Retorna perfis que podem gerenciar visitas de vendedoras
+    
+    Returns:
+        list: Lista de perfis com acesso ao módulo de visitas de vendedoras
+    """
+    return [
+        "admin", "diretoria", "supervisao_n1", "supervisao_n2", "supervisao_n3",
+        "recepcao", "atendente_n1", "vendedora"
+    ]
+
+def get_perfis_vendedoras():
+    """
+    Retorna perfis que são vendedoras (acesso restrito à sua própria agenda)
+    
+    Returns:
+        list: Lista de perfis de vendedoras
+    """
+    return ["vendedora"]
+
+def get_perfis_gestao_visitas():
+    """
+    Retorna perfis que podem gerenciar todas as visitas (admin/diretoria/supervisão)
+    
+    Returns:
+        list: Lista de perfis com gestão completa do módulo
+    """
+    return [
+        "admin", "diretoria", "supervisao_n1", "supervisao_n2", "supervisao_n3"
+    ]
+
+def get_perfis_visualizacao_visitas():
+    """
+    Retorna perfis que podem visualizar visitas mas sem poder editar agendamentos
+    
+    Returns:
+        list: Lista de perfis com acesso apenas visual
+    """
+    return ["recepcao", "atendente_n1"]
+
+# --- Função auxiliar para validar permissões ---
+def validar_permissao_visitas_vendedoras(perfil_usuario, nome_usuario=None, vendedora_visita=None):
+    """
+    Valida permissão específica para o módulo de visitas de vendedoras
+    
+    Args:
+        perfil_usuario (str): Perfil do usuário logado
+        nome_usuario (str, optional): Nome do usuário logado
+        vendedora_visita (str, optional): Nome da vendedora da visita
+        
+    Returns:
+        tuple: (pode_visualizar, pode_editar, pode_gerenciar)
+            - pode_visualizar: pode ver as informações
+            - pode_editar: pode editar/criar/cancelar visitas
+            - pode_gerenciar: pode gerenciar vendedoras e condomínios
+    """
+    if perfil_usuario == "admin":
+        return True, True, True
+    elif perfil_usuario in get_perfis_gestao_visitas():
+        return True, True, True
+    elif perfil_usuario in get_perfis_visualizacao_visitas():
+        return True, False, False
+    elif perfil_usuario == "vendedora":
+        # Vendedora só vê e edita suas próprias visitas
+        pode_editar = (nome_usuario == vendedora_visita)
+        return True, pode_editar, False
+    else:
+        return False, False, False
