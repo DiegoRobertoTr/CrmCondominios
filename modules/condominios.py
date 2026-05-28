@@ -1,7 +1,20 @@
+# modules/condominios.py
 import streamlit as st
 from datetime import datetime
 from pymongo import MongoClient
 import urllib.parse
+
+# Lista de opções de Zona
+OPCOES_ZONA = [
+    "Selecione...",
+    "Zona Sul",
+    "Zona Norte", 
+    "Zona Oeste",
+    "Zona Sudoeste",
+    "Centro",
+    "Baixada Fluminense",
+    "Outros"
+]
 
 def get_condominios_collection():
     """Retorna coleção de condomínios"""
@@ -31,14 +44,13 @@ def render_cadastro_condominio():
         with col1:
             nome = st.text_input("Nome do Condomínio *", max_chars=100)
             cnpj = st.text_input("CNPJ", max_chars=18, placeholder="00.000.000/0000-00")
-            # ✅ BAIRRO AGORA NA COLUNA 1 (antes da Cidade)
             bairro = st.text_input("Bairro *", max_chars=50)
+            zona = st.selectbox("Zona *", options=OPCOES_ZONA, index=0)
             estado = st.text_input("Estado", value="RJ", max_chars=2, disabled=True)
         
         with col2:
             endereco = st.text_input("Endereço *", max_chars=100)
             numero = st.text_input("Número *", max_chars=10)
-            # ✅ CIDADE AGORA NA COLUNA 2 (depois do Bairro)
             cidade = st.text_input("Cidade *", value="Rio de Janeiro", max_chars=50)
             cep = st.text_input("CEP", max_chars=10, placeholder="00000-000")
         
@@ -58,13 +70,16 @@ def render_cadastro_condominio():
         if submitted:
             if not all([nome, endereco, numero, cidade, bairro]):
                 st.error("⚠️ Preencha os campos obrigatórios!")
+            elif zona == "Selecione...":
+                st.error("⚠️ Selecione a Zona do condomínio!")
             else:
                 condominio_data = {
                     "nome": nome.upper().strip(),
                     "cnpj": cnpj.strip() if cnpj else None,
                     "cidade": cidade.strip(),
                     "estado": "RJ",
-                    "bairro": bairro.strip(),  # ✅ Campo Bairro
+                    "bairro": bairro.strip(),
+                    "zona": zona,  # ✅ NOVO CAMPO
                     "endereco": endereco.strip(),
                     "numero": numero.strip(),
                     "cep": cep.strip() if cep else None,
@@ -100,3 +115,23 @@ def get_condominio_options():
     """Retorna lista de opções para selectbox (ID, nome)"""
     condominios = get_all_condominios()
     return {f"{c['nome']} - {c['cidade']}": c["_id"] for c in condominios}
+
+
+# ✅ Nova função: Buscar condomínios por zona
+def get_condominios_por_zona(zona=None):
+    """Retorna condomínios filtrados por zona"""
+    collection = get_condominios_collection()
+    if zona:
+        return list(collection.find({"zona": zona}).sort("nome", 1))
+    return get_all_condominios()
+
+
+# ✅ Nova função: Estatísticas de zonas
+def get_estatisticas_zonas():
+    """Retorna contagem de condomínios por zona"""
+    collection = get_condominios_collection()
+    pipeline = [
+        {"$group": {"_id": "$zona", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]
+    return list(collection.aggregate(pipeline))
