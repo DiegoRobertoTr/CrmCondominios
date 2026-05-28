@@ -1,7 +1,7 @@
-app.py - Condomínios Tracecom
-✅ Atualizado com módulo de Pendências, Marketing Condomínios e Visitas Vendedoras
+# app.py - Condomínios Tracecom
+# ✅ Atualizado com módulo de Pendências e Marketing Condomínios
 import streamlit as st
-from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias, visitas_vendedoras
+from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias
 from pymongo import MongoClient
 import urllib.parse
 from datetime import datetime
@@ -10,9 +10,9 @@ from streamlit_js_eval import streamlit_js_eval
 from urllib.parse import urlencode
 import base64
 
-============================================================================
-🏢 CONFIGURAÇÃO DE IMAGEM DE FUNDO COM OVERLAY
-============================================================================
+# ============================================================================
+# 🏢 CONFIGURAÇÃO DE IMAGEM DE FUNDO COM OVERLAY
+# ============================================================================
 def get_base64_image(image_path):
     """Converte imagem local para base64 para usar como background."""
     try:
@@ -39,7 +39,7 @@ if img_base64:
     }}
     /* Overlay branco semi-transparente para melhorar legibilidade */
     .main::before {{
-        content: " ";
+        content: "";
         position: fixed;
         top: 0;
         left: 0;
@@ -82,9 +82,9 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-============================================================================
-⭐ Configuração da página
-============================================================================
+# ============================================================================
+# ⭐ Configuração da página
+# ============================================================================
 st.set_page_config(
     page_title="Condominios Tracecom",
     page_icon="🏢",
@@ -92,9 +92,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-============================================================================
-🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO
-============================================================================
+# ============================================================================
+# 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO
+# ============================================================================
 query_params = st.query_params.to_dict()
 
 # ✅ Rota para pesquisa de satisfação
@@ -102,12 +102,13 @@ if query_params.get("page") == ["satisfacao"]:
     id_cliente = query_params.get("id", [""])[0]
     tipo = query_params.get("tipo", [""])[0]
     os_id = query_params.get("os", [""])[0]
+    
     link_base = "https://forms.gle/DNburCnrLyLgYcweA"
     params = {}
     if id_cliente: params["id"] = id_cliente
     if tipo: params["tipo"] = tipo
     if os_id: params["os"] = os_id
-
+    
     redirect_url = link_base
     if params:
         redirect_url += "?" + urlencode(params)
@@ -137,9 +138,10 @@ if query_params.get("page") == ["hotspots/confirmar"]:
         st.error(f"Erro na confirmação: {e}")
     st.stop()
 
-============================================================================
---- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
-============================================================================
+# ============================================================================
+# --- 🧩 DAQUI PARA BAIXO: Código privado (requer login) ---
+# ============================================================================
+
 # Função auxiliar: coleção de usuários
 def get_usuarios_collection():
     try:
@@ -150,6 +152,7 @@ def get_usuarios_collection():
         username = st.secrets.get("MONGO_USERNAME", "")
         password = st.secrets.get("MONGO_PASSWORD", "")
         cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "cluster0.6eywlbl.mongodb.net")
+    
     u = urllib.parse.quote_plus(username)
     p = urllib.parse.quote_plus(password)
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority&appName=Cluster0"
@@ -171,9 +174,9 @@ try:
 except Exception:
     pass  # Índices já podem existir
 
-============================================================================
---- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
-============================================================================
+# ============================================================================
+# --- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
+# ============================================================================
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
 
@@ -219,17 +222,17 @@ if not st.session_state["logado"]:
             st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
             auth.remove_local_storage_token()
 
-============================================================================
---- 🚪 Redireciona para login se não autenticado ---
-============================================================================
+# ============================================================================
+# --- 🚪 Redireciona para login se não autenticado ---
+# ============================================================================
 if not st.session_state["logado"]:
     st.title("🔐 Condomínios Tracecom - Login")
     auth.login()
     st.stop()
 
-============================================================================
---- ✅ Interface principal ---
-============================================================================
+# ============================================================================
+# --- ✅ Interface principal ---
+# ============================================================================
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
 
 # --- 🎯 Badge de pendências no menu lateral ---
@@ -237,6 +240,7 @@ perfil = st.session_state["perfil"]
 try:
     from modules.permissoes import get_perfis_pendencias
     perfis_pendencias = get_perfis_pendencias()
+    
     if perfil in perfis_pendencias:
         pendencias_coll = clientes_collection.database.pendencias
         count_pendencias = pendencias_coll.count_documents({
@@ -259,15 +263,15 @@ if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
 st.sidebar.divider()
 st.sidebar.header("📋 Módulos")
 
-============================================================================
---- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
-============================================================================
+# ============================================================================
+# --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
+# ============================================================================
 try:
     from modules.permissoes import get_modulos_permitidos
     opcoes_modulos = get_modulos_permitidos(perfil)
 except ImportError:
     # Fallback se módulo não existir ainda
-    modulo_map = { 
+    modulo_map = {
         "embaixador": ["Painel Embaixador"],
         "tecnico": ["Painel Técnico"],
         "pap": ["Cadastro Porta a Porta"],
@@ -278,7 +282,7 @@ except ImportError:
             "Admin Funcionários", "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "Endereços Bloqueados",
-            "Marketing Condomínios", "Leads & Eventos", "Visitas Vendedoras"
+            "Marketing Condomínios", "Leads & Eventos"
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
@@ -286,7 +290,7 @@ except ImportError:
         ],
         "atendente_n1": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
-            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos", "Visitas Vendedoras"
+            "Roteiro de Vendas", "Endereços Bloqueados", "Leads & Eventos"
         ],
         "supervisao_n1": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
@@ -307,9 +311,8 @@ except ImportError:
             "Marketing Condomínios", "Leads & Eventos"
         ],
         "diretoria": [
-            "Relatórios Condomínios", "Prospecção Condomínios", "Visitas Vendedoras"
+            "Relatórios Condomínios", "Prospecção Condomínios"
         ],
-        "vendedora": ["Visitas Vendedoras"]
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
@@ -322,9 +325,9 @@ if perfil == "admin":
 
 modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
-============================================================================
---- 🔒 Logout ---
-============================================================================
+# ============================================================================
+# --- 🔒 Logout ---
+# ============================================================================
 if st.sidebar.button("🚪 Logout"):
     auth.remove_local_storage_token()
     for k in list(st.session_state.keys()):
@@ -333,21 +336,22 @@ if st.sidebar.button("🚪 Logout"):
     st.session_state["logado"] = False
     st.rerun()
 
-============================================================================
---- 🏢 Cabeçalho ---
-============================================================================
+# ============================================================================
+# --- 🏢 Cabeçalho ---
+# ============================================================================
 col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=80)
 with col2:
     st.title("🏢 Condomínios Tracecom")
 
-============================================================================
---- 📦 Carregamento de módulos ---
-============================================================================
+# ============================================================================
+# --- 📦 Carregamento de módulos ---
+# ============================================================================
 try:
     if modulo == "Cadastro":
         cadastro.render_cadastro(clientes_collection)
+        
     elif modulo == "Follow-up":
         followup.render_followup(clientes_collection)
         
@@ -357,11 +361,6 @@ try:
     # ✅ Módulo de Pendências
     elif modulo == "Pendências":
         pendencias.render_pendencias(clientes_collection)
-        
-    # ✅ Módulo de Visitas Vendedoras
-    elif modulo == "Visitas Vendedoras":
-        visitas_collection = clientes_collection.database.visitas_vendedoras
-        visitas_vendedoras.render_visitas_vendedoras(visitas_collection)
         
     # ✅ Módulo de Marketing Condomínios
     elif modulo == "Marketing Condomínios" and perfil in ["admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
@@ -447,7 +446,7 @@ try:
         
     else:
         st.info("Selecione um módulo no menu lateral.")
-        
+
 except ImportError as e:
     st.error(f"⚠️ Módulo não encontrado ou importação falhou: `{e}`")
     st.info("Verifique se o arquivo está na pasta correta (`modules/`) e se o nome da função `render` está correto.")
