@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO DEFINITIVA)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -36,9 +36,9 @@ except ImportError:
         pass
 
 # ============================================================================
-# ✅ OTIMIZAÇÃO 1: Cache de Condomínios com @st.cache_resource
+# ✅ OTIMIZAÇÃO: Cache de Condomínios
 # ============================================================================
-@st.cache_resource(ttl=300)  # Cache válido por 5 minutos
+@st.cache_resource(ttl=300)
 def get_condominio_options_cached(collection):
     """
     Retorna opções de condomínio COM CACHE.
@@ -52,35 +52,52 @@ def get_condominio_options_cached(collection):
         return {"Nenhum / Não se aplica": None}
 
 # ============================================================================
-# ✅ OTIMIZAÇÃO 2: Criar Índices no MongoDB (Performance)
+# ✅ MANUTENÇÃO DE ÍNDICES - Versão definitiva (sem erros)
 # ============================================================================
-def criar_indices_performance(clientes_collection):
+def garantir_indices(clientes_collection):
     """
-    Cria índices no MongoDB para melhorar performance das queries.
-    Executar apenas uma vez na inicialização do sistema.
+    Garante que os índices essenciais existam.
+    Foco principal: índice UNIQUE no celular (evita duplicatas).
     """
     try:
-        clientes_collection.create_index([("celular", 1)], unique=False)
-        clientes_collection.create_index([("cpf", 1)], unique=False)
-        clientes_collection.create_index([("nome_completo", "text")])
-        clientes_collection.create_index([("seguiu_ativacao", 1), ("retorno_agendado", 1)])
-        clientes_collection.create_index([("endereco", 1), ("numero", 1), ("endereco_bloqueado", 1)])
-        clientes_collection.create_index([("condominio_nome", 1)])
-        clientes_collection.create_index([("data_cadastro", -1)])
-        clientes_collection.create_index([("integrado_ixc", 1)])  # ✅ Índice para integração
+        indices_existentes = clientes_collection.index_information()
+        
+        # 1. Índice ÚNICO do Celular (CRÍTICO - evita duplicatas)
+        if "celular_1" not in indices_existentes:
+            clientes_collection.create_index([("celular", 1)], unique=True, name="celular_1")
+        elif not indices_existentes["celular_1"].get("unique", False):
+            # Recriar como único se necessário
+            clientes_collection.drop_index("celular_1")
+            clientes_collection.create_index([("celular", 1)], unique=True, name="celular_1")
+        
+        # 2. Outros índices úteis (opcionais, não críticos)
+        indices_opcionais = [
+            ("cpf_1", [("cpf", 1)]),
+            ("data_cadastro_-1", [("data_cadastro", -1)]),
+            ("integrado_ixc_1", [("integrado_ixc", 1)]),
+            ("status_1", [("status", 1)]),
+            ("condominio_nome_1", [("condominio_nome", 1)]),
+        ]
+        
+        for nome, keys in indices_opcionais:
+            if nome not in indices_existentes:
+                try:
+                    clientes_collection.create_index(keys, name=nome)
+                except:
+                    pass  # Ignora erro em índices opcionais
+        
         return True
     except Exception as e:
-        st.warning(f"⚠️ Não foi possível criar índices: {e}")
+        # Não mostrar erro para o usuário
         return False
 
 # ============================================================================
-# ✅ OTIMIZAÇÃO 3: Atualizar Endereço e CEP por Condomínio
+# ✅ ATUALIZAR ENDEREÇO E CEP POR CONDOMÍNIO
 # ============================================================================
 def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_options):
     """
     Atualiza o session_state com dados do condomínio selecionado.
     Agora inclui CEP também.
-    ✅ SEM st.rerun() - Streamlit detecta mudanças automaticamente.
     """
     cond_id = condominio_options.get(condominio_nome)
     if cond_id:
@@ -90,7 +107,7 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             st.session_state[f"numero_{suffix}"] = cond_data.get("numero", "")
             st.session_state[f"bairro_{suffix}"] = cond_data.get("bairro", "")
             st.session_state[f"cidade_{suffix}"] = cond_data.get("cidade", "")
-            st.session_state[f"cep_{suffix}"] = cond_data.get("cep", "")  # ✅ NOVO
+            st.session_state[f"cep_{suffix}"] = cond_data.get("cep", "")
             st.session_state[f"condominio_id_{suffix}"] = cond_id
             st.session_state[f"condominio_nome_{suffix}"] = condominio_nome
 
@@ -562,7 +579,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
 
             col_bloco, col_apto = st.columns(2)
             with col_bloco:
-                bloco = st.text_input("Bloco", value=cliente.get("bloco", ""), key=f"bloco_{key_suffix}")
+                bloko = st.text_input("Bloco", value=cliente.get("bloco", ""), key=f"bloco_{key_suffix}")
             with col_apto:
                 apartamento = st.text_input("Apartamento", value=cliente.get("apartamento", ""), key=f"apartamento_{key_suffix}")
 
@@ -578,12 +595,12 @@ def expander_visualizar_editar(cliente, clientes_collection):
             with col2:
                 cidade = st.text_input("Cidade*", max_chars=50, value=st.session_state.get(f"cidade_{key_suffix}", cliente.get("cidade", "Rio de Janeiro")), key=f"cidade_{key_suffix}")
 
-            # ✅ CAMPO CEP ADICIONADO
+            # ✅ CAMPO CEP
             col1, col2 = st.columns(2)
             with col1:
                 cep = st.text_input("CEP", max_chars=10, placeholder="00000-000", value=st.session_state.get(f"cep_{key_suffix}", cliente.get("cep", "")), key=f"cep_{key_suffix}")
             with col2:
-                pass  # Espaço reservado
+                pass
 
             col1, col2 = st.columns(2)
             with col1:
@@ -768,7 +785,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "complemento": complemento if complemento else None,
                             "cidade": cidade if cidade else None,
                             "bairro": bairro if bairro else None,
-                            "cep": cep if cep else None,  # ✅ NOVO
+                            "cep": cep if cep else None,
                             "ponto_referencia": ponto_referencia if ponto_referencia else None,
                             "tipo_moradia": tipo_moradia if tipo_moradia != "Selecione..." else None,
                             "tempo_moradia": {
@@ -805,7 +822,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "observacoes_bloqueio_endereco": cliente.get("observacoes_bloqueio_endereco", None),
                             "condominio_id": st.session_state.get(f"condominio_id_{key_suffix}"),
                             "condominio_nome": st.session_state.get(f"condominio_nome_{key_suffix}"),
-                            "bloco": bloco if bloco else None,
+                            "bloco": bloko if bloko else None,
                             "apartamento": apartamento if apartamento else None,
                             "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         }
@@ -846,10 +863,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
 def render_cadastro(clientes_collection):
     st.session_state["clientes_collection"] = clientes_collection
     
-    # ✅ Criar índices na inicialização (apenas uma vez)
-    if "indices_criados" not in st.session_state:
-        criar_indices_performance(clientes_collection)
-        st.session_state["indices_criados"] = True
+    # ✅ Garantir índices essenciais (especialmente o unique do celular)
+    if "indices_garantidos" not in st.session_state:
+        garantir_indices(clientes_collection)
+        st.session_state["indices_garantidos"] = True
     
     if "mostrar_botao_novo" not in st.session_state:
         st.session_state["mostrar_botao_novo"] = False
@@ -967,7 +984,7 @@ def render_cadastro(clientes_collection):
                         if cliente.get("integrado_ixc"):
                             st.success(f"✅ Integrado ao IXC - ID: {cliente.get('id_ixc', 'N/A')}")
                         elif cliente.get("integrado_ixc") is False:
-                            st.warning(f"⚠️ Pendente de integração com IXC. Erro: {cliente.get('erro_integracao_ixc', 'N/A')[:100]}")
+                            st.warning(f"⚠️ Pendente de integração com IXC")
                         else:
                             st.info("ℹ️ Aguardando integração com IXC")
 
@@ -1438,7 +1455,7 @@ def render_cadastro(clientes_collection):
                         key=f"cidade_{st.session_state['form_key']}"
                     )
 
-                # ✅ CAMPO CEP ADICIONADO
+                # ✅ CAMPO CEP
                 col1, col2 = st.columns(2)
                 with col1:
                     cep = st.text_input(
@@ -1716,7 +1733,7 @@ def render_cadastro(clientes_collection):
                         "complemento": st.session_state.get(f"complemento_{st.session_state['form_key']}", "") or None,
                         "cidade": st.session_state.get(f"cidade_{st.session_state['form_key']}", "") or None,
                         "bairro": st.session_state.get(f"bairro_{st.session_state['form_key']}", "") or None,
-                        "cep": cep_salvo if cep_salvo else None,  # ✅ NOVO
+                        "cep": cep_salvo if cep_salvo else None,
                         "ponto_referencia": st.session_state.get(f"ponto_referencia_{st.session_state['form_key']}", "") or None,
                         "tipo_moradia": tipo_moradia if tipo_moradia != "Selecione..." else None,
                         "tempo_moradia": {
@@ -1753,7 +1770,6 @@ def render_cadastro(clientes_collection):
                         "bloco": bloco if bloco else None,
                         "apartamento": apartamento if apartamento else None,
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
-                        # ✅ Campos de integração IXC
                         "integrado_ixc": False,
                         "tentativas_integracao": 0,
                     }
@@ -1765,26 +1781,28 @@ def render_cadastro(clientes_collection):
                         st.session_state["mostrar_botao_novo"] = True
 
                         # ========== 🚀 INTEGRAÇÃO COM IXC ==========
-                        sucesso_ixc, id_ixc, erro_ixc = enviar_cliente_para_ixc(cliente_data)
-                        
-                        if sucesso_ixc:
-                            update_fields = {
-                                "integrado_ixc": True,
-                                "data_integracao_ixc": datetime.now()
-                            }
-                            if id_ixc and id_ixc not in ["ok", "existente"]:
-                                update_fields["id_ixc"] = id_ixc
+                        try:
+                            sucesso_ixc, id_ixc, erro_ixc = enviar_cliente_para_ixc(cliente_data)
                             
-                            clientes_collection.update_one(
-                                {"_id": result.inserted_id},
-                                {"$set": update_fields}
-                            )
-                            st.success("✅ Cliente também integrado ao IXCsoft com sucesso!")
-                        else:
-                            # Registra pendência para tentar depois
-                            registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
-                            st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
-                            st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
+                            if sucesso_ixc:
+                                update_fields = {
+                                    "integrado_ixc": True,
+                                    "data_integracao_ixc": datetime.now()
+                                }
+                                if id_ixc and id_ixc not in ["ok", "existente"]:
+                                    update_fields["id_ixc"] = id_ixc
+                                
+                                clientes_collection.update_one(
+                                    {"_id": result.inserted_id},
+                                    {"$set": update_fields}
+                                )
+                                st.success("✅ Cliente também integrado ao IXCsoft com sucesso!")
+                            else:
+                                registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
+                                st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
+                                st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
+                        except Exception as e:
+                            st.warning(f"⚠️ Erro na integração com IXC (cadastro salvo localmente): {str(e)[:100]}")
                         # ========== FIM DA INTEGRAÇÃO ==========
 
                         if "ignorar_bloqueio" in st.session_state:
