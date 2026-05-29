@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO (VERSÃO DEFINITIVA)
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO ROBUSTA)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -11,6 +11,28 @@ from .utils import normalize_phone, validar_cpf, get_followup_date
 from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEADORES, PLANOS
 from pymongo.errors import DuplicateKeyError
 import copy
+
+# ============================================================================
+# 🛡️ FUNÇÃO AUXILIAR PARA ACESSAR SESSION_STATE COM SEGURANÇA
+# ============================================================================
+def safe_session_state_get(key, default=""):
+    """
+    Obtém um valor do session_state com segurança, garantindo que seja string.
+    Evita erro de NoneType ao chamar .strip()
+    """
+    valor = st.session_state.get(key)
+    if valor is None:
+        return default
+    return str(valor).strip()
+
+def safe_session_state_set(key, value):
+    """
+    Define um valor no session_state com segurança, convertendo None para string vazia.
+    """
+    if value is None:
+        st.session_state[key] = ""
+    else:
+        st.session_state[key] = value
 
 # ============================================================================
 # 🏢 CONDOMÍNIO - Import Correto
@@ -103,13 +125,13 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
     if cond_id:
         cond_data = get_condominio_by_id(cond_id)
         if cond_data:
-            st.session_state[f"endereco_{suffix}"] = cond_data.get("endereco", "")
-            st.session_state[f"numero_{suffix}"] = cond_data.get("numero", "")
-            st.session_state[f"bairro_{suffix}"] = cond_data.get("bairro", "")
-            st.session_state[f"cidade_{suffix}"] = cond_data.get("cidade", "")
-            st.session_state[f"cep_{suffix}"] = cond_data.get("cep", "")
-            st.session_state[f"condominio_id_{suffix}"] = cond_id
-            st.session_state[f"condominio_nome_{suffix}"] = condominio_nome
+            safe_session_state_set(f"endereco_{suffix}", cond_data.get("endereco", ""))
+            safe_session_state_set(f"numero_{suffix}", cond_data.get("numero", ""))
+            safe_session_state_set(f"bairro_{suffix}", cond_data.get("bairro", ""))
+            safe_session_state_set(f"cidade_{suffix}", cond_data.get("cidade", ""))
+            safe_session_state_set(f"cep_{suffix}", cond_data.get("cep", ""))
+            safe_session_state_set(f"condominio_id_{suffix}", cond_id)
+            safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
 
 # ============================================================================
 # CONFIGURAÇÕES GERAIS
@@ -374,8 +396,8 @@ def expander_visualizar_editar(cliente, clientes_collection):
             if condominio_select != cond_nome_salvo:
                 atualizar_endereco_por_condominio(condominio_select, key_suffix, condominio_options)
             else:
-                st.session_state[f"condominio_id_{key_suffix}"] = cond_id_salvo
-                st.session_state[f"condominio_nome_{key_suffix}"] = cond_nome_salvo
+                safe_session_state_set(f"condominio_id_{key_suffix}", cond_id_salvo)
+                safe_session_state_set(f"condominio_nome_{key_suffix}", cond_nome_salvo)
         
         with st.container(border=True):
             st.markdown("### 📌 Informações de Origem")
@@ -573,13 +595,13 @@ def expander_visualizar_editar(cliente, clientes_collection):
             
             col1, col2 = st.columns([3, 1])
             with col1:
-                endereco = st.text_input("Endereço*", max_chars=100, value=st.session_state.get(f"endereco_{key_suffix}", cliente.get("endereco", "")), key=f"endereco_{key_suffix}")
+                endereco = st.text_input("Endereço*", max_chars=100, value=safe_session_state_get(f"endereco_{key_suffix}", cliente.get("endereco", "")), key=f"endereco_{key_suffix}")
             with col2:
-                numero = st.text_input("Número*", max_chars=6, value=st.session_state.get(f"numero_{key_suffix}", cliente.get("numero", "")), key=f"numero_{key_suffix}")
+                numero = st.text_input("Número*", max_chars=6, value=safe_session_state_get(f"numero_{key_suffix}", cliente.get("numero", "")), key=f"numero_{key_suffix}")
 
             col_bloco, col_apto = st.columns(2)
             with col_bloco:
-                bloko = st.text_input("Bloco", value=cliente.get("bloco", ""), key=f"bloco_{key_suffix}")
+                bloco = st.text_input("Bloco", value=cliente.get("bloco", ""), key=f"bloco_{key_suffix}")
             with col_apto:
                 apartamento = st.text_input("Apartamento", value=cliente.get("apartamento", ""), key=f"apartamento_{key_suffix}")
 
@@ -593,12 +615,12 @@ def expander_visualizar_editar(cliente, clientes_collection):
             with col1:
                 bairro = st.text_input("Bairro*", max_chars=50, value=cliente.get("bairro", ""), key=f"bairro_{key_suffix}")
             with col2:
-                cidade = st.text_input("Cidade*", max_chars=50, value=st.session_state.get(f"cidade_{key_suffix}", cliente.get("cidade", "Rio de Janeiro")), key=f"cidade_{key_suffix}")
+                cidade = st.text_input("Cidade*", max_chars=50, value=safe_session_state_get(f"cidade_{key_suffix}", cliente.get("cidade", "Rio de Janeiro")), key=f"cidade_{key_suffix}")
 
             # ✅ CAMPO CEP
             col1, col2 = st.columns(2)
             with col1:
-                cep = st.text_input("CEP", max_chars=10, placeholder="00000-000", value=st.session_state.get(f"cep_{key_suffix}", cliente.get("cep", "")), key=f"cep_{key_suffix}")
+                cep = st.text_input("CEP", max_chars=10, placeholder="00000-000", value=safe_session_state_get(f"cep_{key_suffix}", cliente.get("cep", "")), key=f"cep_{key_suffix}")
             with col2:
                 pass
 
@@ -820,9 +842,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                             "endereco_bloqueado": cliente.get("endereco_bloqueado", False),
                             "observacoes_bloqueio_endereco": cliente.get("observacoes_bloqueio_endereco", None),
-                            "condominio_id": st.session_state.get(f"condominio_id_{key_suffix}"),
-                            "condominio_nome": st.session_state.get(f"condominio_nome_{key_suffix}"),
-                            "bloco": bloko if bloko else None,
+                            "condominio_id": safe_session_state_get(f"condominio_id_{key_suffix}", cliente.get("condominio_id")),
+                            "condominio_nome": safe_session_state_get(f"condominio_nome_{key_suffix}", cliente.get("condominio_nome")),
+                            "bloco": bloco if bloco else None,
                             "apartamento": apartamento if apartamento else None,
                             "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         }
@@ -1075,7 +1097,8 @@ def render_cadastro(clientes_collection):
         st.subheader(f"📝 {tipo_cadastro}")
 
         def get_valor_inicial(chave, default=""):
-            return st.session_state.get("dados_temp_bloqueio", {}).get(chave, default)
+            valor = st.session_state.get("dados_temp_bloqueio", {}).get(chave, default)
+            return valor if valor is not None else default
 
         nome_completo = st.text_input(
             "Nome completo*",
@@ -1410,14 +1433,14 @@ def render_cadastro(clientes_collection):
                 with col1:
                     endereco = st.text_input(
                         "Endereço*",
-                        value=st.session_state.get(f"endereco_{st.session_state['form_key']}", get_valor_inicial("endereco", "")),
+                        value=safe_session_state_get(f"endereco_{st.session_state['form_key']}", get_valor_inicial("endereco", "")),
                         key=f"endereco_{st.session_state['form_key']}"
                     )
                 with col2:
                     numero = st.text_input(
                         "Número*",
                         max_chars=6,
-                        value=st.session_state.get(f"numero_{st.session_state['form_key']}", get_valor_inicial("numero", "")),
+                        value=safe_session_state_get(f"numero_{st.session_state['form_key']}", get_valor_inicial("numero", "")),
                         key=f"numero_{st.session_state['form_key']}"
                     )
 
@@ -1451,7 +1474,7 @@ def render_cadastro(clientes_collection):
                 with col2:
                     cidade = st.text_input(
                         "Cidade*",
-                        value=st.session_state.get(f"cidade_{st.session_state['form_key']}", get_valor_inicial("cidade", "Rio de Janeiro")),
+                        value=safe_session_state_get(f"cidade_{st.session_state['form_key']}", get_valor_inicial("cidade", "Rio de Janeiro")),
                         key=f"cidade_{st.session_state['form_key']}"
                     )
 
@@ -1462,7 +1485,7 @@ def render_cadastro(clientes_collection):
                         "CEP",
                         max_chars=10,
                         placeholder="00000-000",
-                        value=st.session_state.get(f"cep_{st.session_state['form_key']}", get_valor_inicial("cep", "")),
+                        value=safe_session_state_get(f"cep_{st.session_state['form_key']}", get_valor_inicial("cep", "")),
                         key=f"cep_{st.session_state['form_key']}"
                     )
                 with col2:
@@ -1590,7 +1613,7 @@ def render_cadastro(clientes_collection):
                                 "telefone_contratante": celular_principal,
                                 "plano_contratado": plano_escolhido,
                                 "modalidade": "Pós Pago",
-                                "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}", ""),
+                                "condominio_nome": safe_session_state_get(f"condominio_nome_{st.session_state['form_key']}", ""),
                                 "bloco": bloco if bloco else "",
                                 "apartamento": apartamento if apartamento else ""
                             }
@@ -1625,7 +1648,7 @@ def render_cadastro(clientes_collection):
                                 "equipamento_modelo": equip_modelo,
                                 "equipamento_codigo": equip_codigo,
                                 "equipamento_acessorios": equip_acessorios,
-                                "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}", ""),
+                                "condominio_nome": safe_session_state_get(f"condominio_nome_{st.session_state['form_key']}", ""),
                                 "bloco": bloco if bloco else "",
                                 "apartamento": apartamento if apartamento else ""
                             }
@@ -1676,9 +1699,15 @@ def render_cadastro(clientes_collection):
                 elif tipo_cadastro == "Cadastro CRM" and seguiu_ativacao == "Não" and (not motivo_recusa or motivo_recusa == "Selecione..."):
                     st.error("⚠️ Quando 'Seguiu para Ativação' for 'Não', é obrigatório selecionar o motivo da recusa.")
                 else:
-                    endereco_salvo = st.session_state.get(f"endereco_{st.session_state['form_key']}", "").strip()
-                    numero_salvo = st.session_state.get(f"numero_{st.session_state['form_key']}", "").strip()
-                    cep_salvo = st.session_state.get(f"cep_{st.session_state['form_key']}", "").strip()
+                    # Obter valores do session_state com segurança
+                    temp_endereco = st.session_state.get(f"endereco_{st.session_state['form_key']}")
+                    endereco_salvo = temp_endereco.strip() if temp_endereco else ""
+                    
+                    temp_numero = st.session_state.get(f"numero_{st.session_state['form_key']}")
+                    numero_salvo = temp_numero.strip() if temp_numero else ""
+                    
+                    temp_cep = st.session_state.get(f"cep_{st.session_state['form_key']}")
+                    cep_salvo = temp_cep.strip() if temp_cep else ""
 
                     if endereco_salvo and numero_salvo:
                         cliente_bloqueado = clientes_collection.find_one({
@@ -1694,7 +1723,9 @@ def render_cadastro(clientes_collection):
                         )
 
                         if cliente_bloqueado and not st.session_state.get("ignorar_bloqueio", False) and not confirmado:
-                            endereco_completo = montar_endereco_completo(endereco_salvo, numero_salvo, st.session_state.get(f"complemento_{st.session_state['form_key']}", ""))
+                            temp_complemento = st.session_state.get(f"complemento_{st.session_state['form_key']}")
+                            complemento_valor = temp_complemento.strip() if temp_complemento else ""
+                            endereco_completo = montar_endereco_completo(endereco_salvo, numero_salvo, complemento_valor)
                             motivo = cliente_bloqueado.get("observacoes_bloqueio_endereco", "Não informado")
                             st.error("❌ Este endereço está bloqueado! Por favor, clique em 'Continuar mesmo assim' para prosseguir.")
                             st.info(f"📌 {endereco_completo}\nMotivo: {motivo}")
@@ -1717,6 +1748,19 @@ def render_cadastro(clientes_collection):
                     cadastrado_por = nome_atendente
                     cpf_limpo = limpar_cpf(cpf)
 
+                    # Obter valores adicionais com segurança
+                    temp_complemento = st.session_state.get(f"complemento_{st.session_state['form_key']}")
+                    complemento_salvo = temp_complemento.strip() if temp_complemento else ""
+                    
+                    temp_cidade = st.session_state.get(f"cidade_{st.session_state['form_key']}")
+                    cidade_salvo = temp_cidade.strip() if temp_cidade else ""
+                    
+                    temp_bairro = st.session_state.get(f"bairro_{st.session_state['form_key']}")
+                    bairro_salvo = temp_bairro.strip() if temp_bairro else ""
+                    
+                    temp_ponto_ref = st.session_state.get(f"ponto_referencia_{st.session_state['form_key']}")
+                    ponto_ref_salvo = temp_ponto_ref.strip() if temp_ponto_ref else ""
+
                     cliente_data = {
                         "nome_completo": nome_completo,
                         "celular": celular_normalizado,
@@ -1730,11 +1774,11 @@ def render_cadastro(clientes_collection):
                         "rg": rg if tipo_cadastro == "Cadastro CRM" and rg else None,
                         "endereco": endereco_salvo if endereco_salvo else None,
                         "numero": numero_salvo if numero_salvo else None,
-                        "complemento": st.session_state.get(f"complemento_{st.session_state['form_key']}", "") or None,
-                        "cidade": st.session_state.get(f"cidade_{st.session_state['form_key']}", "") or None,
-                        "bairro": st.session_state.get(f"bairro_{st.session_state['form_key']}", "") or None,
+                        "complemento": complemento_salvo if complemento_salvo else None,
+                        "cidade": cidade_salvo if cidade_salvo else None,
+                        "bairro": bairro_salvo if bairro_salvo else None,
                         "cep": cep_salvo if cep_salvo else None,
-                        "ponto_referencia": st.session_state.get(f"ponto_referencia_{st.session_state['form_key']}", "") or None,
+                        "ponto_referencia": ponto_ref_salvo if ponto_ref_salvo else None,
                         "tipo_moradia": tipo_moradia if tipo_moradia != "Selecione..." else None,
                         "tempo_moradia": {
                             "valor": tempo_moradia_valor,
@@ -1765,8 +1809,8 @@ def render_cadastro(clientes_collection):
                         "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                         "endereco_bloqueado": False,
                         "observacoes_bloqueio_endereco": None,
-                        "condominio_id": st.session_state.get(f"condominio_id_{st.session_state['form_key']}"),
-                        "condominio_nome": st.session_state.get(f"condominio_nome_{st.session_state['form_key']}"),
+                        "condominio_id": safe_session_state_get(f"condominio_id_{st.session_state['form_key']}"),
+                        "condominio_nome": safe_session_state_get(f"condominio_nome_{st.session_state['form_key']}"),
                         "bloco": bloco if bloco else None,
                         "apartamento": apartamento if apartamento else None,
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
