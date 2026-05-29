@@ -29,6 +29,7 @@ def get_ixc_config():
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
     """
     Converte os dados do cliente (MongoDB) para o formato esperado pela API do IXC.
+    Agora com suporte a id_condominio!
     """
     # Dados básicos
     nome_completo = cliente_data.get("nome_completo", "")
@@ -81,6 +82,18 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
     
     # ID do vendedor padrão (pode ser ajustado depois)
     id_vendedor_padrao = "33"  # Recepção como padrão
+    
+    # 🔥 BUSCAR ID DO CONDOMÍNIO NO IXC
+    id_condominio_ixc = None
+    if cliente_data.get("condominio_id"):
+        try:
+            from .condominios import get_condominio_by_id
+            cond_data = get_condominio_by_id(cliente_data["condominio_id"])
+            if cond_data and cond_data.get("id_ixc"):
+                id_condominio_ixc = cond_data["id_ixc"]
+                print(f"✅ Condomínio encontrado com ID IXC: {id_condominio_ixc}")
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar ID do condomínio: {e}")
     
     payload = {
         # Dados obrigatórios
@@ -145,9 +158,14 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
         "obs": (cliente_data.get("observacoes", "")[:500] if cliente_data.get("observacoes") else ""),
     }
     
-    # Adiciona condomínio se existir
-    if cliente_data.get("condominio_nome"):
+    # 🔥 ADICIONAR ID DO CONDOMÍNIO SE EXISTIR
+    if id_condominio_ixc:
+        payload["id_condominio"] = id_condominio_ixc
+        print(f"📤 Enviando id_condominio: {id_condominio_ixc} para o IXC")
+    elif cliente_data.get("condominio_nome"):
+        # Fallback: enviar como referência
         payload["referencia"] = f"Condomínio: {cliente_data['condominio_nome']}"
+        print(f"📤 Enviando condomínio como referência: {cliente_data['condominio_nome']}")
     
     # Remove campos vazios para não dar erro na API
     payload = {k: v for k, v in payload.items() if v not in (None, "", [])}
@@ -225,7 +243,6 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     # Verificar se tem CPF (obrigatório para buscar/evitar duplicatas)
     cpf = cliente_data.get("cpf", "")
     if not cpf or len(cpf) < 11:
-        # Se não tem CPF, ainda tenta criar, mas avisa
         print("⚠️ Cliente sem CPF - integração com IXC pode falhar")
     
     # 1. Verificar se cliente já existe no IXC (evitar duplicatas)
@@ -254,12 +271,18 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     max_tentativas = 2
     for tentativa in range(max_tentativas):
         try:
+            print(f"📤 Enviando requisição para IXC (tentativa {tentativa + 1})...")
+            print(f"📦 Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
+            
             response = requests.post(
                 url,
                 data=json.dumps(payload),
                 headers=headers,
                 timeout=30
             )
+            
+            print(f"📥 Resposta HTTP: {response.status_code}")
+            print(f"📄 Resposta: {response.text[:500]}")
             
             if response.status_code in [200, 201]:
                 # Tenta extrair o ID do cliente criado
@@ -278,28 +301,35 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
                         if cpf and len(cpf) >= 11:
                             id_ixc = buscar_cliente_ixc_por_cpf(cpf, config)
                     
+                    print(f"✅ Cliente criado com sucesso! ID IXC: {id_ixc if id_ixc else 'não retornado'}")
                     return True, str(id_ixc) if id_ixc else "ok", None
-                except:
+                except Exception as e:
+                    print(f"⚠️ Cliente criado mas erro ao extrair ID: {e}")
                     return True, "ok", None
                     
             elif response.status_code == 409:
                 # Conflito - provavelmente já existe
+                print("⚠️ Conflito: cliente provavelmente já existe no IXC")
                 return True, "existente", None
             else:
                 erro_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                print(f"❌ Erro na requisição: {erro_msg}")
                 if tentativa == max_tentativas - 1:
                     return False, None, erro_msg
                 continue
                 
         except requests.exceptions.Timeout:
+            print("⏰ Timeout na requisição")
             if tentativa == max_tentativas - 1:
                 return False, None, "Timeout na conexão com o IXC"
             continue
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as e:
+            print(f"🔌 Erro de conexão: {e}")
             if tentativa == max_tentativas - 1:
-                return False, None, "Erro de conexão com o IXC"
+                return False, None, f"Erro de conexão com o IXC: {str(e)[:100]}"
             continue
         except Exception as e:
+            print(f"💥 Erro inesperado: {e}")
             if tentativa == max_tentativas - 1:
                 return False, None, str(e)
             continue
@@ -314,8 +344,7 @@ def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
     Registra que este cliente precisa ser sincronizado posteriormente.
     """
     try:
-        from pymongo import MongoClient
-        # Usa a conexão existente
+        # Usa a conexão existente do session_state
         clientes_collection = st.session_state.get("clientes_collection")
         if clientes_collection:
             clientes_collection.update_one(
@@ -328,5 +357,60 @@ def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
                     "dados_pendentes_integracao": cliente_data  # salva para tentar depois
                 }}
             )
+            print(f"📝 Pendência registrada para cliente {cliente_id}")
     except Exception as e:
-        print(f"Erro ao registrar pendência: {e}")
+        print(f"❌ Erro ao registrar pendência: {e}")
+
+# ============================================================================
+# FUNÇÃO PARA SINCRONIZAR CLIENTES PENDENTES (executar periodicamente)
+# ============================================================================
+def sincronizar_clientes_pendentes(clientes_collection):
+    """
+    Tenta sincronizar clientes que falharam na integração anterior.
+    """
+    pendentes = list(clientes_collection.find({
+        "$or": [
+            {"integrado_ixc": {"$ne": True}},
+            {"id_ixc": {"$exists": False}}
+        ],
+        "tentativas_integracao": {"$lt": 5}  # máximo 5 tentativas
+    }))
+    
+    if not pendentes:
+        return 0, 0
+    
+    sucessos = 0
+    falhas = 0
+    
+    for cliente in pendentes:
+        print(f"🔄 Tentando sincronizar cliente pendente: {cliente.get('nome_completo')}")
+        sucesso, id_ixc, erro = enviar_cliente_para_ixc(cliente)
+        
+        if sucesso:
+            update_fields = {
+                "integrado_ixc": True,
+                "data_integracao_ixc": datetime.now()
+            }
+            if id_ixc and id_ixc not in ["ok", "existente"]:
+                update_fields["id_ixc"] = id_ixc
+            
+            clientes_collection.update_one(
+                {"_id": cliente["_id"]},
+                {"$set": update_fields, "$unset": {"dados_pendentes_integracao": ""}}
+            )
+            sucessos += 1
+            print(f"✅ Cliente sincronizado com sucesso!")
+        else:
+            nova_tentativa = cliente.get("tentativas_integracao", 0) + 1
+            clientes_collection.update_one(
+                {"_id": cliente["_id"]},
+                {"$set": {
+                    "tentativas_integracao": nova_tentativa,
+                    "ultima_tentativa_integracao": datetime.now(),
+                    "erro_integracao_ixc": erro
+                }}
+            )
+            falhas += 1
+            print(f"❌ Falha na sincronização: {erro}")
+    
+    return sucessos, falhas
