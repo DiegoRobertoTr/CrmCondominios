@@ -9,6 +9,7 @@ Melhorias implementadas:
 - Exclusão com confirmação de senha
 - Processamento otimizado com referência ao arquivo original
 - Todas as abas do original: Penetração, Receita, Inadimplência (2 visões), Churn, Concorrência, Zona, Maturidade
+- NOVO: Análise de inadimplência real baseada na aba "Base Parcelas"
 """
 import streamlit as st
 import pandas as pd
@@ -33,10 +34,13 @@ st.set_page_config(page_title="Relatórios Condomínios", layout="wide", initial
 # ==================== CONFIGURAÇÃO DO MÓDULO ====================
 CONDOMINIOS_CONFIG = {
     'colunas_obrigatorias_clientes': [
-        'CONDOMANIO', 'STATUS ACESSO', 'FINANCEIRO EM ATRASO'
+        'CONDOMANIO', 'STATUS ACESSO'
     ],
     'colunas_obrigatorias_condominios': [
         'ID', 'Condomínio', 'Apartamentos', 'Região'
+    ],
+    'colunas_obrigatorias_parcelas': [
+        'ID', 'DATA DO VENCIMENTO', 'STATUS', 'VALOR'
     ],
     'modo_ativos_opcoes': {
         'somente_ativos': 'Apenas Ativos Puros',
@@ -57,6 +61,7 @@ def initialize_session_state():
     defaults = {
         'condominios_dados_clientes': None,
         'condominios_dados_condominios': None,
+        'condominios_dados_parcelas': None,
         'condominios_processado': False,
         'condominios_file_id': None,
         'condominios_nome_arquivo': None,
@@ -126,6 +131,7 @@ def criar_indices_mongodb(db):
         db["condominios_relatorios"].create_index([("_import_batch", ASCENDING)])
         db["condominios_relatorios"].create_index([("module", ASCENDING)])
         db["condominios_relatorios"].create_index([("CONDOMANIO", ASCENDING)])
+        db["condominios_relatorios"].create_index([("ID", ASCENDING)])
         db["condominios_meta"].create_index([("timestamp", DESCENDING)])
         db["condominios_meta"].create_index([("batch_id", ASCENDING)])
         db["condominios_meta"].create_index([("module", ASCENDING)])
@@ -176,7 +182,7 @@ def limpar_valor_data(valor):
         if valor_limpo in ["", "00/00/0000", "0", " ", "nan", "NaT", "null", "NULL", "NaTType"]:
             return None
         try:
-            valor = pd.to_datetime(valor_limpo, errors='coerce')
+            valor = pd.to_datetime(valor_limpo, errors='coerce', format='mixed')
             if pd.isna(valor):
                 return None
         except:
@@ -313,8 +319,8 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
     return str(value)
 
 # ==================== FUNÇÕES DE BANCO DE DADOS ====================
-def save_condominio_data_enhanced(db, df_clientes, df_condominios, metadata):
-    """Versão melhorada do save_condominio_data com referência ao source_file_id"""
+def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, metadata):
+    """Versão melhorada do save_condominio_data com referência ao source_file_id e parcelas"""
     collection_clientes = db["condominios_relatorios"]
     collection_meta = db["condominios_meta"]
     
@@ -347,9 +353,29 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, metadata):
     if docs:
         collection_clientes.insert_many(docs)
     
+    # Preparar parcelas para o MongoDB
+    if df_parcelas is not None and not df_parcelas.empty:
+        df_parcelas_limpo = converter_dataframe_dates(df_parcelas)
+        df_parcelas_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
+        df_parcelas_limpo["_import_batch"] = batch_id
+        df_parcelas_limpo["source_file_id"] = metadata["source_file_id"]
+        df_parcelas_limpo["module"] = module
+        
+        parcelas_docs = safe_mongo_docs(df_parcelas_limpo)
+        if parcelas_docs:
+            collection_clientes.insert_many(parcelas_docs)
+    
     # Preparar condomínios para metadados
     condominios_records = safe_mongo_docs(df_condominios)
     metadata["condominios"] = condominios_records
+    
+    # Salvar parcelas no metadado também
+    if df_parcelas is not None and not df_parcelas.empty:
+        metadata["has_parcelas"] = True
+        metadata["total_parcelas"] = len(df_parcelas)
+    else:
+        metadata["has_parcelas"] = False
+    
     metadata["module"] = module
     
     collection_meta.insert_one(metadata)
@@ -377,19 +403,34 @@ def carregar_dados_mais_recentes(db):
             "_import_batch": batch_id,
             "module": "condominios"
         })
-        df_clientes = pd.DataFrame(list(cursor_clientes))
+        df_all = pd.DataFrame(list(cursor_clientes))
         
-        if df_clientes.empty:
+        if df_all.empty:
             return False
+        
+        # Separar clientes (que têm CONDOMANIO) de parcelas (que têm DATA DO VENCIMENTO)
+        if 'CONDOMANIO' in df_all.columns:
+            df_clientes = df_all[df_all['CONDOMANIO'].notna()].copy()
+        else:
+            df_clientes = pd.DataFrame()
+        
+        if 'DATA DO VENCIMENTO' in df_all.columns:
+            df_parcelas = df_all[df_all['DATA DO VENCIMENTO'].notna()].copy()
+        else:
+            df_parcelas = pd.DataFrame()
         
         for col in ['_id', '_import_timestamp', '_import_batch', 'source_file_id', 'module']:
             if col in df_clientes.columns:
                 df_clientes = df_clientes.drop(columns=[col])
+            if col in df_parcelas.columns:
+                df_parcelas = df_parcelas.drop(columns=[col])
         
         df_condominios = pd.DataFrame(meta.get("condominios", []))
         
         df_clientes = converter_dataframe_dates(df_clientes)
         df_condominios = converter_dataframe_dates(df_condominios)
+        if not df_parcelas.empty:
+            df_parcelas = converter_dataframe_dates(df_parcelas)
         
         if "CONDOMANIO" in df_clientes.columns:
             df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
@@ -400,6 +441,7 @@ def carregar_dados_mais_recentes(db):
         
         st.session_state.condominios_dados_clientes = df_clientes
         st.session_state.condominios_dados_condominios = df_condominios
+        st.session_state.condominios_dados_parcelas = df_parcelas if not df_parcelas.empty else None
         st.session_state.condominios_meta = meta
         st.session_state.condominios_file_id = source_file_id
         st.session_state.condominios_nome_arquivo = file_name
@@ -445,11 +487,22 @@ def processar_upload_condominios(db, uploaded_file):
     
     with st.spinner('🔄 Processando planilha...'):
         try:
+            # Ler as 3 abas
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
+            # Tentar ler a aba Base Parcelas (opcional)
+            try:
+                df_parcelas = pd.read_excel(uploaded_file, sheet_name="Base Parcelas")
+                st.info(f"📋 Aba 'Base Parcelas' encontrada com {len(df_parcelas)} registros")
+            except Exception:
+                df_parcelas = pd.DataFrame()
+                st.warning("⚠️ Aba 'Base Parcelas' não encontrada. A análise de inadimplência real será limitada.")
+            
             df_clientes = df_clientes.replace({pd.NaT: None, np.nan: None})
             df_condominios = df_condominios.replace({pd.NaT: None, np.nan: None})
+            if not df_parcelas.empty:
+                df_parcelas = df_parcelas.replace({pd.NaT: None, np.nan: None})
             
             # Validar colunas obrigatórias
             colunas_faltantes_clientes = [
@@ -482,8 +535,16 @@ def processar_upload_condominios(db, uploaded_file):
                     df_condominios["Apartamentos"], errors="coerce"
                 ).fillna(0).astype(int)
             
+            # Normalizar ID nas parcelas
+            if not df_parcelas.empty and "ID" in df_parcelas.columns:
+                df_parcelas["ID"] = pd.to_numeric(
+                    df_parcelas["ID"], errors="coerce"
+                ).fillna(0).astype(int)
+            
             df_clientes = converter_dataframe_dates(df_clientes)
             df_condominios = converter_dataframe_dates(df_condominios)
+            if not df_parcelas.empty:
+                df_parcelas = converter_dataframe_dates(df_parcelas)
             
             for col in df_clientes.columns:
                 if pd.api.types.is_datetime64_any_dtype(df_clientes[col]):
@@ -501,18 +562,20 @@ def processar_upload_condominios(db, uploaded_file):
                 "timestamp": datetime.now().replace(tzinfo=None),
                 "total_clientes": len(df_clientes),
                 "total_condominios": len(df_condominios),
+                "total_parcelas": len(df_parcelas) if not df_parcelas.empty else 0,
                 "module": "condominios"
             }
             
-            if save_condominio_data_enhanced(db, df_clientes, df_condominios, metadata):
+            if save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, metadata):
                 st.session_state.condominios_dados_clientes = df_clientes
                 st.session_state.condominios_dados_condominios = df_condominios
+                st.session_state.condominios_dados_parcelas = df_parcelas if not df_parcelas.empty else None
                 st.session_state.condominios_meta = metadata
                 st.session_state.condominios_file_id = file_id
                 st.session_state.condominios_nome_arquivo = uploaded_file.name
                 st.session_state.condominios_processado = True
                 
-                st.success(f"✅ {len(df_clientes)} clientes e {len(df_condominios)} condomínios processados!")
+                st.success(f"✅ {len(df_clientes)} clientes, {len(df_condominios)} condomínios e {len(df_parcelas)} parcelas processados!")
                 st.balloons()
                 return True
             else:
@@ -643,7 +706,7 @@ def calcular_penetracao(df_clientes, df_condominios):
 
 def analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados=True):
     """
-    Analisa inadimplência baseada apenas na coluna FINANCEIRO EM ATRASO
+    Analisa inadimplência baseada na coluna FINANCEIRO EM ATRASO (modo legado)
     
     Parâmetros:
     - incluir_desativados=True: análise com TODOS os clientes
@@ -706,6 +769,114 @@ def analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desat
     
     # Ordenar por maior inadimplência
     return result.sort_values("taxa_inadimplencia", ascending=False).reset_index(drop=True)
+
+def analisar_inadimplencia_por_parcelas(df_clientes, df_condominios, df_parcelas, data_referencia=None):
+    """
+    Analisa inadimplência REAL baseada na aba 'Base Parcelas'
+    - Cliente inadimplente se tiver parcela com vencimento passado e status 'A receber'
+    
+    Retorna:
+    - DataFrame com análise por condomínio
+    - DataFrame com detalhamento de parcelas vencidas
+    """
+    if df_parcelas is None or df_parcelas.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    if data_referencia is None:
+        data_referencia = datetime.now().replace(tzinfo=None)
+    
+    df_parcelas = df_parcelas.copy()
+    df_clientes = df_clientes.copy()
+    df_condominios = df_condominios.copy()
+    
+    # Normalizar IDs
+    df_clientes["ID"] = pd.to_numeric(df_clientes["ID"], errors="coerce").fillna(0).astype(int)
+    df_parcelas["ID"] = pd.to_numeric(df_parcelas["ID"], errors="coerce").fillna(0).astype(int)
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    
+    # Converter data de vencimento
+    df_parcelas["DATA DO VENCIMENTO"] = pd.to_datetime(df_parcelas["DATA DO VENCIMENTO"], errors='coerce')
+    
+    # Normalizar status
+    df_parcelas["STATUS_NORMALIZADO"] = df_parcelas["STATUS"].str.upper().str.strip()
+    
+    # Identificar parcelas vencidas e não pagas
+    parcelas_vencidas = df_parcelas[
+        (df_parcelas["DATA DO VENCIMENTO"] < data_referencia) &
+        (df_parcelas["STATUS_NORMALIZADO"] == "A RECEBER")
+    ].copy()
+    
+    # Clientes inadimplentes (que têm pelo menos uma parcela vencida)
+    clientes_inadimplentes = set(parcelas_vencidas["ID"].unique())
+    
+    # Adicionar flag de inadimplência aos clientes
+    df_clientes["inadimplente_por_parcelas"] = df_clientes["ID"].apply(
+        lambda x: x in clientes_inadimplentes
+    )
+    
+    # Calcular total em atraso por cliente (soma das parcelas vencidas)
+    soma_atraso = parcelas_vencidas.groupby("ID")["VALOR"].sum().to_dict()
+    df_clientes["total_em_atraso"] = df_clientes["ID"].map(soma_atraso).fillna(0)
+    
+    # Contar número de parcelas vencidas por cliente
+    count_parcelas = parcelas_vencidas.groupby("ID").size().to_dict()
+    df_clientes["parcelas_vencidas"] = df_clientes["ID"].map(count_parcelas).fillna(0).astype(int)
+    
+    # Mapear CONDOMANIO a partir do ID do cliente
+    df_cliente_cond = df_clientes[["ID", "CONDOMANIO"]].drop_duplicates()
+    
+    # Agregar por condomínio
+    inad_cond = df_cliente_cond.merge(
+        df_clientes[["ID", "inadimplente_por_parcelas", "total_em_atraso", "parcelas_vencidas"]],
+        on="ID", how="left"
+    )
+    
+    # Agrupar por CONDOMANIO
+    cond_agg = inad_cond.groupby("CONDOMANIO").agg(
+        total_clientes=("ID", "count"),
+        total_inadimplentes=("inadimplente_por_parcelas", "sum"),
+        valor_total_atraso=("total_em_atraso", "sum"),
+        total_parcelas_vencidas=("parcelas_vencidas", "sum")
+    ).reset_index()
+    
+    cond_agg["taxa_inadimplencia"] = (
+        cond_agg["total_inadimplentes"] / cond_agg["total_clientes"].replace(0, np.nan) * 100
+    ).round(2).fillna(0)
+    
+    # Adicionar informações do condomínio
+    cols_merge = ["ID", "Condomínio", "Região", "Apartamentos"]
+    cols_existentes = [c for c in cols_merge if c in df_condominios.columns]
+    
+    result = cond_agg.merge(
+        df_condominios[cols_existentes],
+        left_on="CONDOMANIO", right_on="ID", how="right"
+    )
+    
+    # Preencher NAs
+    result["total_clientes"] = result["total_clientes"].fillna(0).astype(int)
+    result["total_inadimplentes"] = result["total_inadimplentes"].fillna(0).astype(int)
+    result["valor_total_atraso"] = result["valor_total_atraso"].fillna(0)
+    result["total_parcelas_vencidas"] = result["total_parcelas_vencidas"].fillna(0).astype(int)
+    result["taxa_inadimplencia"] = result["taxa_inadimplencia"].fillna(0)
+    
+    # Detalhamento das parcelas vencidas
+    parcelas_detalhe = parcelas_vencidas.merge(
+        df_condominios[["ID", "Condomínio", "Região"]], 
+        left_on="ID", right_on="ID", how="left"
+    )
+    
+    if not parcelas_detalhe.empty:
+        parcelas_detalhe = parcelas_detalhe[[
+            "ID", "RAZAO SOCIAL/NOME", "Condomínio", "Região",
+            "DATA DO VENCIMENTO", "NAMERO DA PARCELA RECORRENTE",
+            "PLANO DE VENDA", "VALOR", "STATUS"
+        ]].copy()
+        parcelas_detalhe.columns = [
+            "ID Cliente", "Cliente", "Condomínio", "Região",
+            "Data Vencimento", "Nº Parcela", "Plano", "Valor", "Status"
+        ]
+    
+    return result.sort_values("taxa_inadimplencia", ascending=False).reset_index(drop=True), parcelas_detalhe
 
 def analisar_churn(df_clientes, df_condominios):
     """Análise de churn (taxa de cancelamento)"""
@@ -927,10 +1098,12 @@ def upload_mode(db):
     <div style="background-color:#f8f9fa; padding:15px; border-radius:10px; margin-bottom:20px;">
     <strong>📋 Instruções:</strong>
     <ul>
-        <li>A planilha deve conter <strong>2 abas</strong>: <code>Dados</code> (clientes) e <code>Condominios</code></li>
-        <li>Colunas obrigatórias em <code>Dados</code>: <code>CONDOMANIO</code>, <code>STATUS ACESSO</code>, <code>FINANCEIRO EM ATRASO</code></li>
+        <li>A planilha deve conter <strong>3 abas</strong>: <code>Dados</code> (clientes), <code>Condominios</code> e <code>Base Parcelas</code></li>
+        <li>Colunas obrigatórias em <code>Dados</code>: <code>CONDOMANIO</code>, <code>STATUS ACESSO</code>, <code>ID</code></li>
         <li>Colunas obrigatórias em <code>Condominios</code>: <code>ID</code>, <code>Condomínio</code>, <code>Apartamentos</code>, <code>Região</code></li>
+        <li>Colunas obrigatórias em <code>Base Parcelas</code>: <code>ID</code>, <code>DATA DO VENCIMENTO</code>, <code>STATUS</code>, <code>VALOR</code></li>
     </ul>
+    <strong>📌 Importante:</strong> A aba <code>Base Parcelas</code> é fundamental para a análise de inadimplência REAL.
     </div>
     """, unsafe_allow_html=True)
     
@@ -950,6 +1123,13 @@ def upload_mode(db):
                 st.dataframe(df_preview_dados, use_container_width=True)
                 st.markdown("**Aba Condominios (primeiras 5 linhas):**")
                 st.dataframe(df_preview_cond, use_container_width=True)
+                
+                try:
+                    df_preview_parcelas = pd.read_excel(uploaded_file, sheet_name="Base Parcelas", nrows=5)
+                    st.markdown("**Aba Base Parcelas (primeiras 5 linhas):**")
+                    st.dataframe(df_preview_parcelas, use_container_width=True)
+                except:
+                    st.warning("⚠️ Aba 'Base Parcelas' não encontrada. A análise de inadimplência real será limitada.")
             except Exception as e:
                 st.warning(f"Não foi possível visualizar: {e}")
         
@@ -982,7 +1162,10 @@ def dados_existentes_mode(db):
             data_str = data.strftime('%d/%m/%Y %H:%M') if data else 'Data desconhecida'
             total_clientes = arq.get('total_clientes', 0)
             total_cond = arq.get('total_condominios', 0)
-            display = f"📄 {nome} - {data_str} ({total_clientes} clientes, {total_cond} condomínios)"
+            total_parcelas = arq.get('total_parcelas', 0)
+            
+            parcelas_info = f", {total_parcelas} parcelas" if total_parcelas > 0 else ""
+            display = f"📄 {nome} - {data_str} ({total_clientes} clientes, {total_cond} condomínios{parcelas_info})"
             
             col1, col2, col3 = st.columns([7, 1, 1])
             with col1:
@@ -994,25 +1177,41 @@ def dados_existentes_mode(db):
                             "_import_batch": arq['batch_id'],
                             "module": "condominios"
                         })
-                        df_clientes = pd.DataFrame(list(cursor))
+                        df_all = pd.DataFrame(list(cursor))
+                        
+                        # Separar clientes e parcelas
+                        if 'CONDOMANIO' in df_all.columns:
+                            df_clientes = df_all[df_all['CONDOMANIO'].notna()].copy()
+                        else:
+                            df_clientes = pd.DataFrame()
+                        
+                        if 'DATA DO VENCIMENTO' in df_all.columns:
+                            df_parcelas = df_all[df_all['DATA DO VENCIMENTO'].notna()].copy()
+                        else:
+                            df_parcelas = pd.DataFrame()
                         
                         for col in ['_id', '_import_timestamp', '_import_batch', 'source_file_id', 'module']:
                             if col in df_clientes.columns:
                                 df_clientes = df_clientes.drop(columns=[col])
+                            if col in df_parcelas.columns:
+                                df_parcelas = df_parcelas.drop(columns=[col])
                         
                         df_condominios = pd.DataFrame(arq.get("condominios", []))
                         
                         df_clientes = converter_dataframe_dates(df_clientes)
                         df_condominios = converter_dataframe_dates(df_condominios)
+                        if not df_parcelas.empty:
+                            df_parcelas = converter_dataframe_dates(df_parcelas)
                         
                         st.session_state.condominios_dados_clientes = df_clientes
                         st.session_state.condominios_dados_condominios = df_condominios
+                        st.session_state.condominios_dados_parcelas = df_parcelas if not df_parcelas.empty else None
                         st.session_state.condominios_meta = arq
                         st.session_state.condominios_file_id = arq.get('source_file_id')
                         st.session_state.condominios_nome_arquivo = nome
                         st.session_state.condominios_processado = True
                     
-                    st.success(f"✅ Dados carregados: {len(df_clientes)} clientes")
+                    st.success(f"✅ Dados carregados: {len(df_clientes)} clientes{', ' + str(len(df_parcelas)) + ' parcelas' if not df_parcelas.empty else ''}")
                     st.rerun()
             with col3:
                 if st.button("🗑️", key=f"excluir_{arq['batch_id']}", help="Excluir este arquivo"):
@@ -1052,6 +1251,7 @@ def confirmar_exclusao(db, batch_id):
                             if st.session_state.condominios_meta and st.session_state.condominios_meta.get('batch_id') == batch_id:
                                 st.session_state.condominios_dados_clientes = None
                                 st.session_state.condominios_dados_condominios = None
+                                st.session_state.condominios_dados_parcelas = None
                                 st.session_state.condominios_processado = False
                             
                             st.session_state.exclusao_confirmada = False
@@ -1086,6 +1286,7 @@ def gerenciamento_dados_mode(db):
                 st.success(f"✅ {total} registros removidos!")
                 st.session_state.condominios_dados_clientes = None
                 st.session_state.condominios_dados_condominios = None
+                st.session_state.condominios_dados_parcelas = None
                 st.session_state.condominios_processado = False
                 st.session_state.confirm_delete_all = False
                 st.rerun()
@@ -1100,6 +1301,7 @@ def exibir_dashboard_principal():
     
     df_clientes = st.session_state.condominios_dados_clientes
     df_condominios = st.session_state.condominios_dados_condominios
+    df_parcelas = st.session_state.condominios_dados_parcelas
     meta = st.session_state.condominios_meta
     
     if df_clientes is None or df_condominios is None:
@@ -1110,12 +1312,13 @@ def exibir_dashboard_principal():
     if meta:
         ts = meta.get('timestamp')
         ts_str = safe_strftime(ts, "%d/%m/%Y %H:%M") if ts else "Data não disponível"
+        parcelas_info = f" - 📋 {meta.get('total_parcelas', 0)} parcelas" if meta.get('total_parcelas', 0) > 0 else ""
         st.info(f"""
         **📋 Última Importação:**
         - 📅 {ts_str}
         - 📄 {meta.get('filename', 'Arquivo desconhecido')}
         - 👥 {meta.get('total_clientes', 0)} clientes
-        - 🏢 {meta.get('total_condominios', 0)} condomínios
+        - 🏢 {meta.get('total_condominios', 0)} condomínios{parcelas_info}
         """)
     
     st.markdown("---")
@@ -1216,6 +1419,8 @@ def exibir_dashboard_principal():
             dashboard_df.to_excel(writer, sheet_name='Dashboard Principal', index=False)
             df_clientes.to_excel(writer, sheet_name='Dados Clientes', index=False)
             df_condominios.to_excel(writer, sheet_name='Condomínios', index=False)
+            if df_parcelas is not None and not df_parcelas.empty:
+                df_parcelas.to_excel(writer, sheet_name='Base Parcelas', index=False)
         output.seek(0)
         
         st.download_button(
@@ -1325,46 +1530,123 @@ def exibir_dashboard_principal():
                 }
             )
     
-    # TAB 3: INADIMPLÊNCIA (COM DUAS VISÕES)
+    # TAB 3: INADIMPLÊNCIA (COM TRÊS VISÕES)
     with tab3:
         st.subheader("⚠️ Análise de Inadimplência por Condomínio")
         
-        st.markdown("""
-        <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-        <strong>📋 Como a inadimplência é calculada:</strong><br>
-        A inadimplência é baseada <strong>exclusivamente na coluna "FINANCEIRO EM ATRASO"</strong> do arquivo de dados.<br>
-        Um cliente é considerado <strong>"Em Atraso"</strong> se esta coluna contiver uma data válida (diferente de vazio, 00/00/0000, 0, nan).<br>
-        Clientes com status "Desativado" ou "Cancelado" NÃO são considerados na <strong>Visão Recuperável</strong>.
-        </div>
-        """, unsafe_allow_html=True)
+        # Verificar se há dados de parcelas
+        has_parcelas = df_parcelas is not None and not df_parcelas.empty
         
-        # Toggle para escolher a visão
-        col_visao1, col_visao2 = st.columns([1, 2])
-        with col_visao1:
+        if has_parcelas:
+            st.markdown("""
+            <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
+            <strong>📋 Como a inadimplência é calculada:</strong><br>
+            A análise de inadimplência utiliza <strong>TRÊS visões diferentes</strong> para melhor compreensão:
+            <ol>
+                <li><strong>🔴 Visão Completa (Status Acesso)</strong> - Baseada na coluna "STATUS ACESSO" do arquivo de dados</li>
+                <li><strong>🟡 Visão Financeiro Histórico</strong> - Baseada na coluna "FINANCEIRO EM ATRASO" (último atraso registrado)</li>
+                <li><strong>🟢 Visão Real (Parcelas Vencidas)</strong> - Baseada na aba "Base Parcelas" com data de vencimento + status "A receber"</li>
+            </ol>
+            A <strong>Visão Real</strong> é a mais precisa para situação atual de inadimplência!
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
+            <strong>📋 Como a inadimplência é calculada:</strong><br>
+            A análise de inadimplência é baseada na coluna <strong>"STATUS ACESSO"</strong> do arquivo de dados.
+            Clientes com status "Financeiro em atraso" ou "Bloqueio Automático" são considerados inadimplentes.
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Radio para escolher a visão de inadimplência
+        if has_parcelas:
+            visao_opcoes = [
+                "🔴 Visão por Status Acesso",
+                "🟡 Visão Financeiro Histórico", 
+                "🟢 Visão Real (Parcelas Vencidas)"
+            ]
             visao_selecionada = st.radio(
-                "📊 Selecione a visão:",
-                options=["🔴 Visão Completa (todos os clientes)", "🟢 Visão Recuperável (apenas não desativados)"],
-                index=0,
+                "📊 Selecione a análise de inadimplência:",
+                options=visao_opcoes,
+                index=2,
                 key="visao_inadimplencia",
-                help="Visão Recuperável exclui clientes desativados/cancelados (foco em ação comercial)"
+                help="Visão Real é a mais precisa, baseada em parcelas vencidas e não pagas"
+            )
+        else:
+            visao_opcoes = [
+                "🔴 Visão por Status Acesso",
+                "🟡 Visão Financeiro Histórico"
+            ]
+            visao_selecionada = st.radio(
+                "📊 Selecione a análise de inadimplência:",
+                options=visao_opcoes,
+                index=0,
+                key="visao_inadimplencia"
             )
         
-        incluir_desativados = visao_selecionada == "🔴 Visão Completa (todos os clientes)"
-        
-        # Explicação da visão selecionada
-        if incluir_desativados:
-            st.info("🔴 **Visão Completa:** Inclui todos os clientes, inclusive desativados. Mostra a inadimplência histórica total do condomínio.")
+        # Calcular inadimplência conforme visão selecionada
+        if visao_selecionada == "🔴 Visão por Status Acesso":
+            # Usar classificação por STATUS ACESSO
+            df_clientes_temp = df_clientes.copy()
+            df_clientes_temp["CONDOMANIO"] = pd.to_numeric(df_clientes_temp["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
+            df_condominios_temp = df_condominios.copy()
+            df_condominios_temp["ID"] = pd.to_numeric(df_condominios_temp["ID"], errors="coerce").fillna(0).astype(int)
+            
+            # Classificar inadimplência por STATUS ACESSO
+            def status_para_inadimplencia(status):
+                if pd.isna(status):
+                    return "Em Dia"
+                status_lower = str(status).lower().strip()
+                if "financeiro em atraso" in status_lower or "bloqueio" in status_lower:
+                    return "Em Atraso"
+                return "Em Dia"
+            
+            df_clientes_temp["situacao_inadimplencia"] = df_clientes_temp["STATUS ACESSO"].apply(status_para_inadimplencia)
+            
+            # Agrupar por condomínio
+            inad_agg = df_clientes_temp.groupby(["CONDOMANIO", "situacao_inadimplencia"]).size().unstack(fill_value=0)
+            
+            if "Em Atraso" not in inad_agg.columns:
+                inad_agg["Em Atraso"] = 0
+            if "Em Dia" not in inad_agg.columns:
+                inad_agg["Em Dia"] = 0
+            
+            total_clientes = inad_agg["Em Atraso"] + inad_agg["Em Dia"]
+            inad_agg["taxa_inadimplencia"] = (inad_agg["Em Atraso"] / total_clientes.replace(0, np.nan) * 100).round(2).fillna(0)
+            inad_agg["total_clientes"] = total_clientes
+            inad_agg["total_inadimplentes"] = inad_agg["Em Atraso"]
+            
+            # Adicionar informações do condomínio
+            cols_merge = ["ID", "Condomínio", "Região", "Apartamentos"]
+            cols_existentes = [c for c in cols_merge if c in df_condominios.columns]
+            
+            df_inadimplencia = inad_agg.reset_index().merge(
+                df_condominios[cols_existentes], 
+                left_on="CONDOMANIO", right_on="ID", how="right"
+            )
+            
+            # Preencher NAs
+            df_inadimplencia["taxa_inadimplencia"] = df_inadimplencia["taxa_inadimplencia"].fillna(0)
+            df_inadimplencia["total_clientes"] = df_inadimplencia["total_clientes"].fillna(0).astype(int)
+            df_inadimplencia["total_inadimplentes"] = df_inadimplencia["total_inadimplentes"].fillna(0).astype(int)
+            
+            st.info("🔴 **Visão por Status Acesso:** Considera inadimplentes clientes com status 'Financeiro em atraso' ou 'Bloqueio Automático'")
+            
+        elif visao_selecionada == "🟡 Visão Financeiro Histórico":
+            # Usar a função legada
+            df_inadimplencia = analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados=True)
+            st.info("🟡 **Visão Financeiro Histórico:** Baseada na coluna 'FINANCEIRO EM ATRASO' (último atraso registrado)")
         else:
-            st.success("🟢 **Visão Recuperável:** Exclui clientes desativados/cancelados. Mostra apenas clientes que ainda podem regularizar sua situação financeira.")
-        
-        # Calcular inadimplência com base na seleção
-        df_inadimplencia = analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados)
+            # Visão Real por parcelas
+            df_inadimplencia, parcelas_detalhe = analisar_inadimplencia_por_parcelas(df_clientes, df_condominios, df_parcelas)
+            st.success("🟢 **Visão Real (Parcelas Vencidas):** Baseada em parcelas com data de vencimento passada e status 'A receber'")
         
         if not df_inadimplencia.empty:
             # Métricas resumidas
             total_condominios = len(df_inadimplencia)
-            total_inadimplentes = df_inadimplencia["total_inadimplentes"].sum()
-            total_clientes_analisados = df_inadimplencia["total_clientes"].sum()
+            total_inadimplentes = df_inadimplencia["total_inadimplentes"].sum() if "total_inadimplentes" in df_inadimplencia.columns else 0
+            total_clientes_analisados = df_inadimplencia["total_clientes"].sum() if "total_clientes" in df_inadimplencia.columns else 0
             media_inadimplencia = df_inadimplencia["taxa_inadimplencia"].mean()
             
             col1, col2, col3, col4 = st.columns(4)
@@ -1373,9 +1655,14 @@ def exibir_dashboard_principal():
             col3.metric("👥 Total Clientes", formatar_numero_br(total_clientes_analisados))
             col4.metric("📊 Média Inadimplência", f"{media_inadimplencia:.1f}%")
             
+            # Se for visão real, mostrar valor total em atraso
+            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and "valor_total_atraso" in df_inadimplencia.columns:
+                valor_total_atraso = df_inadimplencia["valor_total_atraso"].sum()
+                st.metric("💰 Valor Total em Atraso", formatar_moeda_br(valor_total_atraso))
+            
             st.markdown("---")
             
-            # Gráfico 1: Top 15 condomínios com maior inadimplência
+            # Gráfico: Top 15 condomínios com maior inadimplência
             st.markdown("#### 📊 Top 15 Condomínios com Maior Taxa de Inadimplência")
             
             fig1 = px.bar(
@@ -1391,81 +1678,77 @@ def exibir_dashboard_principal():
             fig1.update_layout(yaxis_title="Taxa de Inadimplência (%)", xaxis_title="")
             st.plotly_chart(fig1, use_container_width=True)
             
-            # Gráfico 2: Dispersão Penetração vs Inadimplência (apenas para visão completa)
-            if incluir_desativados:
-                st.markdown("#### 📈 Correlação: Penetração vs Inadimplência")
+            # Se for visão real, mostrar gráfico de valor em atraso
+            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and "valor_total_atraso" in df_inadimplencia.columns:
+                st.markdown("#### 💰 Top 15 Condomínios com Maior Valor em Atraso")
                 
-                df_penetracao_temp = calcular_penetracao(df_clientes, df_condominios)
-                df_merge = df_penetracao_temp.merge(
-                    df_inadimplencia[["CONDOMANIO", "taxa_inadimplencia", "total_inadimplentes", "total_clientes"]], 
-                    left_on="CONDOMANIO", right_on="CONDOMANIO", how="left"
+                fig_valor = px.bar(
+                    df_inadimplencia.head(15),
+                    x="Condomínio",
+                    y="valor_total_atraso",
+                    color="valor_total_atraso",
+                    color_continuous_scale="Oranges",
+                    text="valor_total_atraso",
+                    title="Top 15 - Valor Total em Atraso por Condomínio"
                 )
-                
-                fig2 = px.scatter(
-                    df_merge, 
-                    x="taxa_penetracao", 
-                    y="taxa_inadimplencia", 
-                    size="total_clientes",
-                    color="Região", 
-                    hover_name="Condomínio",
-                    title="Relação entre Penetração e Inadimplência (quanto maior a bolha, mais clientes)",
-                    labels={"taxa_penetracao": "Penetração (%)", "taxa_inadimplencia": "Inadimplência (%)"}
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-                
-                st.caption("💡 **Insight:** Idealmente, condomínios com alta penetração deveriam ter baixa inadimplência. Pontos no canto superior direito (alta penetração + alta inadimplência) merecem atenção especial.")
-            
-            # Gráfico 3: Mapa de calor por região
-            if "Região" in df_inadimplencia.columns:
-                st.markdown("#### 🗺️ Inadimplência Média por Região")
-                
-                regiao_stats = df_inadimplencia.groupby("Região").agg(
-                    total_condominios=("Condomínio", "count"),
-                    media_inadimplencia=("taxa_inadimplencia", "mean"),
-                    total_inadimplentes=("total_inadimplentes", "sum"),
-                    total_clientes=("total_clientes", "sum")
-                ).reset_index()
-                
-                regiao_stats["inadimplencia_ponderada"] = (regiao_stats["total_inadimplentes"] / regiao_stats["total_clientes"] * 100).round(2)
-                
-                fig3 = px.bar(
-                    regiao_stats,
-                    x="Região",
-                    y="inadimplencia_ponderada",
-                    color="inadimplencia_ponderada",
-                    color_continuous_scale="Reds",
-                    title="Inadimplência Ponderada por Região",
-                    labels={"inadimplencia_ponderada": "Taxa de Inadimplência (%)"}
-                )
-                st.plotly_chart(fig3, use_container_width=True)
+                fig_valor.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+                fig_valor.update_layout(yaxis_title="Valor em Atraso (R$)", xaxis_title="")
+                st.plotly_chart(fig_valor, use_container_width=True)
             
             # Tabela completa
             with st.expander("📋 Ver Tabela Completa de Inadimplência"):
-                st.dataframe(
-                    df_inadimplencia[[
-                        "Condomínio", "Região", "Apartamentos", 
-                        "total_clientes", "Em Dia", "Em Atraso", "total_inadimplentes", "taxa_inadimplencia"
-                    ]], 
-                    use_container_width=True,
-                    column_config={
-                        "taxa_inadimplencia": st.column_config.ProgressColumn(
-                            "Taxa Inadimplência", 
-                            format="%.1f%%", 
-                            min_value=0, 
-                            max_value=100
-                        ),
-                        "Apartamentos": st.column_config.NumberColumn("Apartamentos", format="%d"),
-                        "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
-                        "Em Dia": st.column_config.NumberColumn("Em Dia", format="%d"),
-                        "Em Atraso": st.column_config.NumberColumn("Em Atraso", format="%d"),
-                        "total_inadimplentes": st.column_config.NumberColumn("Total Inadimplentes", format="%d"),
-                    }
-                )
+                if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)":
+                    colunas_exibir = ["Condomínio", "Região", "Apartamentos", "total_clientes", 
+                                     "total_inadimplentes", "taxa_inadimplencia", "valor_total_atraso", "total_parcelas_vencidas"]
+                    colunas_existentes = [c for c in colunas_exibir if c in df_inadimplencia.columns]
+                    
+                    st.dataframe(
+                        df_inadimplencia[colunas_existentes], 
+                        use_container_width=True,
+                        column_config={
+                            "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
+                            "valor_total_atraso": st.column_config.NumberColumn("Valor em Atraso", format="R$ %.2f"),
+                            "Apartamentos": st.column_config.NumberColumn("Apartamentos", format="%d"),
+                            "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
+                            "total_inadimplentes": st.column_config.NumberColumn("Total Inadimplentes", format="%d"),
+                            "total_parcelas_vencidas": st.column_config.NumberColumn("Parcelas Vencidas", format="%d"),
+                        }
+                    )
+                else:
+                    st.dataframe(
+                        df_inadimplencia[[
+                            "Condomínio", "Região", "Apartamentos", 
+                            "total_clientes", "Em Dia", "Em Atraso", "total_inadimplentes", "taxa_inadimplencia"
+                        ]], 
+                        use_container_width=True,
+                        column_config={
+                            "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
+                            "Apartamentos": st.column_config.NumberColumn("Apartamentos", format="%d"),
+                            "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
+                            "Em Dia": st.column_config.NumberColumn("Em Dia", format="%d"),
+                            "Em Atraso": st.column_config.NumberColumn("Em Atraso", format="%d"),
+                            "total_inadimplentes": st.column_config.NumberColumn("Total Inadimplentes", format="%d"),
+                        }
+                    )
             
-            # Botão de exportação específico para inadimplência
+            # Se for visão real e houver detalhamento de parcelas, mostrar
+            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in dir() and not parcelas_detalhe.empty:
+                with st.expander("📋 Ver Detalhamento de Parcelas Vencidas"):
+                    st.dataframe(
+                        parcelas_detalhe,
+                        use_container_width=True,
+                        column_config={
+                            "Data Vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                            "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                        }
+                    )
+            
+            # Botão de exportação específico
             output_inad = io.BytesIO()
             with pd.ExcelWriter(output_inad, engine='openpyxl') as writer:
                 df_inadimplencia.to_excel(writer, sheet_name='Inadimplencia', index=False)
+                if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in dir() and not parcelas_detalhe.empty:
+                    parcelas_detalhe.to_excel(writer, sheet_name='Parcelas_Vencidas', index=False)
             output_inad.seek(0)
             
             st.download_button(
@@ -1616,7 +1899,7 @@ def render_relatorios_condominios():
     
     # Título
     titulo_principal("🏢 Relatórios Estratégicos - Condomínios")
-    st.markdown("Análise de penetração, receita potencial, inadimplência, churn, concorrência e maturidade")
+    st.markdown("Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência e maturidade")
     
     # Conectar ao banco
     db = init_mongo()
