@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO COM DIAGNÓSTICO COMPLETO
+# modules/integracao_ixc.py - VERSÃO FINAL CORRIGIDA
 import requests
 import base64
 import json
@@ -6,11 +6,9 @@ import streamlit as st
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 import urllib3
+
+# 🔒 Suprime avisos de certificado autoassinado (comum no IXCsoft)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
-
-
 
 # ============================================================================
 # CONFIGURAÇÕES (ler dos segredos do Streamlit)
@@ -25,76 +23,50 @@ def get_ixc_config():
             "id_tipo_cliente": st.secrets["ixc"].get("id_tipo_cliente", "03"),
             "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01"),
         }
-        # 🔍 LOG DA CONFIGURAÇÃO
-        print(f"🔍 Configuração IXC carregada:")
-        print(f"   Host: {config['host']}")
-        print(f"   Token: {config['token'][:20]}... (ocultado)")
-        print(f"   Filial ID: {config['filial_id']}")
+        print(f"🔍 Configuração IXC carregada: Host={config['host']}, Filial={config['filial_id']}")
         return config
     except Exception as e:
         st.error(f"❌ Erro ao carregar configuração do IXC: {e}")
         print(f"❌ Erro detalhado ao carregar secrets: {e}")
         return None
 
-
 def _sanitizar_host(host: str) -> str:
     """Remove protocolo, caminhos e barras para evitar URL duplicada."""
     host = host.replace("https://", "").replace("http://", "")
     return host.split("/")[0].strip().rstrip("/")
 
-
-
-
 # ============================================================================
 # FUNÇÃO PARA TESTAR CONEXÃO COM O IXC
 # ============================================================================
 def testar_conexao_ixc() -> Dict:
-    """
-    Testa a conexão com a API do IXC.
-    Retorna um dicionário com os resultados dos testes.
-    """
+    """Testa a conexão com a API do IXC e retorna diagnóstico."""
     config = get_ixc_config()
     if not config:
         return {"sucesso": False, "erro": "Configuração não encontrada"}
     
-    resultados = {
-        "sucesso": False,
-        "testes": [],
-        "erro": None
-    }
-    
-    host = config["host"]
+    resultados = {"sucesso": False, "testes": [], "erro": None}
+    host_limpo = _sanitizar_host(config["host"])
     token = config["token"]
     
-    # Teste 1: Verificar formato do host
     resultados["testes"].append({
         "nome": "Formato do Host",
         "sucesso": True,
-        "detalhe": f"Host: {host}"
+        "detalhe": f"Host sanitizado: {host_limpo}"
     })
     
-    # Teste 2: Tentar requisição simples (listar 1 cliente)
     try:
-        url = f"https://{host}/webservice/v1/cliente"
+        url = f"https://{host_limpo}/webservice/v1/cliente"
         auth_string = base64.b64encode(token.encode('utf-8')).decode('utf-8')
-        
-        payload = {
-            "qtype": "cliente.id",
-            "query": "1",
-            "oper": ">",
-            "page": "1",
-            "rp": "1"
-        }
-        
+        payload = {"qtype": "cliente.id", "query": "1", "oper": ">", "page": "1", "rp": "1"}
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Basic {auth_string}",
-            "ixcsoft": "listar"
+            "ixcsoft": "listar"  # ✅ Obrigatório para consultas
         }
         
         print(f"🔍 Testando conexão com: {url}")
-        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=10)
-        verify=False
+        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=10, verify=False)
+        
         resultados["testes"].append({
             "nome": "Conexão HTTP",
             "sucesso": response.status_code in [200, 201],
@@ -105,46 +77,22 @@ def testar_conexao_ixc() -> Dict:
             resultados["sucesso"] = True
             try:
                 dados = response.json()
-                resultados["testes"].append({
-                    "nome": "Resposta JSON",
-                    "sucesso": True,
-                    "detalhe": "API respondeu com JSON válido"
-                })
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": True, "detalhe": "API respondeu com JSON válido"})
             except:
-                resultados["testes"].append({
-                    "nome": "Resposta JSON",
-                    "sucesso": False,
-                    "detalhe": f"Resposta não é JSON: {response.text[:100]}"
-                })
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": False, "detalhe": f"Resposta não é JSON: {response.text[:100]}"})
         else:
             resultados["erro"] = f"HTTP {response.status_code}"
-            resultados["testes"].append({
-                "nome": "Resposta",
-                "sucesso": False,
-                "detalhe": response.text[:200]
-            })
+            resultados["testes"].append({"nome": "Resposta", "sucesso": False, "detalhe": response.text[:200]})
             
     except requests.exceptions.Timeout:
         resultados["erro"] = "Timeout - IXC não respondeu"
-        resultados["testes"].append({
-            "nome": "Timeout",
-            "sucesso": False,
-            "detalhe": "A conexão expirou após 10 segundos"
-        })
+        resultados["testes"].append({"nome": "Timeout", "sucesso": False, "detalhe": "A conexão expirou após 10 segundos"})
     except requests.exceptions.ConnectionError as e:
         resultados["erro"] = "Erro de conexão"
-        resultados["testes"].append({
-            "nome": "Conexão",
-            "sucesso": False,
-            "detalhe": str(e)[:200]
-        })
+        resultados["testes"].append({"nome": "Conexão", "sucesso": False, "detalhe": str(e)[:200]})
     except Exception as e:
         resultados["erro"] = str(e)
-        resultados["testes"].append({
-            "nome": "Erro",
-            "sucesso": False,
-            "detalhe": str(e)[:200]
-        })
+        resultados["testes"].append({"nome": "Erro", "sucesso": False, "detalhe": str(e)[:200]})
     
     return resultados
 
@@ -153,7 +101,6 @@ def testar_conexao_ixc() -> Dict:
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
     """Converte os dados do cliente para o formato esperado pela API do IXC."""
-    
     nome_completo = cliente_data.get("nome_completo", "")
     cpf = cliente_data.get("cpf", "")
     rg = cliente_data.get("rg", "")
@@ -260,8 +207,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
     elif cliente_data.get("condominio_nome"):
         payload["referencia"] = f"Condomínio: {cliente_data['condominio_nome']}"
     
+    # Remove campos vazios/nulos que o IXC rejeita
     payload = {k: v for k, v in payload.items() if v not in (None, "", [])}
-    
     return payload
 
 # ============================================================================
@@ -272,24 +219,16 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
     if not cpf or len(cpf) < 11:
         return None
     
-    host = config["host"]
-    url = f"https://{host}/webservice/v1/cliente"
+    host_limpo = _sanitizar_host(config["host"])
+    url = f"https://{host_limpo}/webservice/v1/cliente"
     token = config["token"]
-    
     auth_string = base64.b64encode(token.encode('utf-8')).decode('utf-8')
     
-    payload = {
-        "qtype": "cliente.cnpj_cpf",
-        "query": cpf,
-        "oper": "=",
-        "page": "1",
-        "rp": "1"
-    }
-    
+    payload = {"qtype": "cliente.cnpj_cpf", "query": cpf, "oper": "=", "page": "1", "rp": "1"}
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
-        "ixcsoft": ""
+        "ixcsoft": "listar"  # ✅ Obrigatório para consultas
     }
     
     try:
@@ -308,11 +247,10 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
         return None
 
 # ============================================================================
-# FUNÇÃO PRINCIPAL: ENVIAR CLIENTE AO IXC (COM DIAGNÓSTICO)
+# FUNÇÃO PRINCIPAL: ENVIAR CLIENTE AO IXC
 # ============================================================================
 def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
     """Envia os dados do cliente para a API do IXC com diagnóstico completo."""
-    
     print("\n" + "=" * 70)
     print("🚀 INICIANDO INTEGRAÇÃO COM IXC")
     print("=" * 70)
@@ -323,12 +261,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     
     cpf = cliente_data.get("cpf", "")
     nome = cliente_data.get("nome_completo", "")
-    
-    print(f"📋 Dados do cliente:")
-    print(f"   Nome: {nome}")
-    print(f"   CPF: {cpf}")
-    print(f"   Email: {cliente_data.get('email', 'N/A')}")
-    print(f"   Celular: {cliente_data.get('celular', 'N/A')}")
+    print(f"📋 Dados do cliente: Nome={nome}, CPF={cpf}")
     
     # Verificar se cliente já existe
     if cpf and len(cpf) >= 11:
@@ -342,48 +275,41 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     payload = construir_payload_ixc(cliente_data, config)
     
     # Preparar requisição
-    host = config["host"]
-    url = f"https://{host}/webservice/v1/cliente"
+    host_limpo = _sanitizar_host(config["host"])
+    url = f"https://{host_limpo}/webservice/v1/cliente"
     token = config["token"]
     
     print(f"\n🌐 URL da requisição: {url}")
-    
     auth_string = base64.b64encode(token.encode('utf-8')).decode('utf-8')
     
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Basic {auth_string}"
+        "Authorization": f"Basic {auth_string}",
+        "ixcsoft": ""  # ✅ Vazio para CRIAÇÃO/EDIÇÃO
     }
     
     print(f"\n📤 Enviando requisição...")
-    print(f"   Headers: Authorization: Basic {auth_string[:30]}...")
-    
     try:
         response = requests.post(
             url,
             data=json.dumps(payload),
             headers=headers,
-            timeout=30
+            timeout=30,
+            verify=False  # 🔥 Obrigatório para certificados autoassinados do IXC
         )
         
-        print(f"\n📥 RESPOSTA RECEBIDA:")
-        print(f"   Status Code: {response.status_code}")
-        print(f"   Status Text: {response.reason}")
-        print(f"   Headers: {dict(response.headers)}")
-        print(f"   Resposta bruta: {response.text[:1000]}")
+        print(f"\n📥 RESPOSTA RECEBIDA: Status={response.status_code}")
+        print(f"   Resposta bruta: {response.text[:500]}")
         
         if response.status_code in [200, 201]:
             try:
                 resposta_json = response.json()
-                print(f"   JSON decodificado: {json.dumps(resposta_json, indent=2, ensure_ascii=False)[:500]}")
-                
                 id_ixc = None
                 if isinstance(resposta_json, dict):
                     id_ixc = resposta_json.get("id") or resposta_json.get("ID") or \
                              resposta_json.get("cliente_id") or resposta_json.get("registro_id")
                     
-                    # Verificar se há mensagem de erro disfarçada
-                    if resposta_json.get("success") == False:
+                    if resposta_json.get("success") is False:
                         erro = resposta_json.get("message") or resposta_json.get("error")
                         print(f"❌ API retornou erro: {erro}")
                         return False, None, f"Erro na API: {erro}"
@@ -393,11 +319,9 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
                 
             except json.JSONDecodeError as e:
                 print(f"⚠️ Resposta não é JSON válido: {e}")
-                print(f"   Resposta: {response.text[:200]}")
                 if "sucesso" in response.text.lower() or "success" in response.text.lower():
                     return True, "ok", None
-                else:
-                    return False, None, f"Resposta não JSON: {response.text[:200]}"
+                return False, None, f"Resposta não JSON: {response.text[:200]}"
         else:
             erro_msg = f"HTTP {response.status_code}: {response.text[:300]}"
             print(f"❌ Falha na requisição: {erro_msg}")
@@ -408,7 +332,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
         return False, None, "Timeout na conexão com o IXC"
     except requests.exceptions.ConnectionError as e:
         print(f"❌ Erro de conexão: {e}")
-        return False, None, f"Erro de conexão: O IXC não está acessível publicamente. Verifique se o host '{host}' está correto e se a API está exposta na internet."
+        return False, None, "Erro de conexão: O IXC não está acessível publicamente. Verifique firewall, DNS e se o Webservice está ativo."
     except Exception as e:
         print(f"❌ Erro inesperado: {e}")
         return False, None, str(e)
