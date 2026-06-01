@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO FINAL CORRIGIDA (Vendedor Padrão: 1)
+# modules/integracao_ixc.py - VERSÃO BLINDADA CONTRA NONEType
 import requests
 import base64
 import json
@@ -88,57 +88,64 @@ def testar_conexao_ixc() -> Dict:
     return resultados
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD PARA IXC
+# CONSTRUÇÃO DO PAYLOAD PARA IXC (BLINDADA CONTRA None)
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
     """Constrói payload seguro para IXC e valida campos obrigatórios."""
     
-    # 1. Sanitização rigorosa (apenas dígitos)
-    cpf = "".join(filter(str.isdigit, cliente_data.get("cpf", "")))
-    rg = cliente_data.get("rg", "").strip()
-    celular = "".join(filter(str.isdigit, cliente_data.get("celular", "")))
-    telefone_com = "".join(filter(str.isdigit, cliente_data.get("telefone_comercial", "")))
-    fone = celular or telefone_com or ""
-    cep = "".join(filter(str.isdigit, cliente_data.get("cep", "")))
-    
-    # 2. Validação de obrigatórios
+    # ✅ Função auxiliar que evita 'NoneType has no attribute strip'
+    def safe(val: any) -> str:
+        return str(val).strip() if val is not None else ""
+
+    # Sanitização e extração segura
+    nome_completo = safe(cliente_data.get("nome_completo"))
+    cpf = "".join(filter(str.isdigit, safe(cliente_data.get("cpf"))))
+    rg = safe(cliente_data.get("rg"))
+    email = safe(cliente_data.get("email"))
+    celular = "".join(filter(str.isdigit, safe(cliente_data.get("celular"))))
+    telefone_com = "".join(filter(str.isdigit, safe(cliente_data.get("telefone_comercial"))))
+    fone = celular or telefone_com
+    cep = "".join(filter(str.isdigit, safe(cliente_data.get("cep"))))
+
+    endereco = safe(cliente_data.get("endereco"))
+    numero = safe(cliente_data.get("numero"))
+    complemento = safe(cliente_data.get("complemento"))
+    bairro = safe(cliente_data.get("bairro"))
+    cidade = safe(cliente_data.get("cidade")) or "Rio de Janeiro"
+    uf = (safe(cliente_data.get("uf")) or "RJ").upper()
+    bloco = safe(cliente_data.get("bloco"))
+    apartamento = safe(cliente_data.get("apartamento"))
+    obs = safe(cliente_data.get("observacoes"))[:500]
+
+    # Validação rápida de obrigatórios
     obrigatorios = {
-        "razao": cliente_data.get("nome_completo", "").strip(),
-        "cnpj_cpf": cpf,
-        "tipo_pessoa": "F",
-        "cidade": cliente_data.get("cidade", "").strip(),
-        "uf": cliente_data.get("uf", "").strip().upper(),
-        "endereco": cliente_data.get("endereco", "").strip(),
-        "numero": cliente_data.get("numero", "").strip(),
-        "bairro": cliente_data.get("bairro", "").strip(),
-        "cep": cep,
-        "fone": fone,
-        "email": cliente_data.get("email", "").strip()
+        "razao": nome_completo, "cnpj_cpf": cpf, "cidade": cidade, 
+        "uf": uf, "endereco": endereco, "numero": numero, "bairro": bairro, "cep": cep, "fone": fone, "email": email
     }
-    
     faltando = [k for k, v in obrigatorios.items() if not v]
     if faltando:
         return {}, f"Campos obrigatórios ausentes ou vazios: {', '.join(faltando)}"
-        
-    # 3. Data de nascimento
+
+    # Data de nascimento
     data_nasc_formatada = ""
-    if cliente_data.get("data_nascimento"):
+    raw_nasc = cliente_data.get("data_nascimento")
+    if raw_nasc:
         for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"]:
             try:
-                dt = datetime.strptime(str(cliente_data["data_nascimento"]).strip(), fmt)
+                dt = datetime.strptime(str(raw_nasc).strip(), fmt)
                 data_nasc_formatada = dt.strftime("%Y-%m-%d")
                 break
             except ValueError:
                 continue
 
-    # 4. Busca ID Condomínio (se aplicável)
+    # Buscar ID Condomínio
     id_condominio_ixc = None
     if cliente_data.get("condominio_id"):
         try:
             from .condominios import get_condominio_by_id
-            cond = get_condominio_by_id(cliente_data["condominio_id"])
-            if cond and cond.get("id_ixc"):
-                id_condominio_ixc = str(cond["id_ixc"])
+            cond_data = get_condominio_by_id(cliente_data["condominio_id"])
+            if cond_data and cond_data.get("id_ixc"):
+                id_condominio_ixc = str(cond_data["id_ixc"])
         except Exception as e:
             print(f"⚠️ Erro ao buscar condomínio: {e}")
 
@@ -149,30 +156,30 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "filial_id": config.get("filial_id", "1"),
         "filtra_filial": "S",
         "tipo_pessoa": "F",
-        "razao": obrigatorios["razao"],
-        "nome_social": obrigatorios["razao"],
-        "fantasia": obrigatorios["razao"],
-        "cnpj_cpf": obrigatorios["cnpj_cpf"],
-        "ie_identidade": rg if rg else "",
+        "razao": nome_completo,
+        "nome_social": nome_completo,
+        "fantasia": nome_completo,
+        "cnpj_cpf": cpf,
+        "ie_identidade": rg,
         "data_nascimento": data_nasc_formatada,
-        "email": obrigatorios["email"],
+        "email": email,
         "telefone_celular": celular,
         "whatsapp": celular,
         "fone": fone,
-        "endereco": obrigatorios["endereco"],
-        "numero": obrigatorios["numero"],
-        "complemento": cliente_data.get("complemento", "").strip(),
-        "bairro": obrigatorios["bairro"],
-        "cidade": obrigatorios["cidade"],
-        "uf": obrigatorios["uf"],
-        "cep": obrigatorios["cep"],
+        "endereco": endereco,
+        "numero": numero,
+        "complemento": complemento,
+        "bairro": bairro,
+        "cidade": cidade,
+        "uf": uf,
+        "cep": cep,
         "tipo_localidade": "U",
-        "bloco": cliente_data.get("bloco", "").strip(),
-        "apartamento": cliente_data.get("apartamento", "").strip(),
+        "bloco": bloco,
+        "apartamento": apartamento,
         "acesso_automatico_central": "P",
         "alterar_senha_primeiro_acesso": "S",
         "hotsite_acesso": "2",
-        "responsavel": config.get("id_vendedor_padrao", "1"),  # ✅ Configurável via secrets, fallback 1
+        "responsavel": config.get("id_vendedor_padrao", "1"),  # ✅ Vendedor 1
         "id_vendedor": config.get("id_vendedor_padrao", "1"),
         "participa_cobranca": "S",
         "participa_pre_cobranca": "S",
@@ -182,17 +189,16 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "nacionalidade": "Brasileiro",
         "status_prospeccao": "C",
         "tipo_assinante": "3",
-        "obs": (cliente_data.get("observacoes", "")[:500]).strip()
+        "obs": obs
     }
-    
+
     if id_condominio_ixc:
         payload["id_condominio"] = id_condominio_ixc
     elif cliente_data.get("condominio_nome"):
-        payload["referencia"] = f"Condomínio: {cliente_data['condominio_nome']}"
+        payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
         
-    # ✅ IXC rejeita campos vazios explícitos. Remove apenas se for vazio/null.
-    payload = {k: v for k, v in payload.items() if v not in (None, "")}
-    return payload, None
+    # IXC rejeita campos vazios explícitos
+    return {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}, None
 
 # ============================================================================
 # FUNÇÃO PARA BUSCAR CLIENTE NO IXC POR CPF
@@ -246,7 +252,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     print(f"📋 Dados do cliente: Nome={nome}, CPF={cpf}")
 
     # Verificar se cliente já existe
-    if cpf and len("".join(filter(str.isdigit, cpf))) >= 11:
+    if cpf and len("".join(filter(str.isdigit, str(cpf)))) >= 11:
         print(f"🔍 Verificando se CPF {cpf} já existe no IXC...")
         id_existente = buscar_cliente_ixc_por_cpf(cpf, config)
         if id_existente:
@@ -266,7 +272,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "inserir"  # ✅ Mais seguro que "" para POST de criação
+        "ixcsoft": "inserir"  # ✅ Padrão oficial para criação via POST
     }
 
     print(f"\n🌐 URL da requisição: {url}")
