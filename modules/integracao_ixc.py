@@ -9,6 +9,13 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+
+def _sanitizar_host(host: str) -> str:
+    """Remove protocolo, caminhos e barras para evitar URL duplicada."""
+    host = host.replace("https://", "").replace("http://", "")
+    return host.split("/")[0].strip().rstrip("/")
+
+
 # ============================================================================
 # CONFIGURAÇÕES (ler dos segredos do Streamlit)
 # ============================================================================
