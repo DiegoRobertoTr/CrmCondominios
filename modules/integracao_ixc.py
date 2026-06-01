@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO COM VALORES PADRÃO E VALIDAÇÃO TOTAL
+# modules/integracao_ixc.py - VERSÃO FINAL CORRIGIDA
 import requests
 import base64
 import json
@@ -7,11 +7,11 @@ from datetime import datetime
 from typing import Dict, Optional, Tuple
 import urllib3
 
-# 🔒 Suprime avisos de certificado autoassinado
+# 🔒 Suprime avisos de certificado autoassinado (comum no IXCsoft)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES (ler dos segredos do Streamlit)
 # ============================================================================
 def get_ixc_config():
     """Retorna configuração da API IXC a partir de st.secrets"""
@@ -23,51 +23,105 @@ def get_ixc_config():
             "id_tipo_cliente": st.secrets["ixc"].get("id_tipo_cliente", "03"),
             "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01"),
         }
-        print(f"🔍 Configuração IXC carregada: Host={config['host']}")
+        print(f"🔍 Configuração IXC carregada: Host={config['host']}, Filial={config['filial_id']}")
         return config
     except Exception as e:
         st.error(f"❌ Erro ao carregar configuração do IXC: {e}")
+        print(f"❌ Erro detalhado ao carregar secrets: {e}")
         return None
 
 def _sanitizar_host(host: str) -> str:
-    """Remove protocolo e caminhos para evitar URL duplicada."""
+    """Remove protocolo, caminhos e barras para evitar URL duplicada."""
     host = host.replace("https://", "").replace("http://", "")
     return host.split("/")[0].strip().rstrip("/")
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD COM VALORES PADRÃO
+# FUNÇÃO PARA TESTAR CONEXÃO COM O IXC
+# ============================================================================
+def testar_conexao_ixc() -> Dict:
+    """Testa a conexão com a API do IXC e retorna diagnóstico."""
+    config = get_ixc_config()
+    if not config:
+        return {"sucesso": False, "erro": "Configuração não encontrada"}
+    
+    resultados = {"sucesso": False, "testes": [], "erro": None}
+    host_limpo = _sanitizar_host(config["host"])
+    token = config["token"]
+    
+    resultados["testes"].append({
+        "nome": "Formato do Host",
+        "sucesso": True,
+        "detalhe": f"Host sanitizado: {host_limpo}"
+    })
+    
+    try:
+        url = f"https://{host_limpo}/webservice/v1/cliente"
+        auth_string = base64.b64encode(token.encode('utf-8')).decode('utf-8')
+        payload = {"qtype": "cliente.id", "query": "1", "oper": ">", "page": "1", "rp": "1"}
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {auth_string}",
+            "ixcsoft": "listar"  # ✅ Obrigatório para consultas
+        }
+        
+        print(f"🔍 Testando conexão com: {url}")
+        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=10, verify=False)
+        
+        resultados["testes"].append({
+            "nome": "Conexão HTTP",
+            "sucesso": response.status_code in [200, 201],
+            "detalhe": f"Status: {response.status_code}"
+        })
+        
+        if response.status_code in [200, 201]:
+            resultados["sucesso"] = True
+            try:
+                dados = response.json()
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": True, "detalhe": "API respondeu com JSON válido"})
+            except:
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": False, "detalhe": f"Resposta não é JSON: {response.text[:100]}"})
+        else:
+            resultados["erro"] = f"HTTP {response.status_code}"
+            resultados["testes"].append({"nome": "Resposta", "sucesso": False, "detalhe": response.text[:200]})
+            
+    except requests.exceptions.Timeout:
+        resultados["erro"] = "Timeout - IXC não respondeu"
+        resultados["testes"].append({"nome": "Timeout", "sucesso": False, "detalhe": "A conexão expirou após 10 segundos"})
+    except requests.exceptions.ConnectionError as e:
+        resultados["erro"] = "Erro de conexão"
+        resultados["testes"].append({"nome": "Conexão", "sucesso": False, "detalhe": str(e)[:200]})
+    except Exception as e:
+        resultados["erro"] = str(e)
+        resultados["testes"].append({"nome": "Erro", "sucesso": False, "detalhe": str(e)[:200]})
+    
+    return resultados
+
+# ============================================================================
+# CONSTRUÇÃO DO PAYLOAD PARA IXC
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
-    """Converte os dados do cliente para o formato esperado pelo IXC.
-    Todos os campos obrigatórios recebem valores padrão se estiverem vazios."""
-    
-    # ========== CAMPOS DO CLIENTE (com fallback) ==========
-    nome_completo = cliente_data.get("nome_completo", "").strip()
-    cpf = cliente_data.get("cpf", "").strip()
-    rg = cliente_data.get("rg", "").strip()
+    """Converte os dados do cliente para o formato esperado pela API do IXC."""
+    nome_completo = cliente_data.get("nome_completo", "")
+    cpf = cliente_data.get("cpf", "")
+    rg = cliente_data.get("rg", "")
     data_nascimento = cliente_data.get("data_nascimento", "")
-    email = cliente_data.get("email", "").strip()
-    celular = cliente_data.get("celular", "").strip()
+    email = cliente_data.get("email", "")
+    celular = cliente_data.get("celular", "")
     
-    # ========== ENDEREÇO (com fallback) ==========
-    endereco = cliente_data.get("endereco", "").strip()
-    numero = cliente_data.get("numero", "").strip()
-    complemento = cliente_data.get("complemento", "").strip()
-    bairro = cliente_data.get("bairro", "").strip()
-    cidade = cliente_data.get("cidade", "Rio de Janeiro").strip()
-    uf = cliente_data.get("uf", "RJ").strip().upper()
-    cep = cliente_data.get("cep", "").strip()
+    celular_limpo = celular.replace(" ", "").replace("-", "").replace("(", "").replace(")", "") if celular else ""
     
-    # ========== DADOS DO CONDOMÍNIO ==========
-    bloco = cliente_data.get("bloco", "").strip()
-    apartamento = cliente_data.get("apartamento", "").strip()
+    endereco = cliente_data.get("endereco", "")
+    numero = cliente_data.get("numero", "")
+    complemento = cliente_data.get("complemento", "")
+    bairro = cliente_data.get("bairro", "")
+    cidade = cliente_data.get("cidade", "Rio de Janeiro")
+    uf = cliente_data.get("uf", "RJ")
+    cep = cliente_data.get("cep", "")
     
-    # ========== LIMPEZA DE TELEFONE ==========
-    celular_limpo = ""
-    if celular:
-        celular_limpo = celular.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    bloco = cliente_data.get("bloco", "")
+    apartamento = cliente_data.get("apartamento", "")
     
-    # ========== DATA DE NASCIMENTO ==========
+    # Data no formato YYYY-MM-DD
     data_nasc_formatada = ""
     if data_nascimento:
         try:
@@ -87,43 +141,10 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
         except:
             data_nasc_formatada = ""
     
-    # ========== VALORES PADRÃO (CRÍTICO PARA EVITAR ERROS) ==========
-    # CPF padrão se não informado (apenas para teste)
-    if not cpf or len(cpf) < 11:
-        cpf = "00000000000"
-        print(f"⚠️ CPF não informado, usando padrão: {cpf}")
+    senha_padrao = "123456"
+    id_vendedor_padrao = "33"
     
-    # Email padrão se não informado
-    if not email:
-        email = f"cliente_{datetime.now().strftime('%Y%m%d%H%M%S')}@temp.com"
-        print(f"⚠️ Email não informado, usando padrão: {email}")
-    
-    # Telefone padrão se não informado
-    if not celular_limpo:
-        celular_limpo = "00000000000"
-        print(f"⚠️ Telefone não informado, usando padrão: {celular_limpo}")
-    
-    # Endereço padrão se não informado
-    if not endereco:
-        endereco = "Endereço não informado"
-        print(f"⚠️ Endereço não informado, usando padrão")
-    
-    # Número padrão se não informado
-    if not numero:
-        numero = "0"
-        print(f"⚠️ Número não informado, usando padrão: 0")
-    
-    # Bairro padrão se não informado
-    if not bairro:
-        bairro = "Centro"
-        print(f"⚠️ Bairro não informado, usando padrão: Centro")
-    
-    # Nome padrão se não informado (último recurso)
-    if not nome_completo:
-        nome_completo = "Cliente não identificado"
-        print(f"⚠️ Nome não informado, usando padrão")
-    
-    # ========== BUSCAR ID DO CONDOMÍNIO NO IXC ==========
+    # Buscar ID do condomínio no IXC
     id_condominio_ixc = None
     if cliente_data.get("condominio_id"):
         try:
@@ -135,7 +156,6 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
         except Exception as e:
             print(f"⚠️ Erro ao buscar ID do condomínio: {e}")
     
-    # ========== CONSTRUIR PAYLOAD ==========
     payload = {
         "ativo": "S",
         "id_tipo_cliente": config["id_tipo_cliente"],
@@ -147,30 +167,30 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
         "nome_social": nome_completo,
         "fantasia": nome_completo,
         "cnpj_cpf": cpf,
-        "ie_identidade": rg if rg else "ISENTO",
+        "ie_identidade": rg,
         "data_nascimento": data_nasc_formatada,
         "email": email,
         "telefone_celular": celular_limpo,
         "whatsapp": celular_limpo,
-        "fone": celular_limpo,
+        "fone": cliente_data.get("telefone_comercial", "") or celular_limpo,
         "endereco": endereco,
         "numero": numero,
-        "complemento": complemento if complemento else " ",
+        "complemento": complemento,
         "bairro": bairro,
         "cidade": cidade,
         "uf": uf,
-        "cep": cep if cep else "00000000",
+        "cep": cep,
         "tipo_localidade": "U",
-        "bloco": bloco if bloco else " ",
-        "apartamento": apartamento if apartamento else " ",
+        "bloco": bloco,
+        "apartamento": apartamento,
         "hotsite_email": email,
-        "senha": "123456",
+        "senha": senha_padrao,
         "senha_hotsite_md5": "N",
         "hotsite_acesso": "2",
         "acesso_automatico_central": "P",
         "alterar_senha_primeiro_acesso": "S",
-        "id_vendedor": "33",
-        "responsavel": "33",
+        "id_vendedor": id_vendedor_padrao,
+        "responsavel": id_vendedor_padrao,
         "participa_cobranca": "S",
         "participa_pre_cobranca": "S",
         "cob_envia_email": "S",
@@ -187,10 +207,12 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Dict:
     elif cliente_data.get("condominio_nome"):
         payload["referencia"] = f"Condomínio: {cliente_data['condominio_nome']}"
     
+    # Remove campos vazios/nulos que o IXC rejeita
+    payload = {k: v for k, v in payload.items() if v not in (None, "", [])}
     return payload
 
 # ============================================================================
-# FUNÇÃO PARA BUSCAR CLIENTE POR CPF
+# FUNÇÃO PARA BUSCAR CLIENTE NO IXC POR CPF
 # ============================================================================
 def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
     """Busca um cliente no IXC pelo CPF."""
@@ -199,13 +221,14 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
     
     host_limpo = _sanitizar_host(config["host"])
     url = f"https://{host_limpo}/webservice/v1/cliente"
-    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
+    token = config["token"]
+    auth_string = base64.b64encode(token.encode('utf-8')).decode('utf-8')
     
     payload = {"qtype": "cliente.cnpj_cpf", "query": cpf, "oper": "=", "page": "1", "rp": "1"}
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "listar"
+        "ixcsoft": "listar"  # ✅ Obrigatório para consultas
     }
     
     try:
@@ -216,17 +239,18 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
                 return str(dados["registros"][0].get("id"))
             elif "data" in dados and dados["data"]:
                 return str(dados["data"][0].get("id"))
+            elif isinstance(dados, list) and dados:
+                return str(dados[0].get("id"))
         return None
     except Exception as e:
-        print(f"Erro ao buscar cliente: {e}")
+        print(f"Erro ao buscar cliente no IXC: {e}")
         return None
 
 # ============================================================================
-# FUNÇÃO PRINCIPAL: ENVIAR CLIENTE COM VALIDAÇÃO TOTAL
+# FUNÇÃO PRINCIPAL: ENVIAR CLIENTE AO IXC
 # ============================================================================
 def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
-    """Envia cliente para API do IXC com valores padrão e validação rigorosa."""
-    
+    """Envia os dados do cliente para a API do IXC com diagnóstico completo."""
     print("\n" + "=" * 70)
     print("🚀 INICIANDO INTEGRAÇÃO COM IXC")
     print("=" * 70)
@@ -237,133 +261,135 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     
     cpf = cliente_data.get("cpf", "")
     nome = cliente_data.get("nome_completo", "")
-    print(f"📋 Cliente: {nome} | CPF: {cpf if cpf else 'não informado'}")
+    print(f"📋 Dados do cliente: Nome={nome}, CPF={cpf}")
     
-    # Verificar duplicata
+    # Verificar se cliente já existe
     if cpf and len(cpf) >= 11:
+        print(f"🔍 Verificando se CPF {cpf} já existe no IXC...")
         id_existente = buscar_cliente_ixc_por_cpf(cpf, config)
         if id_existente:
-            print(f"✅ Cliente já existe com ID: {id_existente}")
+            print(f"✅ Cliente já existe no IXC com ID: {id_existente}")
             return True, id_existente, None
     
-    # Construir payload (já com valores padrão)
+    # Construir payload
     payload = construir_payload_ixc(cliente_data, config)
     
     # Preparar requisição
     host_limpo = _sanitizar_host(config["host"])
     url = f"https://{host_limpo}/webservice/v1/cliente"
-    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
+    token = config["token"]
+    
+    print(f"\n🌐 URL da requisição: {url}")
+    auth_string = base64.b64encode(token.encode('utf-8')).decode('utf-8')
     
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
-        "ixcsoft": ""
+        "ixcsoft": ""  # ✅ Vazio para CRIAÇÃO/EDIÇÃO
     }
     
-    # LOG DO PAYLOAD (útil para debug)
-    print(f"\n📤 URL: {url}")
-    print(f"📦 Payload enviado (campos principais):")
-    for key in ["razao", "cnpj_cpf", "email", "telefone_celular", "endereco", "numero", "bairro"]:
-        print(f"   {key}: {payload.get(key, 'N/A')}")
-    
+    print(f"\n📤 Enviando requisição...")
     try:
         response = requests.post(
             url,
             data=json.dumps(payload),
             headers=headers,
             timeout=30,
-            verify=False
+            verify=False  # 🔥 Obrigatório para certificados autoassinados do IXC
         )
         
-        print(f"\n📥 Status: {response.status_code}")
+        print(f"\n📥 RESPOSTA RECEBIDA: Status={response.status_code}")
+        print(f"   Resposta bruta: {response.text[:500]}")
         
-        # ========== VALIDAÇÃO RIGOROSA DA RESPOSTA ==========
-        
-        # 1. Verificar se é JSON
-        content_type = response.headers.get('Content-Type', '')
-        if 'application/json' not in content_type:
-            print(f"❌ Resposta não é JSON. Content-Type: {content_type}")
-            print(f"   Resposta: {response.text[:300]}")
-            return False, None, f"API retornou HTML/Texto. Verifique se o host está correto."
-        
-        # 2. Tentar decodificar JSON
-        try:
-            resposta_json = response.json()
-            print(f"📄 Resposta JSON: {json.dumps(resposta_json, indent=2, ensure_ascii=False)[:500]}")
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON inválido: {e}")
-            print(f"   Resposta: {response.text[:300]}")
-            return False, None, f"Resposta inválida da API: {response.text[:100]}"
-        
-        # 3. Verificar se a API retornou erro explícito
-        if isinstance(resposta_json, dict):
-            # IXC retorna {"tipo": "erro", "mensagem": "..."}
-            if resposta_json.get("tipo") == "erro":
-                erro = resposta_json.get("mensagem") or resposta_json.get("message", "Erro desconhecido")
-                print(f"❌ API retornou erro: {erro}")
-                return False, None, f"Erro IXC: {erro}"
-            
-            # Algumas versões usam "success": false
-            if resposta_json.get("success") is False:
-                erro = resposta_json.get("message") or resposta_json.get("error", "Erro desconhecido")
-                print(f"❌ API retornou success=false: {erro}")
-                return False, None, f"Erro IXC: {erro}"
-            
-            # 4. Buscar ID do cliente criado
-            id_ixc = (
-                resposta_json.get("id") or 
-                resposta_json.get("ID") or 
-                resposta_json.get("cliente_id") or 
-                resposta_json.get("registro_id")
-            )
-            
-            if id_ixc:
-                print(f"✅ Cliente criado com sucesso! ID IXC: {id_ixc}")
-                return True, str(id_ixc), None
-            else:
-                # Resposta de sucesso sem ID (caso raro)
-                if resposta_json.get("tipo") == "sucesso" or resposta_json.get("success") is True:
-                    print(f"⚠️ API indicou sucesso mas não retornou ID")
-                    return True, "ok_sem_id", None
+        if response.status_code in [200, 201]:
+            try:
+                resposta_json = response.json()
+                id_ixc = None
+                if isinstance(resposta_json, dict):
+                    id_ixc = resposta_json.get("id") or resposta_json.get("ID") or \
+                             resposta_json.get("cliente_id") or resposta_json.get("registro_id")
+                    
+                    if resposta_json.get("success") is False:
+                        erro = resposta_json.get("message") or resposta_json.get("error")
+                        print(f"❌ API retornou erro: {erro}")
+                        return False, None, f"Erro na API: {erro}"
                 
-                print(f"❌ Resposta não contém ID e não indica erro claro")
-                return False, None, f"Resposta inesperada: {json.dumps(resposta_json)[:200]}"
-        
-        # Resposta não é dicionário
-        print(f"❌ Resposta em formato inesperado: {type(resposta_json)}")
-        return False, None, f"Formato de resposta inesperado: {type(resposta_json)}"
-        
+                print(f"✅ Cliente integrado com sucesso! ID: {id_ixc if id_ixc else 'não retornado'}")
+                return True, str(id_ixc) if id_ixc else "ok", None
+                
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Resposta não é JSON válido: {e}")
+                if "sucesso" in response.text.lower() or "success" in response.text.lower():
+                    return True, "ok", None
+                return False, None, f"Resposta não JSON: {response.text[:200]}"
+        else:
+            erro_msg = f"HTTP {response.status_code}: {response.text[:300]}"
+            print(f"❌ Falha na requisição: {erro_msg}")
+            return False, None, erro_msg
+            
     except requests.exceptions.Timeout:
-        return False, None, "Timeout: API não respondeu em 30 segundos"
+        print("❌ Timeout - API não respondeu em 30 segundos")
+        return False, None, "Timeout na conexão com o IXC"
     except requests.exceptions.ConnectionError as e:
-        return False, None, f"Erro de conexão: Verifique se o IXC está acessível. Detalhe: {str(e)[:100]}"
+        print(f"❌ Erro de conexão: {e}")
+        return False, None, "Erro de conexão: O IXC não está acessível publicamente. Verifique firewall, DNS e se o Webservice está ativo."
     except Exception as e:
-        return False, None, f"Erro inesperado: {str(e)}"
+        print(f"❌ Erro inesperado: {e}")
+        return False, None, str(e)
+
+# ============================================================================
+# FUNÇÃO PARA REGISTRAR PENDÊNCIA
+# ============================================================================
+def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
+    """Registra que este cliente precisa ser sincronizado posteriormente."""
+    try:
+        clientes_collection = st.session_state.get("clientes_collection")
+        if clientes_collection:
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$set": {
+                    "integrado_ixc": False,
+                    "erro_integracao_ixc": erro_msg,
+                    "tentativas_integracao": 1,
+                    "ultima_tentativa_integracao": datetime.now(),
+                    "dados_pendentes_integracao": cliente_data
+                }}
+            )
+            print(f"📝 Pendência registrada para cliente {cliente_id}")
+    except Exception as e:
+        print(f"❌ Erro ao registrar pendência: {e}")
 
 # ============================================================================
 # FUNÇÃO DE TESTE PARA O PAINEL ADMIN
 # ============================================================================
 def render_teste_conexao():
-    """Renderiza painel de teste de conexão."""
+    """Renderiza um painel de teste de conexão com o IXC (para usar no admin)."""
     st.subheader("🔌 Teste de Conexão com IXCsoft")
     
     if st.button("🧪 Testar Conexão"):
-        with st.spinner("Testando..."):
-            config = get_ixc_config()
-            if not config:
-                st.error("Configuração não encontrada")
-                return
+        with st.spinner("Testando conexão..."):
+            resultado = testar_conexao_ixc()
             
-            host_limpo = _sanitizar_host(config["host"])
-            url = f"https://{host_limpo}/webservice/v1/cliente"
-            
-            st.write(f"🌐 Testando: {url}")
-            
-            try:
-                response = requests.get(url, timeout=5, verify=False)
-                if response.status_code == 200:
-                    st.success(f"✅ Conexão OK! Status: {response.status_code}")
+            st.write("### Resultados dos Testes:")
+            for teste in resultado["testes"]:
+                if teste["sucesso"]:
+                    st.success(f"✅ {teste['nome']}: {teste.get('detalhe', 'OK')}")
                 else:
-                    st.warning(f"⚠️ Conexão estabelecida mas retornou status: {response.status_code}")
-            except Exception as e:
-                st.error(f"❌ Falha na conexão: {e}")
+                    st.error(f"❌ {teste['nome']}: {teste.get('detalhe', 'Falha')}")
+            
+            if resultado["sucesso"]:
+                st.success("🎉 Conexão com IXC funcionando corretamente!")
+            else:
+                st.error(f"⚠️ Falha na conexão: {resultado['erro']}")
+                st.info("""
+                **Possíveis causas:**
+                1. O host do IXC não está acessível publicamente
+                2. O token está inválido ou expirado
+                3. Firewall bloqueando a conexão
+                4. O Streamlit Cloud não consegue acessar sua rede interna
+                
+                **Soluções:**
+                - Verifique se o IXC está exposto na internet
+                - Considere usar um Proxy ou VPN
+                - Entre em contato com o suporte do IXC
+                """)
