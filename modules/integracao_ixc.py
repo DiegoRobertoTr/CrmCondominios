@@ -5,6 +5,9 @@ import json
 import streamlit as st
 from datetime import datetime
 from typing import Dict, Optional, Tuple
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 # ============================================================================
 # CONFIGURAÇÕES (ler dos segredos do Streamlit)
