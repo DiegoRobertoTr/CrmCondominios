@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO BLINDADA CONTRA NONEType
+# modules/integracao_ixc.py - VERSÃO FINAL BLINDADA
 import requests
 import base64
 import json
@@ -22,8 +22,9 @@ def get_ixc_config() -> Optional[Dict]:
             "filial_id": st.secrets["ixc"].get("filial_id", "1"),
             "id_tipo_cliente": st.secrets["ixc"].get("id_tipo_cliente", "03"),
             "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01"),
-            "id_vendedor_padrao": st.secrets["ixc"].get("id_vendedor_padrao", "1")  # ✅ Vendedor padrão 1
+            "id_vendedor_padrao": st.secrets["ixc"].get("id_vendedor_padrao", "1")
         }
+        print(f"🔍 Configuração IXC carregada: Host={config['host']}, Filial={config['filial_id']}")
         return config
     except Exception as e:
         st.error(f"❌ Erro ao carregar configuração do IXC: {e}")
@@ -88,7 +89,7 @@ def testar_conexao_ixc() -> Dict:
     return resultados
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD PARA IXC (BLINDADA CONTRA None)
+# CONSTRUÇÃO DO PAYLOAD PARA IXC (BLINDADA CONTRA None + ISS OBRIGATÓRIO)
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
     """Constrói payload seguro para IXC e valida campos obrigatórios."""
@@ -179,12 +180,18 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "acesso_automatico_central": "P",
         "alterar_senha_primeiro_acesso": "S",
         "hotsite_acesso": "2",
-        "responsavel": config.get("id_vendedor_padrao", "1"),  # ✅ Vendedor 1
+        "senha_hotsite_md5": "N",
+        # ✅ CAMPO OBRIGATÓRIO QUE ESTAVA FALTANDO:
+        "iss_classificacao_padrao": "99",  # "99" = Outros Serviços (valor padrão seguro)
+        # ✅ Configurações de vendedor
+        "responsavel": config.get("id_vendedor_padrao", "1"),
         "id_vendedor": config.get("id_vendedor_padrao", "1"),
+        # ✅ Configurações de cobrança
         "participa_cobranca": "S",
         "participa_pre_cobranca": "S",
         "cob_envia_email": "S",
         "cob_envia_sms": "S",
+        # ✅ Outros campos obrigatórios
         "contribuinte_icms": "N",
         "nacionalidade": "Brasileiro",
         "status_prospeccao": "C",
@@ -197,7 +204,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     elif cliente_data.get("condominio_nome"):
         payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
         
-    # IXC rejeita campos vazios explícitos
+    # IXC rejeita campos vazios explícitos - remove apenas None, "" ou " "
     return {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}, None
 
 # ============================================================================
@@ -283,14 +290,16 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
         response = requests.post(url, json=payload, headers=headers, timeout=30, verify=False)
         
         print(f"\n📥 RESPOSTA RECEBIDA: Status={response.status_code}")
-        print(f"   Resposta bruta: {response.text[:300]}")
+        print(f"   Resposta bruta: {response.text[:400]}")
         
         if response.status_code in [200, 201]:
             try:
                 resposta_json = response.json()
-                if resposta_json.get("success") is False:
+                
+                # ✅ VERIFICAÇÃO CRÍTICA: IXC retorna 200 mesmo com erro!
+                if resposta_json.get("type") == "error" or resposta_json.get("success") is False:
                     erro = resposta_json.get("message") or resposta_json.get("error") or "Erro desconhecido na API"
-                    print(f"❌ API retornou erro: {erro}")
+                    print(f"❌ API retornou erro interno: {erro}")
                     return False, None, f"Erro na API: {erro}"
                 
                 id_ixc = resposta_json.get("id") or resposta_json.get("cliente_id") or resposta_json.get("registro_id")
