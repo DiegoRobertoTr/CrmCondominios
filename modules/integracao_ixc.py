@@ -10,10 +10,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 
-def _sanitizar_host(host: str) -> str:
-    """Remove protocolo, caminhos e barras para evitar URL duplicada."""
-    host = host.replace("https://", "").replace("http://", "")
-    return host.split("/")[0].strip().rstrip("/")
 
 
 # ============================================================================
@@ -39,6 +35,15 @@ def get_ixc_config():
         st.error(f"❌ Erro ao carregar configuração do IXC: {e}")
         print(f"❌ Erro detalhado ao carregar secrets: {e}")
         return None
+
+
+def _sanitizar_host(host: str) -> str:
+    """Remove protocolo, caminhos e barras para evitar URL duplicada."""
+    host = host.replace("https://", "").replace("http://", "")
+    return host.split("/")[0].strip().rstrip("/")
+
+
+
 
 # ============================================================================
 # FUNÇÃO PARA TESTAR CONEXÃO COM O IXC
@@ -89,7 +94,7 @@ def testar_conexao_ixc() -> Dict:
         
         print(f"🔍 Testando conexão com: {url}")
         response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=10)
-        
+        verify=False
         resultados["testes"].append({
             "nome": "Conexão HTTP",
             "sucesso": response.status_code in [200, 201],
@@ -284,11 +289,11 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "listar"
+        "ixcsoft": ""
     }
     
     try:
-        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=15)
+        response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=15, verify=False)
         if response.status_code == 200:
             dados = response.json()
             if "registros" in dados and dados["registros"]:
