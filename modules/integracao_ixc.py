@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO FINAL SEM VENDEDOR NO PAYLOAD
+# modules/integracao_ixc.py - VERSÃO FINAL COMPLETA
 import requests
 import base64
 import json
@@ -22,7 +22,6 @@ def get_ixc_config() -> Optional[Dict]:
             "filial_id": st.secrets["ixc"].get("filial_id", "1"),
             "id_tipo_cliente": st.secrets["ixc"].get("id_tipo_cliente", "03"),
             "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01")
-            # ✅ Campos de vendedor removidos - não serão mais usados no payload
         }
         print(f"🔍 Configuração IXC carregada: Host={config['host']}, Filial={config['filial_id']}")
         return config
@@ -35,6 +34,26 @@ def _sanitizar_host(host: str) -> str:
     """Remove protocolo, caminhos e barras para evitar URL duplicada."""
     host = host.replace("https://", "").replace("http://", "")
     return host.split("/")[0].strip().rstrip("/")
+
+# ============================================================================
+# VALIDAÇÃO DE CPF (Algorítmica)
+# ============================================================================
+def validar_cpf(cpf: str) -> bool:
+    """Valida CPF algorítmico (apenas dígitos)."""
+    cpf = "".join(filter(str.isdigit, cpf))
+    if len(cpf) != 11 or cpf == cpf[0] * 11:
+        return False
+    
+    # Validação do primeiro dígito
+    soma1 = sum(int(cpf[i]) * (10 - i) for i in range(9))
+    digito1 = 0 if (soma1 * 10) % 11 >= 10 else (soma1 * 10) % 11
+    if int(cpf[9]) != digito1:
+        return False
+        
+    # Validação do segundo dígito
+    soma2 = sum(int(cpf[i]) * (11 - i) for i in range(10))
+    digito2 = 0 if (soma2 * 10) % 11 >= 10 else (soma2 * 10) % 11
+    return int(cpf[10]) == digito2
 
 # ============================================================================
 # FUNÇÃO PARA TESTAR CONEXÃO COM O IXC
@@ -89,25 +108,43 @@ def testar_conexao_ixc() -> Dict:
     return resultados
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD PARA IXC (SEM CAMPOS DE VENDEDOR)
+# CONSTRUÇÃO DO PAYLOAD PARA IXC (COM SANITIZAÇÃO COMPLETA)
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
-    """Constrói payload seguro para IXC e valida campos obrigatórios."""
+    """Constrói payload seguro para IXC, valida CPF e sanitiza todos os campos."""
     
-    # ✅ Função auxiliar que evita 'NoneType has no attribute strip'
     def safe(val: any) -> str:
         return str(val).strip() if val is not None else ""
 
-    # Sanitização e extração segura
-    nome_completo = safe(cliente_data.get("nome_completo"))
-    cpf = "".join(filter(str.isdigit, safe(cliente_data.get("cpf"))))
+    # 1. Sanitização rigorosa de TODOS os campos numéricos
+    cpf_raw = safe(cliente_data.get("cpf"))
+    cpf = "".join(filter(str.isdigit, cpf_raw))  # ✅ Remove pontos e traço
+    
     rg = safe(cliente_data.get("rg"))
-    email = safe(cliente_data.get("email"))
-    celular = "".join(filter(str.isdigit, safe(cliente_data.get("celular"))))
-    telefone_com = "".join(filter(str.isdigit, safe(cliente_data.get("telefone_comercial"))))
+    
+    cep_raw = safe(cliente_data.get("cep"))
+    cep = "".join(filter(str.isdigit, cep_raw))  # ✅ Remove hífen
+    
+    celular_raw = safe(cliente_data.get("celular"))
+    celular = "".join(filter(str.isdigit, celular_raw))  # ✅ Remove espaços, traços, parênteses
+    
+    telefone_com_raw = safe(cliente_data.get("telefone_comercial"))
+    telefone_com = "".join(filter(str.isdigit, telefone_com_raw))
+    
     fone = celular or telefone_com
-    cep = "".join(filter(str.isdigit, safe(cliente_data.get("cep"))))
 
+    # 2. Validação algorítmica do CPF
+    if not validar_cpf(cpf):
+        return {}, f"CPF inválido: '{cpf_raw}'. Verifique os dígitos ou use um CPF válido para teste (ex: 070.995.620-17)."
+
+    # 3. Validação do CEP (deve ter 8 dígitos)
+    if cep and len(cep) != 8:
+        return {}, f"CEP inválido: '{cep_raw}'. O CEP deve conter 8 dígitos (ex: 22775020)."
+
+    # 4. Outros campos
+    nome_completo = safe(cliente_data.get("nome_completo"))
+    email = safe(cliente_data.get("email"))
+    
     endereco = safe(cliente_data.get("endereco"))
     numero = safe(cliente_data.get("numero"))
     complemento = safe(cliente_data.get("complemento"))
@@ -118,16 +155,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     apartamento = safe(cliente_data.get("apartamento"))
     obs = safe(cliente_data.get("observacoes"))[:500]
 
-    # Validação rápida de obrigatórios
-    obrigatorios = {
-        "razao": nome_completo, "cnpj_cpf": cpf, "cidade": cidade, 
-        "uf": uf, "endereco": endereco, "numero": numero, "bairro": bairro, "cep": cep, "fone": fone, "email": email
-    }
-    faltando = [k for k, v in obrigatorios.items() if not v]
-    if faltando:
-        return {}, f"Campos obrigatórios ausentes ou vazios: {', '.join(faltando)}"
-
-    # Data de nascimento
+    # 5. Data de nascimento
     data_nasc_formatada = ""
     raw_nasc = cliente_data.get("data_nascimento")
     if raw_nasc:
@@ -139,7 +167,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
             except ValueError:
                 continue
 
-    # Buscar ID Condomínio
+    # 6. Buscar ID Condomínio
     id_condominio_ixc = None
     if cliente_data.get("condominio_id"):
         try:
@@ -150,6 +178,16 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         except Exception as e:
             print(f"⚠️ Erro ao buscar condomínio: {e}")
 
+    # 7. Validação de campos obrigatórios
+    obrigatorios = {
+        "razao": nome_completo, "cnpj_cpf": cpf, "cidade": cidade, 
+        "uf": uf, "endereco": endereco, "numero": numero, "bairro": bairro, "cep": cep, "fone": fone, "email": email
+    }
+    faltando = [k for k, v in obrigatorios.items() if not v]
+    if faltando:
+        return {}, f"Campos obrigatórios ausentes: {', '.join(faltando)}"
+
+    # 8. Montagem do payload (SEM campos de vendedor)
     payload = {
         "ativo": "S",
         "id_tipo_cliente": config.get("id_tipo_cliente", "03"),
@@ -160,20 +198,20 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "razao": nome_completo,
         "nome_social": nome_completo,
         "fantasia": nome_completo,
-        "cnpj_cpf": cpf,
+        "cnpj_cpf": cpf,  # ✅ Apenas dígitos
         "ie_identidade": rg,
         "data_nascimento": data_nasc_formatada,
         "email": email,
-        "telefone_celular": celular,
-        "whatsapp": celular,
-        "fone": fone,
+        "telefone_celular": celular,  # ✅ Apenas dígitos
+        "whatsapp": celular,  # ✅ Apenas dígitos
+        "fone": fone,  # ✅ Apenas dígitos
         "endereco": endereco,
         "numero": numero,
         "complemento": complemento,
         "bairro": bairro,
         "cidade": cidade,
         "uf": uf,
-        "cep": cep,
+        "cep": cep,  # ✅ Apenas dígitos (8 números)
         "tipo_localidade": "U",
         "bloco": bloco,
         "apartamento": apartamento,
@@ -181,21 +219,18 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "alterar_senha_primeiro_acesso": "S",
         "hotsite_acesso": "2",
         "senha_hotsite_md5": "N",
-        # ✅ CAMPO OBRIGATÓRIO - Classificação de ISS
-        "iss_classificacao_padrao": "99",  # "99" = Outros Serviços
-        # ✅ Configurações de cobrança
+        "hotsite_email": email,  # ✅ Login = email do cliente
+        "senha": "123456",  # ✅ Senha padrão aceita pelo IXC
+        "iss_classificacao_padrao": "99",  # ✅ Obrigatório
         "participa_cobranca": "S",
         "participa_pre_cobranca": "S",
         "cob_envia_email": "S",
         "cob_envia_sms": "S",
-        # ✅ Outros campos obrigatórios
         "contribuinte_icms": "N",
         "nacionalidade": "Brasileiro",
         "status_prospeccao": "C",
         "tipo_assinante": "3",
         "obs": obs
-        # ✅ Campos de vendedor REMOVIDOS: id_vendedor e responsavel
-        # O IXC usará o vendedor padrão configurado no backend
     }
 
     if id_condominio_ixc:
@@ -203,7 +238,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     elif cliente_data.get("condominio_nome"):
         payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
         
-    # IXC rejeita campos vazios explícitos - remove apenas None, "" ou " "
+    # Remove campos vazios que o IXC rejeita
     return {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}, None
 
 # ============================================================================
