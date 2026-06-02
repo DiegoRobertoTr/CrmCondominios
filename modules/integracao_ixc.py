@@ -234,7 +234,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     }
 
     if id_condominio_ixc:
-        payload["id_condominio"] = id_condominio_ixc
+        payload["id_condominio"] = id_condominio_ixc # teste sem id de condominio
     elif cliente_data.get("condominio_nome"):
         payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
         
