@@ -1,18 +1,17 @@
-# modules/integracao_ixc.py - VERSÃO CORRIGIDA E OTIMIZADA (COM CAMPO OBRIGATÓRIO)
+# modules/integracao_ixc.py - VERSÃO FINAL COMPLETA
 import requests
 import base64
 import json
 import streamlit as st
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple
 import urllib3
-import re
 
-# 🔒 Suprime avisos de certificado autoassinado
+# 🔒 Suprime avisos de certificado autoassinado (comum no IXCsoft)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES (ler dos segredos do Streamlit)
 # ============================================================================
 def get_ixc_config() -> Optional[Dict]:
     """Retorna configuração da API IXC a partir de st.secrets."""
@@ -22,17 +21,18 @@ def get_ixc_config() -> Optional[Dict]:
             "token": st.secrets["ixc"]["token"],
             "filial_id": st.secrets["ixc"].get("filial_id", "1"),
             "id_tipo_cliente": st.secrets["ixc"].get("id_tipo_cliente", "03"),
-            "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01"),
-            "iss_classificacao_padrao": st.secrets["ixc"].get("iss_classificacao_padrao", "99")
+            "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01")
         }
+        print(f"🔍 Configuração IXC carregada: Host={config['host']}, Filial={config['filial_id']}")
         return config
     except Exception as e:
         st.error(f"❌ Erro ao carregar configuração do IXC: {e}")
+        print(f"❌ Erro detalhado ao carregar secrets: {e}")
         return None
 
 def _sanitizar_host(host: str) -> str:
     """Remove protocolo, caminhos e barras para evitar URL duplicada."""
-    host = re.sub(r'^https?://', '', host)
+    host = host.replace("https://", "").replace("http://", "")
     return host.split("/")[0].strip().rstrip("/")
 
 # ============================================================================
@@ -56,10 +56,196 @@ def validar_cpf(cpf: str) -> bool:
     return int(cpf[10]) == digito2
 
 # ============================================================================
+# FUNÇÃO PARA TESTAR CONEXÃO COM O IXC
+# ============================================================================
+def testar_conexao_ixc() -> Dict:
+    """Testa a conexão com a API do IXC e retorna diagnóstico."""
+    config = get_ixc_config()
+    if not config:
+        return {"sucesso": False, "erro": "Configuração não encontrada"}
+    
+    resultados = {"sucesso": False, "testes": [], "erro": None}
+    host_limpo = _sanitizar_host(config["host"])
+    
+    resultados["testes"].append({"nome": "Formato do Host", "sucesso": True, "detalhe": f"Host sanitizado: {host_limpo}"})
+    
+    try:
+        url = f"https://{host_limpo}/webservice/v1/cliente"
+        auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
+        payload = {"qtype": "cliente.id", "query": "1", "oper": ">", "page": "1", "rp": "1"}
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Basic {auth_string}",
+            "ixcsoft": "listar"
+        }
+        
+        print(f"🔍 Testando conexão com: {url}")
+        response = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
+        
+        resultados["testes"].append({"nome": "Conexão HTTP", "sucesso": response.status_code in [200, 201], "detalhe": f"Status: {response.status_code}"})
+        
+        if response.status_code in [200, 201]:
+            resultados["sucesso"] = True
+            try:
+                dados = response.json()
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": True, "detalhe": "API respondeu com JSON válido"})
+            except Exception:
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": False, "detalhe": f"Resposta não é JSON: {response.text[:100]}"})
+        else:
+            resultados["erro"] = f"HTTP {response.status_code}"
+            resultados["testes"].append({"nome": "Resposta", "sucesso": False, "detalhe": response.text[:200]})
+            
+    except requests.exceptions.Timeout:
+        resultados["erro"] = "Timeout - IXC não respondeu"
+        resultados["testes"].append({"nome": "Timeout", "sucesso": False, "detalhe": "A conexão expirou após 10 segundos"})
+    except requests.exceptions.ConnectionError as e:
+        resultados["erro"] = "Erro de conexão"
+        resultados["testes"].append({"nome": "Conexão", "sucesso": False, "detalhe": str(e)[:200]})
+    except Exception as e:
+        resultados["erro"] = str(e)
+        resultados["testes"].append({"nome": "Erro", "sucesso": False, "detalhe": str(e)[:200]})
+
+    return resultados
+
+# ============================================================================
+# CONSTRUÇÃO DO PAYLOAD PARA IXC (COM SANITIZAÇÃO COMPLETA)
+# ============================================================================
+def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
+    """Constrói payload seguro para IXC, valida CPF e sanitiza todos os campos."""
+    
+    def safe(val: any) -> str:
+        return str(val).strip() if val is not None else ""
+
+    # 1. Sanitização rigorosa de TODOS os campos numéricos
+    cpf_raw = safe(cliente_data.get("cpf"))
+    cpf = "".join(filter(str.isdigit, cpf_raw))  # ✅ Remove pontos e traço
+    
+    rg = safe(cliente_data.get("rg"))
+    
+    cep_raw = safe(cliente_data.get("cep"))
+    cep = "".join(filter(str.isdigit, cep_raw))  # ✅ Remove hífen
+    
+    celular_raw = safe(cliente_data.get("celular"))
+    celular = "".join(filter(str.isdigit, celular_raw))  # ✅ Remove espaços, traços, parênteses
+    
+    telefone_com_raw = safe(cliente_data.get("telefone_comercial"))
+    telefone_com = "".join(filter(str.isdigit, telefone_com_raw))
+    
+    fone = celular or telefone_com
+
+    # 2. Validação algorítmica do CPF
+    if not validar_cpf(cpf):
+        return {}, f"CPF inválido: '{cpf_raw}'. Verifique os dígitos ou use um CPF válido para teste (ex: 070.995.620-17)."
+
+    # 3. Validação do CEP (deve ter 8 dígitos)
+    if cep and len(cep) != 8:
+        return {}, f"CEP inválido: '{cep_raw}'. O CEP deve conter 8 dígitos (ex: 22775020)."
+
+    # 4. Outros campos
+    nome_completo = safe(cliente_data.get("nome_completo"))
+    email = safe(cliente_data.get("email"))
+    
+    endereco = safe(cliente_data.get("endereco"))
+    numero = safe(cliente_data.get("numero"))
+    complemento = safe(cliente_data.get("complemento"))
+    bairro = safe(cliente_data.get("bairro"))
+    cidade = safe(cliente_data.get("cidade")) or "Rio de Janeiro"
+    uf = (safe(cliente_data.get("uf")) or "RJ").upper()
+    bloco = safe(cliente_data.get("bloco"))
+    apartamento = safe(cliente_data.get("apartamento"))
+    obs = safe(cliente_data.get("observacoes"))[:500]
+
+    # 5. Data de nascimento
+    data_nasc_formatada = ""
+    raw_nasc = cliente_data.get("data_nascimento")
+    if raw_nasc:
+        for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"]:
+            try:
+                dt = datetime.strptime(str(raw_nasc).strip(), fmt)
+                data_nasc_formatada = dt.strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                continue
+
+    # 6. Buscar ID Condomínio
+    id_condominio_ixc = None
+    if cliente_data.get("condominio_id"):
+        try:
+            from .condominios import get_condominio_by_id
+            cond_data = get_condominio_by_id(cliente_data["condominio_id"])
+            if cond_data and cond_data.get("id_ixc"):
+                id_condominio_ixc = str(cond_data["id_ixc"])
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar condomínio: {e}")
+
+    # 7. Validação de campos obrigatórios
+    obrigatorios = {
+        "razao": nome_completo, "cnpj_cpf": cpf, "cidade": cidade, 
+        "uf": uf, "endereco": endereco, "numero": numero, "bairro": bairro, "cep": cep, "fone": fone, "email": email
+    }
+    faltando = [k for k, v in obrigatorios.items() if not v]
+    if faltando:
+        return {}, f"Campos obrigatórios ausentes: {', '.join(faltando)}"
+
+    # 8. Montagem do payload (SEM campos de vendedor)
+    payload = {
+        "ativo": "S",
+        "id_tipo_cliente": config.get("id_tipo_cliente", "03"),
+        "tipo_cliente_scm": config.get("tipo_cliente_scm", "01"),
+        "filial_id": config.get("filial_id", "1"),
+        "filtra_filial": "S",
+        "tipo_pessoa": "F",
+        "razao": nome_completo,
+        "nome_social": nome_completo,
+        "fantasia": nome_completo,
+        "cnpj_cpf": cpf,  # ✅ Apenas dígitos
+        "ie_identidade": rg,
+        "data_nascimento": data_nasc_formatada,
+        "email": email,
+        "telefone_celular": celular,  # ✅ Apenas dígitos
+        "whatsapp": celular,  # ✅ Apenas dígitos
+        "fone": fone,  # ✅ Apenas dígitos
+        "endereco": endereco,
+        "numero": numero,
+        "complemento": complemento,
+        "bairro": bairro,
+        "cidade": cidade,
+        "uf": uf,
+        "cep": cep,  # ✅ Apenas dígitos (8 números)
+        "tipo_localidade": "U",
+        "bloco": bloco,
+        "apartamento": apartamento,
+        "acesso_automatico_central": "P",
+        "alterar_senha_primeiro_acesso": "S",
+        "hotsite_acesso": "2",
+        "senha_hotsite_md5": "N",
+        "hotsite_email": email,  # ✅ Login = email do cliente
+        "senha": "123456",  # ✅ Senha padrão aceita pelo IXC
+        "iss_classificacao_padrao": "99",  # ✅ Obrigatório
+        "participa_cobranca": "S",
+        "participa_pre_cobranca": "S",
+        "cob_envia_email": "S",
+        "cob_envia_sms": "S",
+        "contribuinte_icms": "N",
+        "nacionalidade": "Brasileiro",
+        "status_prospeccao": "C",
+        "tipo_assinante": "3",
+        "obs": obs
+    }
+
+    if id_condominio_ixc:
+        payload["id_condominio"] = id_condominio_ixc
+    elif cliente_data.get("condominio_nome"):
+        payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
+        
+    # Remove campos vazios que o IXC rejeita
+    return {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}, None
+
+# ============================================================================
 # FUNÇÃO PARA BUSCAR CLIENTE NO IXC POR CPF
 # ============================================================================
-def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[Dict]:
-    """Busca um cliente no IXC pelo CPF e retorna os dados completos."""
+def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
+    """Busca um cliente no IXC pelo CPF."""
     if not cpf or len(cpf) < 11:
         return None
         
@@ -78,171 +264,22 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[Dict]:
         response = requests.post(url, json=payload, headers=headers, timeout=15, verify=False)
         if response.status_code == 200: 
             dados = response.json()
-            registros = None
-            
             if "registros" in dados and dados["registros"]:
-                registros = dados["registros"]
+                return str(dados["registros"][0].get("id"))
             elif "data" in dados and dados["data"]:
-                registros = dados["data"]
+                return str(dados["data"][0].get("id"))
             elif isinstance(dados, list) and dados:
-                registros = dados
-            
-            if registros and len(registros) > 0:
-                cliente = registros[0]
-                return {
-                    "id": str(cliente.get("id")),
-                    "nome": cliente.get("razao"),
-                    "cpf": cliente.get("cnpj_cpf"),
-                    "email": cliente.get("email")
-                }
+                return str(dados[0].get("id"))
         return None
     except Exception as e:
         print(f"Erro ao buscar cliente no IXC: {e}")
         return None
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD PARA IXC (COM TODOS OS CAMPOS OBRIGATÓRIOS)
-# ============================================================================
-def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
-    """Constrói payload seguro para IXC, validando apenas campos essenciais."""
-    
-    def safe(val: Any) -> str:
-        return str(val).strip() if val is not None else ""
-
-    # Limpeza de campos numéricos
-    cpf = "".join(filter(str.isdigit, safe(cliente_data.get("cpf"))))
-    celular = "".join(filter(str.isdigit, safe(cliente_data.get("celular"))))
-    telefone_com = "".join(filter(str.isdigit, safe(cliente_data.get("telefone_comercial"))))
-    cep = "".join(filter(str.isdigit, safe(cliente_data.get("cep"))))
-    rg = safe(cliente_data.get("rg"))
-    
-    # Validação do CPF
-    if not validar_cpf(cpf):
-        return {}, f"CPF inválido: '{cliente_data.get('cpf')}'. Use um CPF válido (ex: 07099562017)."
-
-    # Validação do CEP (opcional, mas se informado deve ter 8 dígitos)
-    if cep and len(cep) != 8:
-        return {}, f"CEP inválido: '{cliente_data.get('cep')}'. O CEP deve conter 8 dígitos."
-
-    # Campos obrigatórios
-    nome = safe(cliente_data.get("nome_completo"))
-    email = safe(cliente_data.get("email"))
-    endereco = safe(cliente_data.get("endereco"))
-    numero = safe(cliente_data.get("numero"))
-    bairro = safe(cliente_data.get("bairro"))
-    cidade = safe(cliente_data.get("cidade")) or "Rio de Janeiro"
-    uf = safe(cliente_data.get("uf")).upper() or "RJ"
-    
-    if not all([nome, email, endereco, numero, bairro]):
-        return {}, f"Campos obrigatórios faltando: nome, email, endereço, número e bairro são necessários."
-
-    # Telefone (prioriza celular)
-    fone = celular or telefone_com
-    if not fone:
-        return {}, "Telefone ou celular é obrigatório."
-
-    # Data de nascimento
-    data_nasc_formatada = ""
-    raw_nasc = cliente_data.get("data_nascimento")
-    if raw_nasc:
-        for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"]:
-            try:
-                dt = datetime.strptime(str(raw_nasc).strip(), fmt)
-                data_nasc_formatada = dt.strftime("%Y-%m-%d")
-                break
-            except ValueError:
-                continue
-
-    # Payload completo com todos os campos obrigatórios
-    payload = {
-        "ativo": "S",
-        "id_tipo_cliente": config.get("id_tipo_cliente", "03"),
-        "tipo_cliente_scm": config.get("tipo_cliente_scm", "01"),
-        "filial_id": config.get("filial_id", "1"),
-        "filtra_filial": "S",
-        "tipo_pessoa": "F",
-        "razao": nome[:100],
-        "nome_social": nome[:100],
-        "fantasia": nome[:100],
-        "cnpj_cpf": cpf,
-        "email": email[:100],
-        "fone": fone[:15],
-        "telefone_celular": celular[:15] if celular else "",
-        "whatsapp": celular[:15] if celular else "",
-        "endereco": endereco[:100],
-        "numero": numero[:10],
-        "bairro": bairro[:50],
-        "cidade": cidade[:50],
-        "uf": uf[:2],
-        "cep": cep[:8],
-        "participa_cobranca": "S",
-        "participa_pre_cobranca": "S",
-        "cob_envia_email": "S",
-        "cob_envia_sms": "S",
-        "status_prospeccao": "C",
-        "tipo_assinante": "3",
-        "hotsite_acesso": "2",
-        "hotsite_email": email[:100],
-        "senha": "123456",
-        "senha_hotsite_md5": "N",
-        "acesso_automatico_central": "P",
-        "alterar_senha_primeiro_acesso": "S",
-        "iss_classificacao_padrao": config.get("iss_classificacao_padrao", "99"),  # ✅ Campo obrigatório
-        "nacionalidade": "Brasileiro",
-        "contribuinte_icms": "N",
-        "tipo_localidade": "U"
-    }
-    
-    # Adiciona campos opcionais apenas se tiverem valor
-    if data_nasc_formatada:
-        payload["data_nascimento"] = data_nasc_formatada
-    
-    if complemento := safe(cliente_data.get("complemento")):
-        payload["complemento"] = complemento[:50]
-    
-    if rg:
-        payload["ie_identidade"] = rg[:20]
-    
-    if bloco := safe(cliente_data.get("bloco")):
-        payload["bloco"] = bloco[:10]
-    
-    if apartamento := safe(cliente_data.get("apartamento")):
-        payload["apartamento"] = apartamento[:10]
-    
-    if obs := safe(cliente_data.get("observacoes")):
-        payload["obs"] = obs[:500]
-    
-    # Tratamento de condomínio (se houver)
-    if cliente_data.get("condominio_id"):
-        try:
-            from .condominios import get_condominio_by_id
-            cond_data = get_condominio_by_id(cliente_data["condominio_id"])
-            if cond_data and cond_data.get("id_ixc"):
-                payload["id_condominio"] = str(cond_data["id_ixc"])
-        except Exception as e:
-            print(f"⚠️ Erro ao buscar condomínio: {e}")
-    elif cliente_data.get("condominio_nome"):
-        payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
-    
-    # Remove campos vazios (mas mantém os que têm valor padrão)
-    payload = {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}
-    
-    return payload, None
-
-# ============================================================================
 # FUNÇÃO PRINCIPAL: ENVIAR CLIENTE AO IXC
 # ============================================================================
-def enviar_cliente_para_ixc(cliente_data: Dict, mongo_collection=None) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    Envia os dados do cliente para a API do IXC.
-    
-    Args:
-        cliente_data: Dicionário com dados do cliente
-        mongo_collection: Coleção do MongoDB para salvar o ID (opcional)
-    
-    Returns:
-        (sucesso, id_ixc, mensagem_erro)
-    """
+def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Envia os dados do cliente para a API do IXC com diagnóstico completo."""
     print("\n" + "=" * 70)
     print("🚀 INICIANDO INTEGRAÇÃO COM IXC")
     print("=" * 70)
@@ -251,29 +288,17 @@ def enviar_cliente_para_ixc(cliente_data: Dict, mongo_collection=None) -> Tuple[
     if not config:
         return False, None, "Configuração do IXC não encontrada."
 
-    cpf = "".join(filter(str.isdigit, str(cliente_data.get("cpf", ""))))
+    cpf = cliente_data.get("cpf", "")
     nome = cliente_data.get("nome_completo", "")
-    print(f"📋 Cliente: {nome} | CPF: {cpf}")
+    print(f"📋 Dados do cliente: Nome={nome}, CPF={cpf}")
 
-    # Verificar se cliente já existe no IXC
-    if cpf and len(cpf) >= 11:
-        print(f"🔍 Verificando CPF {cpf} no IXC...")
-        cliente_existente = buscar_cliente_ixc_por_cpf(cpf, config)
-        if cliente_existente:
-            id_ixc = cliente_existente["id"]
-            print(f"✅ Cliente já existe no IXC! ID: {id_ixc}")
-            
-            # Salva o ID no MongoDB se fornecido
-            if mongo_collection and cliente_data.get("_id"):
-                mongo_collection.update_one(
-                    {"_id": cliente_data["_id"]},
-                    {"$set": {
-                        "id_ixc": id_ixc,
-                        "integrado_ixc": True,
-                        "data_integracao_ixc": datetime.now()
-                    }}
-                )
-            return True, id_ixc, None
+    # Verificar se cliente já existe
+    if cpf and len("".join(filter(str.isdigit, str(cpf)))) >= 11:
+        print(f"🔍 Verificando se CPF {cpf} já existe no IXC...")
+        id_existente = buscar_cliente_ixc_por_cpf(cpf, config)
+        if id_existente:
+            print(f"✅ Cliente já existe no IXC com ID: {id_existente}")
+            return True, id_existente, None
 
     # Construir payload
     payload, erro_validacao = construir_payload_ixc(cliente_data, config)
@@ -288,99 +313,66 @@ def enviar_cliente_para_ixc(cliente_data: Dict, mongo_collection=None) -> Tuple[
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "inserir"
+        "ixcsoft": "inserir"  # ✅ Padrão oficial para criação via POST
     }
 
-    print(f"\n🌐 Enviando para: {url}")
-    print(f"📦 Payload size: {len(json.dumps(payload))} bytes")
+    print(f"\n🌐 URL da requisição: {url}")
+    print(f"📤 Payload size: {len(json.dumps(payload))} bytes")
     
     try:
+        # ✅ Usa json=payload (requests cuida do dumps + content-type automaticamente)
         response = requests.post(url, json=payload, headers=headers, timeout=30, verify=False)
         
-        print(f"📥 Status: {response.status_code}")
-        print(f"📄 Resposta: {response.text[:500]}")
+        print(f"\n📥 RESPOSTA RECEBIDA: Status={response.status_code}")
+        print(f"   Resposta bruta: {response.text[:400]}")
         
         if response.status_code in [200, 201]:
             try:
                 resposta_json = response.json()
                 
-                # Verifica erro na resposta (IXC pode retornar 200 com erro interno)
+                # ✅ VERIFICAÇÃO CRÍTICA: IXC retorna 200 mesmo com erro!
                 if resposta_json.get("type") == "error" or resposta_json.get("success") is False:
-                    erro = resposta_json.get("message") or resposta_json.get("error") or "Erro desconhecido"
-                    print(f"❌ API retornou erro: {erro}")
-                    return False, None, f"API retornou erro: {erro}"
+                    erro = resposta_json.get("message") or resposta_json.get("error") or "Erro desconhecido na API"
+                    print(f"❌ API retornou erro interno: {erro}")
+                    return False, None, f"Erro na API: {erro}"
                 
-                # Extrai ID da resposta
-                id_ixc = None
-                for campo in ["id", "cliente_id", "registro_id", "ID"]:
-                    if campo in resposta_json:
-                        id_ixc = str(resposta_json[campo])
-                        break
-                
-                if not id_ixc and isinstance(resposta_json, dict):
-                    # Tenta encontrar qualquer campo que pareça um ID
-                    for k, v in resposta_json.items():
-                        if "id" in k.lower() and v:
-                            id_ixc = str(v)
-                            break
-                
+                id_ixc = resposta_json.get("id") or resposta_json.get("cliente_id") or resposta_json.get("registro_id")
                 print(f"✅ Cliente integrado com sucesso! ID: {id_ixc or 'não retornado'}")
+                return True, str(id_ixc) if id_ixc else "ok", None
                 
-                # Salva o ID no MongoDB se fornecido
-                if mongo_collection and cliente_data.get("_id") and id_ixc:
-                    mongo_collection.update_one(
-                        {"_id": cliente_data["_id"]},
-                        {"$set": {
-                            "id_ixc": id_ixc,
-                            "integrado_ixc": True,
-                            "data_integracao_ixc": datetime.now(),
-                            "dados_enviados_ixc": payload
-                        }}
-                    )
-                    print(f"💾 ID {id_ixc} salvo no MongoDB")
-                
-                return True, id_ixc if id_ixc else "ok", None
-                
-            except json.JSONDecodeError:
-                # Se a resposta não for JSON mas indicar sucesso
-                if "sucesso" in response.text.lower() or "success" in response.text.lower():
+            except ValueError:
+                if any(x in response.text.lower() for x in ["sucesso", "success", "created"]):
                     return True, "ok", None
-                return False, None, f"Resposta inválida (não é JSON): {response.text[:200]}"
+                return False, None, f"Resposta inválida: {response.text[:200]}"
         else:
             return False, None, f"HTTP {response.status_code}: {response.text[:250]}"
 
     except requests.exceptions.Timeout:
-        return False, None, "Timeout: IXC não respondeu em 30 segundos"
-    except requests.exceptions.ConnectionError as e:
-        return False, None, f"Erro de conexão: Verifique se o host {host_limpo} está acessível. Detalhe: {str(e)[:100]}"
+        return False, None, "Timeout na conexão com o IXC"
+    except requests.exceptions.ConnectionError:
+        return False, None, "Erro de conexão: IXC inacessível. Verifique IP liberado e Webservice ativo."
     except Exception as e:
         return False, None, str(e)
 
 # ============================================================================
 # FUNÇÃO PARA REGISTRAR PENDÊNCIA
 # ============================================================================
-def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg, mongo_collection=None):
-    """Registra pendência de integração para sincronização posterior."""
+def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
+    """Registra que este cliente precisa ser sincronizado posteriormente."""
     try:
-        if mongo_collection is None:
-            # Tenta obter do session_state apenas se disponível
-            if hasattr(st, 'session_state') and 'clientes_collection' in st.session_state:
-                mongo_collection = st.session_state.clientes_collection
-            else:
-                print("⚠️ Sem acesso ao MongoDB, pendência não registrada")
-                return
-        
-        mongo_collection.update_one(
-            {"_id": cliente_id},
-            {"$set": {
-                "integrado_ixc": False,
-                "erro_integracao_ixc": erro_msg,
-                "tentativas_integracao": 1,
-                "ultima_tentativa_integracao": datetime.now(),
-                "dados_pendentes_integracao": cliente_data
-            }}
-        )
-        print(f"📝 Pendência registrada para cliente {cliente_id}")
+        clientes_collection = st.session_state.get("clientes_collection")
+        if clientes_collection:
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$set": {
+                    "integrado_ixc": False,
+                    "erro_integracao_ixc": erro_msg,
+                    "tentativas_integracao": 1,
+                    "ultima_tentativa_integracao": datetime.now(),
+                    "dados_pendentes_integracao": cliente_data
+                }}
+            )
+            print(f"📝 Pendência registrada para cliente {cliente_id}")
     except Exception as e:
         print(f"❌ Erro ao registrar pendência: {e}")
 
@@ -388,127 +380,32 @@ def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg, mongo_col
 # FUNÇÃO DE TESTE PARA O PAINEL ADMIN
 # ============================================================================
 def render_teste_conexao():
-    """Renderiza um painel de teste de conexão com o IXC."""
+    """Renderiza um painel de teste de conexão com o IXC (para usar no admin)."""
     st.subheader("🔌 Teste de Conexão com IXCsoft")
-    
     if st.button("🧪 Testar Conexão"):
         with st.spinner("Testando conexão..."):
-            config = get_ixc_config()
-            if not config:
-                st.error("❌ Configuração não encontrada. Verifique os secrets.")
-                return
+            resultado = testar_conexao_ixc()
             
-            host_limpo = _sanitizar_host(config["host"])
-            url = f"https://{host_limpo}/webservice/v1/cliente"
-            
-            try:
-                auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
-                payload = {"qtype": "cliente.id", "query": "1", "oper": ">", "page": "1", "rp": "1"}
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Basic {auth_string}",
-                    "ixcsoft": "listar"
-                }
-                
-                response = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
-                
-                st.write("### Resultado do Teste:")
-                
-                if response.status_code in [200, 201]:
-                    st.success(f"✅ Conexão com IXC funcionando corretamente! (Status: {response.status_code})")
-                    
-                    try:
-                        dados = response.json()
-                        st.json({
-                            "status": response.status_code,
-                            "host": host_limpo,
-                            "total_registros": len(dados.get("registros", [])) if "registros" in dados else "N/A"
-                        })
-                    except:
-                        st.json({
-                            "status": response.status_code,
-                            "host": host_limpo,
-                            "resposta_bruta": response.text[:300]
-                        })
+            st.write("### Resultados dos Testes:")
+            for teste in resultado["testes"]:
+                if teste["sucesso"]:
+                    st.success(f"✅ {teste['nome']}: {teste.get('detalhe', 'OK')}")
                 else:
-                    st.error(f"❌ Falha na conexão: HTTP {response.status_code}")
-                    st.code(response.text[:500])
-                    
-                    st.info("""
-                    **Possíveis causas:**
-                    1. Host incorreto ou inacessível
-                    2. Token inválido ou expirado
-                    3. Firewall bloqueando a conexão
-                    4. WebService do IXC não está ativo
-                    5. Certificado SSL não confiável (usando verify=False)
-                    
-                    **Soluções:**
-                    - Verifique se o host é acessível publicamente
-                    - Confirme o token no painel do IXC (Módulo API)
-                    - Teste a URL manualmente no navegador
-                    - Verifique se o IP do Streamlit Cloud está liberado no IXC
-                    """)
-            except requests.exceptions.Timeout:
-                st.error("❌ Timeout: O IXC não respondeu em 10 segundos")
-                st.info("Verifique se o host está correto e se o serviço está ativo.")
-            except requests.exceptions.ConnectionError as e:
-                st.error(f"❌ Erro de conexão: {str(e)[:150]}")
-                st.info(f"Host testado: {host_limpo}\n\nVerifique se este host está acessível pela internet.")
-            except Exception as e:
-                st.error(f"❌ Erro inesperado: {str(e)}")
-
-# ============================================================================
-# FUNÇÃO PARA REPROCESSAR PENDÊNCIAS
-# ============================================================================
-def reprocessar_pendencias_integracao(mongo_collection, limit=50):
-    """Reprocessa clientes com pendência de integração."""
-    try:
-        pendencias = list(mongo_collection.find({
-            "integrado_ixc": False,
-            "erro_integracao_ixc": {"$exists": True}
-        }).limit(limit))
-        
-        if not pendencias:
-            return {"sucesso": True, "processados": 0, "mensagem": "Nenhuma pendência encontrada"}
-        
-        resultados = {
-            "total": len(pendencias),
-            "sucessos": 0,
-            "falhas": 0,
-            "detalhes": []
-        }
-        
-        for cliente in pendencias:
-            dados_pendentes = cliente.get("dados_pendentes_integracao", {})
-            if not dados_pendentes:
-                dados_pendentes = {k: v for k, v in cliente.items() if k not in ["_id", "integrado_ixc", "erro_integracao_ixc"]}
+                    st.error(f"❌ {teste['nome']}: {teste.get('detalhe', 'Falha')}")
             
-            sucesso, id_ixc, erro = enviar_cliente_para_ixc(dados_pendentes, mongo_collection)
-            
-            if sucesso:
-                resultados["sucessos"] += 1
-                resultados["detalhes"].append({
-                    "cliente_id": str(cliente["_id"]),
-                    "nome": cliente.get("nome_completo", "N/A"),
-                    "status": "sucesso",
-                    "id_ixc": id_ixc
-                })
+            if resultado["sucesso"]:
+                st.success("🎉 Conexão com IXC funcionando corretamente!")
             else:
-                resultados["falhas"] += 1
-                resultados["detalhes"].append({
-                    "cliente_id": str(cliente["_id"]),
-                    "nome": cliente.get("nome_completo", "N/A"),
-                    "status": "falha",
-                    "erro": erro
-                })
+                st.error(f"⚠️ Falha na conexão: {resultado['erro']}")
+                st.info("""
+                **Possíveis causas:**
+                1. O host do IXC não está acessível publicamente
+                2. O token está inválido ou expirado
+                3. Firewall bloqueando a conexão
+                4. O Streamlit Cloud não consegue acessar sua rede interna
                 
-                # Atualiza contagem de tentativas
-                mongo_collection.update_one(
-                    {"_id": cliente["_id"]},
-                    {"$inc": {"tentativas_integracao": 1}}
-                )
-        
-        return resultados
-        
-    except Exception as e:
-        return {"sucesso": False, "erro": str(e)}
+                **Soluções:**
+                - Verifique se o IXC está exposto na internet
+                - Considere usar um Proxy ou VPN
+                - Entre em contato com o suporte do IXC
+                """)
