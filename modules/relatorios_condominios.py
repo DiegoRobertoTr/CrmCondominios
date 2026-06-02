@@ -10,6 +10,8 @@ Melhorias implementadas:
 - Processamento otimizado com referência ao arquivo original
 - Todas as abas do original: Penetração, Receita, Inadimplência (2 visões), Churn, Concorrência, Zona, Maturidade
 - NOVO: Análise de inadimplência real baseada na aba "Base Parcelas"
+- NOVO: Sidebar com filtros para consulta de crédito
+- NOVO: Identificação de condomínios aptos para consulta de crédito
 """
 import streamlit as st
 import pandas as pd
@@ -29,7 +31,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==================== CONFIGURAÇÃO INICIAL ====================
-st.set_page_config(page_title="Relatórios Condomínios", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Relatórios Condomínios", layout="wide", initial_sidebar_state="expanded")
 
 # ==================== CONFIGURAÇÃO DO MÓDULO ====================
 CONDOMINIOS_CONFIG = {
@@ -76,7 +78,8 @@ def initialize_session_state():
         'colecao_a_excluir': 'condominios_relatorios',
         'batch_id_a_excluir': None,
         'condominios_colunas_mapeadas': {},
-        'recarregar_dados': False
+        'recarregar_dados': False,
+        'filtros_sidebar_aplicados': False
     }
     
     for key, value in defaults.items():
@@ -89,6 +92,361 @@ def titulo_principal(texto):
 
 def subtitulo(texto):
     st.markdown(f"<h3 style='color: #34495e;'>{texto}</h3>", unsafe_allow_html=True)
+
+# ==================== NOVAS FUNÇÕES PARA SIDEBAR E FILTROS ====================
+
+def render_sidebar_filtros_condominios():
+    """Renderiza sidebar com filtros avançados para inadimplência e consulta de crédito"""
+    with st.sidebar:
+        st.markdown("## 🎯 Filtros de Análise")
+        st.markdown("---")
+        
+        # Configuração de inadimplência
+        st.markdown("### ⚠️ Configuração de Inadimplência")
+        
+        # Dias de atraso para considerar inadimplente
+        dias_atraso = st.slider(
+            "📅 Dias de atraso para considerar inadimplente",
+            min_value=1,
+            max_value=90,
+            value=30,
+            step=5,
+            help="Cliente é considerado inadimplente se tiver parcelas vencidas há mais de X dias"
+        )
+        
+        # Data de referência para cálculo
+        data_referencia = st.date_input(
+            "📆 Data de referência",
+            value=datetime.now().date(),
+            help="Data base para verificar vencimentos"
+        )
+        
+        st.markdown("---")
+        
+        # Filtro para condomínios aptos para consulta
+        st.markdown("### 🎯 Condomínios Aptos para Consulta de Crédito")
+        
+        # Taxa mínima de inadimplência para considerar "apto"
+        taxa_minima = st.slider(
+            "📊 Taxa mínima de inadimplência (%)",
+            min_value=0,
+            max_value=100,
+            value=30,
+            step=5,
+            help="Condomínios com inadimplência acima deste percentual são considerados aptos"
+        )
+        
+        # Número mínimo de clientes inadimplentes
+        min_inadimplentes = st.number_input(
+            "👥 Número mínimo de clientes inadimplentes",
+            min_value=1,
+            max_value=1000,
+            value=5,
+            step=1,
+            help="Condomínios com pelo menos este número de clientes inadimplentes"
+        )
+        
+        # Valor mínimo em atraso
+        valor_minimo_atraso = st.number_input(
+            "💰 Valor mínimo em atraso (R$)",
+            min_value=0,
+            max_value=100000,
+            value=500,
+            step=100,
+            help="Condomínios com valor em atraso acima deste limite"
+        )
+        
+        st.markdown("---")
+        
+        # Botão para aplicar filtros
+        aplicar_filtros = st.button(
+            "🔍 Aplicar Filtros e Gerar Ranking",
+            type="primary",
+            use_container_width=True
+        )
+        
+        st.markdown("---")
+        st.caption("ℹ️ **Como funciona:**\n• Inadimplência = parcelas vencidas + não pagas\n• Condomínios aptos = alta inadimplência + potencial de consulta")
+        
+        # Armazenar no session state
+        st.session_state.filtros_sidebar = {
+            'dias_atraso': dias_atraso,
+            'data_referencia': datetime.combine(data_referencia, datetime.min.time()),
+            'taxa_minima': taxa_minima,
+            'min_inadimplentes': min_inadimplentes,
+            'valor_minimo_atraso': valor_minimo_atraso,
+            'aplicar_filtros': aplicar_filtros
+        }
+        
+        return st.session_state.filtros_sidebar
+
+def analisar_inadimplencia_periodo(df_parcelas, df_clientes, df_condominios, 
+                                   dias_atraso=30, data_referencia=None,
+                                   incluir_valor_atraso=True):
+    """
+    Analisa inadimplência considerando período específico de atraso
+    
+    Retorna:
+    - DataFrame com análise detalhada por condomínio
+    - DataFrame com clientes inadimplentes
+    - DataFrame com parcelas vencidas no período
+    """
+    if df_parcelas is None or df_parcelas.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    if data_referencia is None:
+        data_referencia = datetime.now().replace(tzinfo=None)
+    
+    df_parcelas = df_parcelas.copy()
+    df_clientes = df_clientes.copy()
+    df_condominios = df_condominios.copy()
+    
+    # Normalizar IDs
+    df_clientes["ID"] = pd.to_numeric(df_clientes["ID"], errors="coerce").fillna(0).astype(int)
+    df_parcelas["ID"] = pd.to_numeric(df_parcelas["ID"], errors="coerce").fillna(0).astype(int)
+    df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
+    
+    # Converter data de vencimento
+    df_parcelas["DATA DO VENCIMENTO"] = pd.to_datetime(df_parcelas["DATA DO VENCIMENTO"], errors='coerce')
+    
+    # Calcular data limite (data_referencia - dias_atraso)
+    data_limite = data_referencia - timedelta(days=dias_atraso)
+    
+    # Normalizar status
+    df_parcelas["STATUS_NORMALIZADO"] = df_parcelas["STATUS"].str.upper().str.strip()
+    
+    # Identificar parcelas vencidas (considerando período)
+    parcelas_vencidas = df_parcelas[
+        (df_parcelas["DATA DO VENCIMENTO"] <= data_limite) &
+        (df_parcelas["STATUS_NORMALIZADO"] == "A RECEBER")
+    ].copy()
+    
+    if parcelas_vencidas.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    # Calcular dias em atraso
+    parcelas_vencidas["DIAS_ATRASO"] = (data_referencia - parcelas_vencidas["DATA DO VENCIMENTO"]).dt.days
+    
+    # Classificar faixa de atraso
+    def classificar_faixa_atraso(dias):
+        if dias <= 30:
+            return "1-30 dias"
+        elif dias <= 60:
+            return "31-60 dias"
+        elif dias <= 90:
+            return "61-90 dias"
+        else:
+            return "90+ dias"
+    
+    parcelas_vencidas["FAIXA_ATRASO"] = parcelas_vencidas["DIAS_ATRASO"].apply(classificar_faixa_atraso)
+    
+    # Clientes inadimplentes
+    clientes_inadimplentes = parcelas_vencidas["ID"].unique()
+    
+    # Detalhamento por cliente
+    cliente_atraso = parcelas_vencidas.groupby("ID").agg(
+        total_parcelas_vencidas=("ID", "count"),
+        valor_total_atraso=("VALOR", "sum"),
+        max_dias_atraso=("DIAS_ATRASO", "max"),
+        media_dias_atraso=("DIAS_ATRASO", "mean")
+    ).reset_index()
+    
+    # Mapear CONDOMANIO
+    df_cliente_cond = df_clientes[["ID", "CONDOMANIO"]].drop_duplicates()
+    cliente_atraso = cliente_atraso.merge(df_cliente_cond, on="ID", how="left")
+    
+    # Agregar por condomínio
+    cond_agg = cliente_atraso.groupby("CONDOMANIO").agg(
+        total_clientes_inadimplentes=("ID", "count"),
+        total_parcelas_vencidas=("total_parcelas_vencidas", "sum"),
+        valor_total_atraso=("valor_total_atraso", "sum"),
+        media_dias_atraso=("media_dias_atraso", "mean"),
+        max_dias_atraso=("max_dias_atraso", "max")
+    ).reset_index()
+    
+    # Total de clientes por condomínio
+    total_clientes_cond = df_clientes.groupby("CONDOMANIO").size().reset_index(name="total_clientes")
+    cond_agg = cond_agg.merge(total_clientes_cond, on="CONDOMANIO", how="right")
+    
+    # Calcular taxa de inadimplência
+    cond_agg["taxa_inadimplencia"] = (
+        cond_agg["total_clientes_inadimplentes"] / cond_agg["total_clientes"].replace(0, np.nan) * 100
+    ).round(2).fillna(0)
+    
+    # Adicionar informações do condomínio
+    cols_merge = ["ID", "Condomínio", "Região", "Apartamentos"]
+    cols_existentes = [c for c in cols_merge if c in df_condominios.columns]
+    
+    result = cond_agg.merge(
+        df_condominios[cols_existentes],
+        left_on="CONDOMANIO", right_on="ID", how="right"
+    )
+    
+    # Preencher NAs
+    result["total_clientes"] = result["total_clientes"].fillna(0).astype(int)
+    result["total_clientes_inadimplentes"] = result["total_clientes_inadimplentes"].fillna(0).astype(int)
+    result["total_parcelas_vencidas"] = result["total_parcelas_vencidas"].fillna(0).astype(int)
+    result["valor_total_atraso"] = result["valor_total_atraso"].fillna(0)
+    result["taxa_inadimplencia"] = result["taxa_inadimplencia"].fillna(0)
+    result["media_dias_atraso"] = result["media_dias_atraso"].fillna(0)
+    result["max_dias_atraso"] = result["max_dias_atraso"].fillna(0)
+    
+    return result.sort_values("taxa_inadimplencia", ascending=False).reset_index(drop=True), cliente_atraso, parcelas_vencidas
+
+def identificar_condominios_aptos_consulta(df_inadimplencia, taxa_minima=30, 
+                                           min_inadimplentes=5, valor_minimo_atraso=500):
+    """
+    Identifica condomínios aptos para consulta de crédito baseado nos filtros
+    
+    Retorna:
+    - DataFrame com condomínios aptos
+    - DataFrame com condomínios prioritários (melhores oportunidades)
+    """
+    if df_inadimplencia.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    df_aptos = df_inadimplencia[
+        (df_inadimplencia["taxa_inadimplencia"] >= taxa_minima) &
+        (df_inadimplencia["total_clientes_inadimplentes"] >= min_inadimplentes) &
+        (df_inadimplencia["valor_total_atraso"] >= valor_minimo_atraso)
+    ].copy()
+    
+    if df_aptos.empty:
+        return df_aptos, pd.DataFrame()
+    
+    # Calcular score de prioridade
+    # Score = (taxa_inadimplencia * 2) + (total_inadimplentes * 5) + (valor_atraso / 100)
+    df_aptos["score_prioridade"] = (
+        df_aptos["taxa_inadimplencia"] * 2 +
+        df_aptos["total_clientes_inadimplentes"] * 5 +
+        df_aptos["valor_total_atraso"] / 100
+    ).round(2)
+    
+    # Classificar prioridade
+    def classificar_prioridade(score):
+        if score >= 200:
+            return "🔥 PRIORIDADE MÁXIMA"
+        elif score >= 100:
+            return "🟠 Alta Prioridade"
+        elif score >= 50:
+            return "🟡 Média Prioridade"
+        else:
+            return "🟢 Baixa Prioridade"
+    
+    df_aptos["prioridade"] = df_aptos["score_prioridade"].apply(classificar_prioridade)
+    
+    # Ordenar por prioridade
+    df_aptos = df_aptos.sort_values("score_prioridade", ascending=False).reset_index(drop=True)
+    
+    # Identificar top 10 oportunidades
+    df_top_oportunidades = df_aptos.head(10).copy()
+    
+    return df_aptos, df_top_oportunidades
+
+def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
+    """Renderiza painel com condomínios aptos para consulta"""
+    
+    st.markdown("## 🎯 Condomínios Aptos para Consulta de Crédito")
+    
+    if df_aptos.empty:
+        st.info("ℹ️ Nenhum condomínio atende aos critérios definidos. Ajuste os filtros na barra lateral.")
+        return
+    
+    # Métricas resumidas
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("🏢 Condomínios Aptos", len(df_aptos))
+    col2.metric("👥 Total Inadimplentes", df_aptos["total_clientes_inadimplentes"].sum())
+    col3.metric("💰 Valor Total em Atraso", formatar_moeda_br(df_aptos["valor_total_atraso"].sum()))
+    col4.metric("📈 Média Inadimplência", f"{df_aptos['taxa_inadimplencia'].mean():.1f}%")
+    
+    st.markdown("---")
+    
+    # Top 10 oportunidades
+    st.subheader("🏆 Top 10 Condomínios - Maior Potencial para Consulta")
+    
+    # Configurar colunas para exibição
+    colunas_exibir = [
+        "Condomínio", "Região", "total_clientes", "total_clientes_inadimplentes",
+        "taxa_inadimplencia", "valor_total_atraso", "max_dias_atraso", "prioridade", "score_prioridade"
+    ]
+    
+    colunas_existentes = [c for c in colunas_exibir if c in df_top_oportunidades.columns]
+    
+    st.dataframe(
+        df_top_oportunidades[colunas_existentes],
+        use_container_width=True,
+        column_config={
+            "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
+            "valor_total_atraso": st.column_config.NumberColumn("Valor em Atraso", format="R$ %.2f"),
+            "score_prioridade": st.column_config.NumberColumn("Score", format="%.0f"),
+            "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
+            "total_clientes_inadimplentes": st.column_config.NumberColumn("Inadimplentes", format="%d"),
+            "max_dias_atraso": st.column_config.NumberColumn("Máx Dias Atraso", format="%d"),
+        }
+    )
+    
+    # Gráfico de barras dos top 10
+    fig_top = px.bar(
+        df_top_oportunidades,
+        x="Condomínio",
+        y="taxa_inadimplencia",
+        color="valor_total_atraso",
+        text="taxa_inadimplencia",
+        title="📊 Top 10 Condomínios por Taxa de Inadimplência",
+        color_continuous_scale="Reds",
+        labels={"taxa_inadimplencia": "Inadimplência (%)", "valor_total_atraso": "Valor em Atraso (R$)"}
+    )
+    fig_top.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    fig_top.update_layout(height=500)
+    st.plotly_chart(fig_top, use_container_width=True)
+    
+    # Gráfico de dispersão (taxa vs valor em atraso)
+    st.subheader("📈 Análise de Concentração de Inadimplência")
+    
+    fig_scatter = px.scatter(
+        df_aptos,
+        x="taxa_inadimplencia",
+        y="valor_total_atraso",
+        size="total_clientes_inadimplentes",
+        color="prioridade",
+        hover_name="Condomínio",
+        text="Condomínio",
+        title="Concentração: Taxa vs Valor em Atraso",
+        labels={
+            "taxa_inadimplencia": "Taxa de Inadimplência (%)",
+            "valor_total_atraso": "Valor Total em Atraso (R$)",
+            "total_clientes_inadimplentes": "Nº Inadimplentes"
+        }
+    )
+    fig_scatter.update_traces(textposition="top center", textfont_size=10)
+    fig_scatter.update_layout(height=500)
+    st.plotly_chart(fig_scatter, use_container_width=True)
+    
+    # Tabela completa dos aptos (expansível)
+    with st.expander("📋 Ver Todos os Condomínios Aptos"):
+        st.dataframe(
+            df_aptos[colunas_existentes],
+            use_container_width=True,
+            column_config={
+                "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
+                "valor_total_atraso": st.column_config.NumberColumn("Valor em Atraso", format="R$ %.2f"),
+            }
+        )
+    
+    # Botão de exportação
+    output_aptos = io.BytesIO()
+    with pd.ExcelWriter(output_aptos, engine='openpyxl') as writer:
+        df_aptos.to_excel(writer, sheet_name='Condominios_Aptos', index=False)
+        df_top_oportunidades.to_excel(writer, sheet_name='Top_10_Oportunidades', index=False)
+    output_aptos.seek(0)
+    
+    st.download_button(
+        "📥 Exportar Lista de Condomínios Aptos para Consulta",
+        output_aptos,
+        f"condominios_aptos_consulta_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 # ==================== CONEXÃO MONGODB ====================
 @st.cache_resource
@@ -1434,9 +1792,10 @@ def exibir_dashboard_principal():
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", 
-        "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", "⏳ Maturidade"
+        "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", 
+        "⏳ Maturidade", "🎯 Consulta de Crédito"
     ])
     
     # TAB 1: PENETRAÇÃO
@@ -1732,7 +2091,7 @@ def exibir_dashboard_principal():
                     )
             
             # Se for visão real e houver detalhamento de parcelas, mostrar
-            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in dir() and not parcelas_detalhe.empty:
+            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in locals() and not parcelas_detalhe.empty:
                 with st.expander("📋 Ver Detalhamento de Parcelas Vencidas"):
                     st.dataframe(
                         parcelas_detalhe,
@@ -1747,7 +2106,7 @@ def exibir_dashboard_principal():
             output_inad = io.BytesIO()
             with pd.ExcelWriter(output_inad, engine='openpyxl') as writer:
                 df_inadimplencia.to_excel(writer, sheet_name='Inadimplencia', index=False)
-                if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in dir() and not parcelas_detalhe.empty:
+                if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in locals() and not parcelas_detalhe.empty:
                     parcelas_detalhe.to_excel(writer, sheet_name='Parcelas_Vencidas', index=False)
             output_inad.seek(0)
             
@@ -1889,6 +2248,103 @@ def exibir_dashboard_principal():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+    
+    # TAB 8: CONSULTA DE CRÉDITO (NOVO)
+    with tab8:
+        st.subheader("🎯 Análise de Condomínios para Consulta de Crédito")
+        
+        # Obter filtros do sidebar
+        if 'filtros_sidebar' not in st.session_state:
+            render_sidebar_filtros_condominios()
+        
+        filtros = st.session_state.get('filtros_sidebar', {})
+        
+        st.markdown("""
+        <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
+        <strong>📋 Como funciona a Consulta de Crédito:</strong><br>
+        Esta análise identifica condomínios com <strong>ALTA INCIDÊNCIA DE INADIMPLÊNCIA</strong>, 
+        que são os principais candidatos para ações de recuperação de crédito.
+        <br><br>
+        <strong>Critérios considerados (configuráveis na barra lateral):</strong>
+        <ul>
+            <li>📅 Dias de atraso configuráveis</li>
+            <li>📊 Taxa mínima de inadimplência</li>
+            <li>👥 Número mínimo de clientes inadimplentes</li>
+            <li>💰 Valor mínimo em atraso</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Verificar se há dados de parcelas
+        if df_parcelas is None or df_parcelas.empty:
+            st.warning("⚠️ Aba 'Base Parcelas' não encontrada. A análise de consulta de crédito requer dados de parcelas.")
+            st.info("Por favor, faça upload de uma planilha que contenha a aba 'Base Parcelas'.")
+        else:
+            # Verificar se os filtros foram aplicados
+            if filtros and filtros.get('aplicar_filtros', False):
+                with st.spinner("🔄 Analisando inadimplência com os filtros selecionados..."):
+                    df_inad_periodo, df_clientes_inad, df_parcelas_vencidas = analisar_inadimplencia_periodo(
+                        df_parcelas, df_clientes, df_condominios,
+                        dias_atraso=filtros.get('dias_atraso', 30),
+                        data_referencia=filtros.get('data_referencia', datetime.now())
+                    )
+                
+                if df_inad_periodo.empty:
+                    st.warning("⚠️ Nenhuma inadimplência encontrada com os critérios atuais.")
+                    st.info("Tente ajustar os filtros na barra lateral para um período maior ou taxas menores.")
+                else:
+                    # Exibir resumo do período
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("📅 Dias de Atraso Considerados", f"{filtros.get('dias_atraso', 30)} dias")
+                    with col2:
+                        data_ref = filtros.get('data_referencia', datetime.now())
+                        st.metric("📆 Data de Referência", data_ref.strftime("%d/%m/%Y"))
+                    with col3:
+                        total_inadimplentes = df_inad_periodo["total_clientes_inadimplentes"].sum()
+                        st.metric("👥 Total Inadimplentes", formatar_numero_br(total_inadimplentes))
+                    
+                    st.markdown("---")
+                    
+                    # Identificar condomínios aptos
+                    df_aptos, df_top_oportunidades = identificar_condominios_aptos_consulta(
+                        df_inad_periodo,
+                        taxa_minima=filtros.get('taxa_minima', 30),
+                        min_inadimplentes=filtros.get('min_inadimplentes', 5),
+                        valor_minimo_atraso=filtros.get('valor_minimo_atraso', 500)
+                    )
+                    
+                    # Renderizar painel de aptos
+                    render_painel_condominios_aptos(df_aptos, df_top_oportunidades)
+                    
+                    # Mostrar detalhamento de parcelas vencidas do top 1 (opcional)
+                    if not df_aptos.empty and st.checkbox("📋 Mostrar detalhamento de parcelas vencidas do condomínio prioritário"):
+                        top_condominio_id = df_aptos.iloc[0]["ID"]
+                        parcelas_top = df_parcelas_vencidas[df_parcelas_vencidas["ID"] == top_condominio_id]
+                        
+                        if not parcelas_top.empty:
+                            st.subheader(f"📄 Parcelas Vencidas - {df_aptos.iloc[0]['Condomínio']}")
+                            st.dataframe(
+                                parcelas_top[["RAZAO SOCIAL/NOME", "DATA DO VENCIMENTO", "DIAS_ATRASO", "FAIXA_ATRASO", "VALOR"]],
+                                use_container_width=True,
+                                column_config={
+                                    "DATA DO VENCIMENTO": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                                    "VALOR": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                                }
+                            )
+            else:
+                st.info("🔍 Configure os filtros na barra lateral e clique em 'Aplicar Filtros e Gerar Ranking' para iniciar a análise.")
+                st.markdown("""
+                ### Como usar:
+                1. **Expanda a barra lateral** (ícone < → no canto superior esquerdo)
+                2. **Configure os parâmetros**:
+                   - Dias de atraso para considerar inadimplente
+                   - Taxa mínima de inadimplência
+                   - Número mínimo de clientes inadimplentes
+                   - Valor mínimo em atraso
+                3. **Clique em "Aplicar Filtros e Gerar Ranking"**
+                4. **Analise os resultados** e exporte a lista de condomínios aptos
+                """)
 
 # ==================== FUNÇÃO PRINCIPAL ====================
 def render_relatorios_condominios():
@@ -1896,6 +2352,9 @@ def render_relatorios_condominios():
     
     # Inicializar session_state
     initialize_session_state()
+    
+    # Renderizar sidebar (fora do fluxo principal)
+    render_sidebar_filtros_condominios()
     
     # Título
     titulo_principal("🏢 Relatórios Estratégicos - Condomínios")
