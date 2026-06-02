@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO FINAL BLINDADA
+# modules/integracao_ixc.py - VERSÃO FINAL SEM VENDEDOR NO PAYLOAD
 import requests
 import base64
 import json
@@ -21,8 +21,8 @@ def get_ixc_config() -> Optional[Dict]:
             "token": st.secrets["ixc"]["token"],
             "filial_id": st.secrets["ixc"].get("filial_id", "1"),
             "id_tipo_cliente": st.secrets["ixc"].get("id_tipo_cliente", "03"),
-            "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01"),
-            "id_vendedor_padrao": st.secrets["ixc"].get("id_vendedor_padrao", "1")
+            "tipo_cliente_scm": st.secrets["ixc"].get("tipo_cliente_scm", "01")
+            # ✅ Campos de vendedor removidos - não serão mais usados no payload
         }
         print(f"🔍 Configuração IXC carregada: Host={config['host']}, Filial={config['filial_id']}")
         return config
@@ -89,7 +89,7 @@ def testar_conexao_ixc() -> Dict:
     return resultados
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD PARA IXC (BLINDADA CONTRA None + ISS OBRIGATÓRIO)
+# CONSTRUÇÃO DO PAYLOAD PARA IXC (SEM CAMPOS DE VENDEDOR)
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
     """Constrói payload seguro para IXC e valida campos obrigatórios."""
@@ -181,11 +181,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "alterar_senha_primeiro_acesso": "S",
         "hotsite_acesso": "2",
         "senha_hotsite_md5": "N",
-        # ✅ CAMPO OBRIGATÓRIO QUE ESTAVA FALTANDO:
-        "iss_classificacao_padrao": "99",  # "99" = Outros Serviços (valor padrão seguro)
-        # ✅ Configurações de vendedor
-        "responsavel": config.get("id_vendedor_padrao", "1"),
-        "id_vendedor": config.get("id_vendedor_padrao", "1"),
+        # ✅ CAMPO OBRIGATÓRIO - Classificação de ISS
+        "iss_classificacao_padrao": "99",  # "99" = Outros Serviços
         # ✅ Configurações de cobrança
         "participa_cobranca": "S",
         "participa_pre_cobranca": "S",
@@ -197,6 +194,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "status_prospeccao": "C",
         "tipo_assinante": "3",
         "obs": obs
+        # ✅ Campos de vendedor REMOVIDOS: id_vendedor e responsavel
+        # O IXC usará o vendedor padrão configurado no backend
     }
 
     if id_condominio_ixc:
