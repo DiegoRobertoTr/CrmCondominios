@@ -584,7 +584,7 @@ def limpar_valor_data(valor):
     return None
 
 def converter_dataframe_dates(df):
-    """Conversão vetorial de datas com tratamento seguro de NaT — versão otimizada sem .apply por linha"""
+    """Conversão vetorial de datas com tratamento seguro de NaT — sem .apply por linha"""
     df = df.copy()
     _PALAVRAS_DATA = {'data', 'date', 'cadastro', 'ativacao', 'cancelamento',
                       'nascimento', 'renovacao', 'vencimento', 'credito'}
@@ -594,12 +594,21 @@ def converter_dataframe_dates(df):
         eh_data = any(p in col_lower for p in _PALAVRAS_DATA)
 
         if eh_data or pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
-            # Converter para object com None em vez de NaT — vetorizado via where
-            s = df[col]
-            df[col] = np.where(s.isna(), None, s.dt.to_pydatetime())
+            s = pd.to_datetime(df[col], errors='coerce', format='mixed')
+            # Remover timezone para o MongoDB não rejeitar
+            if s.dt.tz is not None:
+                s = s.dt.tz_localize(None)
+            # Converter para array de objetos Python ANTES do where,
+            # para que NaT não seja reintroduzido pelo numpy ao avaliar o branch
+            py_dates = s.dt.to_pydatetime()          # ndarray de datetime objects (NaT sobrevive aqui)
+            mask_nat = s.isna().values                # bool array
+            result = np.empty(len(s), dtype=object)  # array object puro
+            result[:] = py_dates                     # copia valores (NaT fica como pd.NaT object)
+            result[mask_nat] = None                  # substitui NaT por None explicitamente
+            df[col] = result
 
     return df
+
 
 def safe_mongo_docs(df):
     """
@@ -610,30 +619,44 @@ def safe_mongo_docs(df):
 
     df = df.copy()
 
-    # 1. Substituir inf/-inf por NaN, depois NaN por None — vetorizado
+    # 1. Substituir inf/-inf por NaN — vetorizado
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # 2. Converter colunas datetime para python datetime sem timezone — vetorizado
+    # 2. Converter colunas datetime64 remanescentes para python datetime sem timezone
+    #    (colunas já tratadas por converter_dataframe_dates serão dtype=object e pulam este loop)
     for col in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
-            # to_pydatetime() retorna array de objetos; NaT vira NaT (não None ainda)
-            arr = df[col].dt.tz_localize(None) if df[col].dt.tz is not None else df[col]
-            # Substituir NaT por None via where
-            df[col] = np.where(arr.isna(), None, arr.dt.to_pydatetime())
+            s = df[col]
+            if s.dt.tz is not None:
+                s = s.dt.tz_localize(None)
+            py_dates = s.dt.to_pydatetime()
+            mask_nat = s.isna().values
+            result = np.empty(len(s), dtype=object)
+            result[:] = py_dates
+            result[mask_nat] = None
+            df[col] = result
 
-    # 3. to_dict em lote (muito mais rápido que iterar linha a linha)
+    # 3. to_dict em lote
     records = df.to_dict('records')
 
-    # 4. Apenas um passe leve para tratar nan residuais em floats (valores escalares)
-    #    Evitamos pd.isna() por célula; usamos checagem de tipo float + math.isnan
+    # 4. Passe leve: tratar NaN residuais em floats e qualquer NaT/Timestamp que tenha escapado
+    _NAT = pd.NaT
     safe_records = []
     for doc in records:
         safe_doc = {}
         for k, v in doc.items():
             if v is None:
                 safe_doc[k] = None
+            elif v is _NAT:
+                safe_doc[k] = None
             elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 safe_doc[k] = None
+            elif isinstance(v, pd.Timestamp):
+                # Timestamp residual — converter para datetime sem tz
+                try:
+                    safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
+                except Exception:
+                    safe_doc[k] = None
             else:
                 safe_doc[k] = v
         safe_records.append(safe_doc)
