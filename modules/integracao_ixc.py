@@ -250,7 +250,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
                 # Capturar campos de endereço do condomínio para repassar ao IXC
                 # (o IXC valida CEP antes de fazer o preenchimento automático)
                 raw_cond_cep = safe(cond_data.get("cep") or cond_data.get("CEP", ""))
-                cond_cep = "".join(filter(str.isdigit, raw_cond_cep))
+                cond_cep = _fmt_cep("".join(filter(str.isdigit, raw_cond_cep)))
                 cond_endereco = safe(cond_data.get("endereco") or cond_data.get("logradouro", ""))
                 cond_numero = safe(cond_data.get("numero", ""))
                 cond_bairro = safe(cond_data.get("bairro", ""))
@@ -266,7 +266,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     usando_condominio = bool(id_condominio_ixc)
 
     obrigatorios_sempre = {"razao": nome_completo, "cnpj_cpf": cpf, "fone": fone, "email": email}
-    obrigatorios_sem_cond = {"cidade": cidade, "uf": uf, "endereco": endereco,
+    obrigatorios_sem_cond = {"cidade": cidade_nome, "uf": uf_sigla, "endereco": endereco,
                              "numero": numero, "bairro": bairro, "cep": cep}
 
     faltando = [k for k, v in obrigatorios_sempre.items() if not v]
@@ -350,35 +350,37 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
 # FUNÇÃO PARA BUSCAR CLIENTE NO IXC POR CPF
 # ============================================================================
 def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
-    """Busca um cliente no IXC pelo CPF."""
-    if not cpf or len(cpf) < 11:
+    """Busca um cliente no IXC pelo CPF (tenta formatado e só dígitos)."""
+    cpf_digits = "".join(filter(str.isdigit, str(cpf)))
+    if not cpf_digits or len(cpf_digits) < 11:
         return None
-        
+
+    cpf_fmt = _fmt_cpf(cpf_digits)
     host_limpo = _sanitizar_host(config["host"])
     url = f"https://{host_limpo}/webservice/v1/cliente"
     auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
-
-    payload = {"qtype": "cliente.cnpj_cpf", "query": cpf, "oper": "=", "page": "1", "rp": "1"}
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
         "ixcsoft": "listar"
     }
-
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15, verify=False)
-        if response.status_code == 200: 
-            dados = response.json()
-            if "registros" in dados and dados["registros"]:
-                return str(dados["registros"][0].get("id"))
-            elif "data" in dados and dados["data"]:
-                return str(dados["data"][0].get("id"))
-            elif isinstance(dados, list) and dados:
-                return str(dados[0].get("id"))
+        for cpf_query in [cpf_fmt, cpf_digits]:
+            payload = {"qtype": "cliente.cnpj_cpf", "query": cpf_query,
+                       "oper": "=", "page": "1", "rp": "1"}
+            response = requests.post(url, json=payload, headers=headers,
+                                     timeout=15, verify=False)
+            if response.status_code == 200:
+                dados = response.json()
+                regs = (dados.get("registros") or dados.get("data")
+                        or (dados if isinstance(dados, list) else []))
+                if regs:
+                    return str(regs[0].get("id"))
         return None
     except Exception as e:
         print(f"Erro ao buscar cliente no IXC: {e}")
         return None
+
 
 # ============================================================================
 # FUNÇÃO PRINCIPAL: ENVIAR CLIENTE AO IXC
