@@ -613,7 +613,8 @@ def analisar_inadimplencia_periodo_otimizado(_df_parcelas_hash, _df_clientes_has
     """
     # Recuperar DataFrames do session_state
     df_parcelas = st.session_state.condominios_dados_parcelas
-    df_clientes = st.session_state.condominios_dados_clientes    df_condominios = st.session_state.condominios_dados_condominios
+    df_clientes = st.session_state.condominios_dados_clientes
+    df_condominios = st.session_state.condominios_dados_condominios
     
     if df_parcelas is None or df_parcelas.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
