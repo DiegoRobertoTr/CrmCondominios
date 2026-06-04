@@ -1,5 +1,60 @@
 # modules/integracao_ixc.py - VERSÃO FINAL COMPLETA
 import requests
+
+import re
+
+# ============================================================================
+# FORMATADORES — padrao exigido pelo IXC (descoberto nos testes R4)
+# ============================================================================
+def _fmt_cep(cep: str) -> str:
+    """'20521130' -> '20521-130'  (formato obrigatorio no IXC)"""
+    d = re.sub(r'\D', '', cep).zfill(8)
+    return f"{d[:5]}-{d[5:]}" if len(d) == 8 else d
+
+
+def _fmt_fone(fone: str) -> str:
+    """'21999990001' -> '(21)999990001'  (formato armazenado no IXC)"""
+    d = re.sub(r'\D', '', fone)
+    if len(d) == 11:   # celular com 9
+        return f"({d[:2]}){d[2:]}"
+    if len(d) == 10:   # fixo
+        return f"({d[:2]}){d[2:]}"
+    return d  # formato desconhecido — retorna como veio
+
+def _fmt_cpf(cpf: str) -> str:
+    """'01234567890' -> '012.345.678-90'  (formato armazenado no IXC)"""
+    d = re.sub(r'\D', '', cpf).zfill(11)
+    return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}" if len(d) == 11 else d
+
+# IDs fixos para Rio de Janeiro (confirmados pelo diagnostico P28/P30)
+_ID_CIDADE_RJ = "3241"
+_ID_UF_RJ     = "24"
+
+def _buscar_id_cidade(host_limpo: str, auth_string: str, cidade_nome: str, uf_sigla: str) -> tuple:
+    """Busca os IDs numericos de cidade e UF no IXC. Fallback para RJ."""
+    id_cidade = _ID_CIDADE_RJ
+    id_uf     = _ID_UF_RJ
+    try:
+        h = {"Authorization": f"Basic {auth_string}", "ixcsoft": "listar",
+             "Content-Type": "application/json"}
+        r = requests.post(
+            f"https://{host_limpo}/webservice/v1/cidade",
+            json={"qtype": "cidade.nome", "query": cidade_nome, "oper": "=",
+                  "page": "1", "rp": "10"},
+            headers=h, timeout=10, verify=False
+        )
+        if r.status_code == 200:
+            rj = r.json()
+            regs = rj.get("registros") or rj.get("data") or []
+            if regs:
+                match = next((x for x in regs
+                               if str(x.get("uf","")).upper() == uf_sigla.upper()), regs[0])
+                id_cidade = str(match.get("id", id_cidade))
+                id_uf     = str(match.get("uf", id_uf))
+    except Exception as e:
+        print(f"Nao foi possivel buscar ID da cidade '{cidade_nome}': {e} — usando fallback RJ")
+    return id_cidade, id_uf
+
 import base64
 import json
 import streamlit as st
@@ -118,27 +173,31 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
 
     # 1. Sanitização rigorosa de TODOS os campos numéricos
     cpf_raw = safe(cliente_data.get("cpf"))
-    cpf = "".join(filter(str.isdigit, cpf_raw))  # ✅ Remove pontos e traço
+    cpf_digits = "".join(filter(str.isdigit, cpf_raw))  # digitos para validacao
+    cpf = _fmt_cpf(cpf_digits)                          # formato IXC: XXX.XXX.XXX-XX
     
     rg = safe(cliente_data.get("rg"))
     
     cep_raw = safe(cliente_data.get("cep"))
-    cep = "".join(filter(str.isdigit, cep_raw))  # ✅ Remove hífen
+    cep_digits = "".join(filter(str.isdigit, cep_raw))  # digitos para validacao
+    cep = _fmt_cep(cep_digits)                             # formato IXC: XXXXX-XXX
     
     celular_raw = safe(cliente_data.get("celular"))
-    celular = "".join(filter(str.isdigit, celular_raw))  # ✅ Remove espaços, traços, parênteses
+    celular_digits = "".join(filter(str.isdigit, celular_raw))
+    celular = _fmt_fone(celular_digits)  # ✅ Remove espaços, traços, parênteses
     
     telefone_com_raw = safe(cliente_data.get("telefone_comercial"))
-    telefone_com = "".join(filter(str.isdigit, telefone_com_raw))
+    telefone_com_digits = "".join(filter(str.isdigit, telefone_com_raw))
+    telefone_com = _fmt_fone(telefone_com_digits)
     
     fone = celular or telefone_com
 
     # 2. Validação algorítmica do CPF
-    if not validar_cpf(cpf):
+    if not validar_cpf(cpf_digits):
         return {}, f"CPF inválido: '{cpf_raw}'. Verifique os dígitos ou use um CPF válido para teste (ex: 070.995.620-17)."
 
     # 3. Validação do CEP (deve ter 8 dígitos)
-    if cep and len(cep) != 8:
+    if cep_digits and len(cep_digits) != 8:
         return {}, f"CEP inválido: '{cep_raw}'. O CEP deve conter 8 dígitos (ex: 22775020)."
 
     # 4. Outros campos
@@ -149,8 +208,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     numero = safe(cliente_data.get("numero"))
     complemento = safe(cliente_data.get("complemento"))
     bairro = safe(cliente_data.get("bairro"))
-    cidade = safe(cliente_data.get("cidade")) or "Rio de Janeiro"
-    uf = (safe(cliente_data.get("uf")) or "RJ").upper()
+    cidade_nome = safe(cliente_data.get("cidade")) or "Rio de Janeiro"
+    uf_sigla     = (safe(cliente_data.get("uf")) or "RJ").upper()
     bloco = safe(cliente_data.get("bloco"))
     apartamento = safe(cliente_data.get("apartamento"))
     obs = safe(cliente_data.get("observacoes"))[:500]
@@ -166,6 +225,11 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
                 break
             except ValueError:
                 continue
+
+    # 5b. Buscar IDs de cidade e UF (IXC usa IDs numericos, nao texto)
+    host_limpo_tmp = _sanitizar_host(config["host"])
+    auth_tmp = base64.b64encode(config["token"].encode()).decode()
+    id_cidade, id_uf = _buscar_id_cidade(host_limpo_tmp, auth_tmp, cidade_nome, uf_sigla)
 
     # 6. Buscar ID Condomínio e seus dados de endereço
     id_condominio_ixc = None
@@ -231,7 +295,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "whatsapp": celular,
         "fone": fone,
         "tipo_localidade": "U",
-        "acesso_automatico_central": "P",
+        "acesso_automatico_central": "S",
         "alterar_senha_primeiro_acesso": "P",   # IXC espera "P", não "S"
         "hotsite_acesso": "2",
         "senha_hotsite_md5": "N",
@@ -259,8 +323,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         payload["endereco"] = cond_endereco or endereco
         payload["numero"]   = cond_numero   or numero
         payload["bairro"]   = cond_bairro   or bairro
-        payload["cidade"]   = cond_cidade   or cidade or "Rio de Janeiro"
-        payload["uf"]       = cond_uf       or uf or "RJ"
+        payload["cidade"]   = id_cidade
+        payload["uf"]       = id_uf
         if cond_complemento or complemento:
             payload["complemento"] = cond_complemento or complemento
         if bloco:
@@ -274,8 +338,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         payload["numero"] = numero
         payload["complemento"] = complemento
         payload["bairro"] = bairro
-        payload["cidade"] = cidade
-        payload["uf"] = uf
+        payload["cidade"] = id_cidade
+        payload["uf"]     = id_uf
         if cliente_data.get("condominio_nome"):
             payload["referencia"] = f"Condomínio: {safe(cliente_data['condominio_nome'])}"
 
