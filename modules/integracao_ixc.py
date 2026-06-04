@@ -1,15 +1,7 @@
-# modules/integracao_ixc.py - VERSÃO CORRIGIDA
+# modules/integracao_ixc.py - VERSÃO FINAL COMPLETA
 import requests
-import re
-import base64
-import json
-import streamlit as st
-from datetime import datetime
-from typing import Dict, Optional, Tuple
-import urllib3
 
-# 🔒 Suprime avisos de certificado autoassinado (comum no IXCsoft)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import re
 
 # ============================================================================
 # FORMATADORES — padrao exigido pelo IXC (descoberto nos testes R4)
@@ -63,6 +55,15 @@ def _buscar_id_cidade(host_limpo: str, auth_string: str, cidade_nome: str, uf_si
         print(f"Nao foi possivel buscar ID da cidade '{cidade_nome}': {e} — usando fallback RJ")
     return id_cidade, id_uf
 
+import base64
+import json
+import streamlit as st
+from datetime import datetime
+from typing import Dict, Optional, Tuple
+import urllib3
+
+# 🔒 Suprime avisos de certificado autoassinado (comum no IXCsoft)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================================
 # CONFIGURAÇÕES (ler dos segredos do Streamlit)
@@ -144,7 +145,7 @@ def testar_conexao_ixc() -> Dict:
                 dados = response.json()
                 resultados["testes"].append({"nome": "Resposta JSON", "sucesso": True, "detalhe": "API respondeu com JSON válido"})
             except Exception:
-                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": False, "detalhe": f"Resposta não é JSON: {response.text[:100]"})
+                resultados["testes"].append({"nome": "Resposta JSON", "sucesso": False, "detalhe": f"Resposta não é JSON: {response.text[:100]}"})
         else:
             resultados["erro"] = f"HTTP {response.status_code}"
             resultados["testes"].append({"nome": "Resposta", "sucesso": False, "detalhe": response.text[:200]})
@@ -259,14 +260,13 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         except Exception as e:
             print(f"⚠️ Erro ao buscar condomínio: {e}")
 
-    # 7. Validação de campos obrigatórios ✅ CORRIGIDO
+    # 7. Validação de campos obrigatórios
     #    Quando há id_condominio, o IXC preenche endereço automaticamente —
     #    logo CEP/endereço/bairro/cidade/UF NÃO são obrigatórios nesse caso.
     usando_condominio = bool(id_condominio_ixc)
 
     obrigatorios_sempre = {"razao": nome_completo, "cnpj_cpf": cpf, "fone": fone, "email": email}
-    # ✅ CORREÇÃO: usar cidade_nome e uf_sigla ao invés de cidade/uf
-    obrigatorios_sem_cond = {"cidade": cidade_nome, "uf": uf_sigla, "endereco": endereco,
+    obrigatorios_sem_cond = {"cidade": cidade, "uf": uf, "endereco": endereco,
                              "numero": numero, "bairro": bairro, "cep": cep}
 
     faltando = [k for k, v in obrigatorios_sempre.items() if not v]
@@ -295,7 +295,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "whatsapp": celular,
         "fone": fone,
         "tipo_localidade": "U",
-        "acesso_automatico_central": "P",  # ✅ CORRIGIDO: era "S", agora "P" (padrão IXC)
+        "acesso_automatico_central": "S",
         "alterar_senha_primeiro_acesso": "P",   # IXC espera "P", não "S"
         "hotsite_acesso": "2",
         "senha_hotsite_md5": "N",
@@ -448,7 +448,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
             except ValueError:
                 if any(x in response.text.lower() for x in ["sucesso", "success", "created"]):
                     return True, "ok", None
-                return False, None, f"Resposta inválida: {response.text[:200]}")
+                return False, None, f"Resposta inválida: {response.text[:200]}"
         else:
             return False, None, f"HTTP {response.status_code}: {response.text[:250]}"
 
