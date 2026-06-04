@@ -167,14 +167,32 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
             except ValueError:
                 continue
 
-    # 6. Buscar ID Condomínio
+    # 6. Buscar ID Condomínio e seus dados de endereço
     id_condominio_ixc = None
+    cond_cep = ""
+    cond_endereco = ""
+    cond_numero = ""
+    cond_bairro = ""
+    cond_cidade = ""
+    cond_uf = ""
+    cond_complemento = ""
+
     if cliente_data.get("condominio_id"):
         try:
             from .condominios import get_condominio_by_id
             cond_data = get_condominio_by_id(cliente_data["condominio_id"])
             if cond_data and cond_data.get("id_ixc"):
                 id_condominio_ixc = str(cond_data["id_ixc"])
+                # Capturar campos de endereço do condomínio para repassar ao IXC
+                # (o IXC valida CEP antes de fazer o preenchimento automático)
+                raw_cond_cep = safe(cond_data.get("cep") or cond_data.get("CEP", ""))
+                cond_cep = "".join(filter(str.isdigit, raw_cond_cep))
+                cond_endereco = safe(cond_data.get("endereco") or cond_data.get("logradouro", ""))
+                cond_numero = safe(cond_data.get("numero", ""))
+                cond_bairro = safe(cond_data.get("bairro", ""))
+                cond_cidade = safe(cond_data.get("cidade", ""))
+                cond_uf = safe(cond_data.get("uf") or cond_data.get("estado", "")).upper()
+                cond_complemento = safe(cond_data.get("complemento", ""))
         except Exception as e:
             print(f"⚠️ Erro ao buscar condomínio: {e}")
 
@@ -232,10 +250,19 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     }
 
     if usando_condominio:
-        # ✅ Modo condomínio: o IXC preenche endereço pelo cadastro do condomínio.
-        #    Enviar CEP/endereço junto causa conflito de validação — NÃO incluir.
+        # ✅ Modo condomínio: o IXC valida CEP antes de fazer preenchimento automático.
+        #    Enviar o endereço do próprio condomínio resolve a validação sem conflito.
+        #    Campos do CLIENTE (bloco/apto) complementam o endereço do condomínio.
         payload["id_condominio"] = id_condominio_ixc
-        # bloco e apartamento são contextuais ao condomínio — incluir apenas se preenchidos
+        # Endereço vem do condomínio; fallback para o que o operador digitou
+        payload["cep"]      = cond_cep      or cep
+        payload["endereco"] = cond_endereco or endereco
+        payload["numero"]   = cond_numero   or numero
+        payload["bairro"]   = cond_bairro   or bairro
+        payload["cidade"]   = cond_cidade   or cidade or "Rio de Janeiro"
+        payload["uf"]       = cond_uf       or uf or "RJ"
+        if cond_complemento or complemento:
+            payload["complemento"] = cond_complemento or complemento
         if bloco:
             payload["bloco"] = bloco
         if apartamento:
