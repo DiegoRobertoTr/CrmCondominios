@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from urllib.parse import quote_plus
@@ -33,8 +33,23 @@ DESTINATARIOS_BACKUP = [
     "pmarques@tracecom.net.br",
     "myjobtracecom@gmail.com",
 ]
+
+# NOVO: Destinatários fixos para ALERTAS de prazo
+DESTINATARIOS_ALERTAS = [
+    "comercial1@tracecom.net.br",
+    "pmarques@tracecom.net.br",  # ← Substitua pelo seu email
+    # Adicione quantos quiser aqui
+]
+
 HORARIO_BACKUP_HORA = 18
 HORARIO_BACKUP_MIN = 0
+
+# ==================== CONFIGURAÇÕES DE ALERTAS ====================
+ALERTAS_CONFIG = {
+    "dias_alertas": [90, 60, 30, 14, 7, 3, 1, 0],  # 0 = vencido
+    "horario_envio": 8,  # 8h da manhã
+    "status_collection": "prospeccao_alertas_status",
+}
 
 # ==================== FUNÇÕES UTILITÁRIAS VETORIZADAS ====================
 @st.cache_data
@@ -138,6 +153,210 @@ def calcular_dias_para_entrega_vetorizado(previsao_series):
     previsao_dt = pd.to_datetime(previsao_series, errors='coerce')
     return (previsao_dt - pd.Timestamp(hoje)).dt.days
 
+# ==================== SISTEMA DE ALERTAS DE PRAZO ====================
+def registrar_status_alerta(db, projeto_id, tipo_alerta, data_envio):
+    """Registra que um alerta foi enviado para evitar duplicidade"""
+    col = db[ALERTAS_CONFIG["status_collection"]]
+    doc = {
+        "projeto_id": projeto_id,
+        "tipo_alerta": tipo_alerta,
+        "data_envio": data_envio,
+        "proximo_envio": None if tipo_alerta in ["7_dias", "3_dias", "1_dia", "vencido"] else data_envio
+    }
+    col.insert_one(doc)
+
+def alerta_ja_enviado(db, projeto_id, tipo_alerta):
+    """Verifica se um alerta específico já foi enviado"""
+    col = db[ALERTAS_CONFIG["status_collection"]]
+    
+    if tipo_alerta in ["7_dias", "3_dias", "1_dia", "vencido"]:
+        # Alertas diários: verifica se já enviou hoje
+        hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        enviado_hoje = col.find_one({
+            "projeto_id": projeto_id,
+            "tipo_alerta": tipo_alerta,
+            "data_envio": {"$gte": hoje}
+        })
+        return enviado_hoje is not None
+    else:
+        # Alertas únicos
+        enviado = col.find_one({
+            "projeto_id": projeto_id,
+            "tipo_alerta": tipo_alerta
+        })
+        return enviado is not None
+
+def verificar_disparo_automatico(db, df_prospeccao):
+    """
+    Verifica todos os projetos e dispara alertas conforme necessidade.
+    """
+    agora = datetime.now()
+    hora_atual = agora.hour
+    
+    # Só dispara no horário configurado ou se for chamada manualmente
+    if hora_atual < ALERTAS_CONFIG["horario_envio"]:
+        return False, "Fora do horário de envio automático"
+    
+    if df_prospeccao.empty or "PREVISAO_ENTREGA" not in df_prospeccao.columns:
+        return False, "Sem dados de previsão de entrega"
+    
+    alertas_disparados = []
+    erros = []
+    
+    for idx, row in df_prospeccao.iterrows():
+        previsao = row.get("PREVISAO_ENTREGA")
+        if pd.isna(previsao):
+            continue
+            
+        # Converter para datetime se necessário
+        if isinstance(previsao, str):
+            try:
+                previsao = pd.to_datetime(previsao)
+            except:
+                continue
+                
+        # Calcular dias restantes
+        dias_restantes = (previsao - agora).days
+        nome_projeto = row.get("NOME", "Sem nome")
+        construtora = row.get("CONSTRUTORA", "")
+        responsavel = row.get("ACOMPANHAMENTO", "")
+        projeto_id = row.get("_id", str(idx))
+        
+        # Pular se não tem responsável definido
+        if not responsavel or responsavel == '':
+            continue
+            
+        # Determinar qual alerta enviar
+        alerta_tipo = None
+        mensagem_extra = ""
+        
+        if dias_restantes < 0:
+            alerta_tipo = "vencido"
+            mensagem_extra = f"⚠️ **ATRASADO!** Previsão era {previsao.strftime('%d/%m/%Y')}. Atraso de {abs(dias_restantes)} dias."
+        elif dias_restantes == 0:
+            alerta_tipo = "1_dia"
+            mensagem_extra = "🔴 **VENCE HOJE!** Ação imediata necessária."
+        elif dias_restantes <= 1:
+            alerta_tipo = "1_dia"
+            mensagem_extra = f"🔴 **VENCE AMANHÃ!** Faltam {dias_restantes} dia."
+        elif dias_restantes <= 3:
+            alerta_tipo = "3_dias"
+            mensagem_extra = f"🟠 **MUITO URGENTE!** Faltam apenas {dias_restantes} dias."
+        elif dias_restantes <= 7:
+            alerta_tipo = "7_dias"
+            mensagem_extra = f"🟡 **ÚLTIMA SEMANA!** Faltam {dias_restantes} dias para a entrega."
+        elif dias_restantes <= 14:
+            alerta_tipo = "14_dias"
+            mensagem_extra = f"🟢 Faltam {dias_restantes} dias para a entrega prevista."
+        elif dias_restantes <= 30:
+            alerta_tipo = "30_dias"
+            mensagem_extra = f"📅 Faltam {dias_restantes} dias para a entrega."
+        elif dias_restantes <= 60:
+            alerta_tipo = "60_dias"
+            mensagem_extra = f"📅 Faltam {dias_restantes} dias para a entrega prevista."
+        elif dias_restantes <= 90:
+            alerta_tipo = "90_dias"
+            mensagem_extra = f"ℹ️ Faltam {dias_restantes} dias para a entrega prevista."
+        else:
+            continue  # Mais de 90 dias, sem alerta
+        
+        # Verificar se já enviou este alerta
+        if alerta_ja_enviado(db, projeto_id, alerta_tipo):
+            continue
+            
+        # Preparar e enviar email
+        assunto = f"[Tracecom] Alerta de Prazo - {nome_projeto}"
+        
+        # Construir lista de destinatários
+        destinatarios = DESTINATARIOS_ALERTAS.copy()  # Começa com os fixos
+        
+        # Se responsável for email, adiciona também
+        if '@' in responsavel and responsavel not in destinatarios:
+            destinatarios.append(responsavel)
+        
+        # Remove duplicatas mantendo ordem
+        destinatarios = list(dict.fromkeys(destinatarios))
+        
+        corpo = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                <h2 style="color: #c0392b;">⚠️ Alerta de Prazo de Entrega</h2>
+                
+                <p>Olá,</p>
+                
+                <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                    <h3 style="margin-top: 0;">📋 Informações do Projeto:</h3>
+                    <p><strong>🏢 Condomínio:</strong> {nome_projeto}</p>
+                    <p><strong>🏗️ Construtora:</strong> {construtora}</p>
+                    <p><strong>📅 Previsão de Entrega:</strong> {previsao.strftime('%d/%m/%Y')}</p>
+                    <p><strong>⏰ Dias Restantes:</strong> {dias_restantes}</p>
+                    <p><strong>👤 Responsável:</strong> {responsavel}</p>
+                </div>
+                
+                <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #ffc107;">
+                    <p style="margin: 0;"><strong>{mensagem_extra}</strong></p>
+                </div>
+                
+                <h3>📌 Recomendações:</h3>
+                <ul>
+                    <li>Verificar status atual da obra</li>
+                    <li>Confirmar se há riscos de atraso</li>
+                    <li>Atualizar a planilha com informações recentes</li>
+                    <li>Acionar equipe de vendas/prospecção se necessário</li>
+                </ul>
+                
+                <hr style="margin: 20px 0;">
+                <p style="font-size: 12px; color: #666;">
+                    Esta é uma mensagem automática do Sistema de Prospecção Tracecom.<br>
+                    Para ajustar os alertas, acesse o sistema e atualize a previsão de entrega ou o responsável.
+                </p>
+                <p style="font-size: 12px; color: #999;">
+                    <strong>Destinatários:</strong> {', '.join(destinatarios)}
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        try:
+            # Enviar email para todos os destinatários
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = assunto
+            msg['From'] = EMAIL_CONFIG["smtp_user"]
+            msg['To'] = ", ".join(destinatarios)
+            msg.attach(MIMEText(corpo, 'html', 'utf-8'))
+            
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"], context=context) as servidor:
+                servidor.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_password"])
+                servidor.sendmail(EMAIL_CONFIG["smtp_user"], destinatarios, msg.as_bytes())
+            
+            # Registrar alerta enviado
+            registrar_status_alerta(db, projeto_id, alerta_tipo, datetime.now())
+            alertas_disparados.append(f"{nome_projeto} ({dias_restantes} dias)")
+            
+        except Exception as e:
+            erros.append(f"{nome_projeto}: {str(e)}")
+    
+    # Resumo
+    if alertas_disparados:
+        msg_resumo = f"✅ Alertas disparados para: {', '.join(alertas_disparados[:5])}"
+        if len(alertas_disparados) > 5:
+            msg_resumo += f" e mais {len(alertas_disparados)-5}"
+        return True, msg_resumo
+    elif erros:
+        return False, f"⚠️ Erros em {len(erros)} alertas"
+    else:
+        return False, "Nenhum alerta necessário no momento"
+
+def limpar_historico_alertas(db, dias_keep=30):
+    """Limpa histórico de alertas antigos para não acumular"""
+    col = db[ALERTAS_CONFIG["status_collection"]]
+    data_corte = datetime.now() - timedelta(days=dias_keep)
+    result = col.delete_many({"data_envio": {"$lt": data_corte}})
+    return result.deleted_count
+
 # ==================== CONFIGURAÇÃO MONGODB ====================
 @st.cache_resource
 def init_mongo():
@@ -176,7 +395,7 @@ def gerar_excel_reimportavel(df_prospeccao):
         'Data da Atualização', 'Região', 'BAIRRO', 'ENDEREÇO',
         'NOME', 'BLOCO', 'APTO', 'CONSTRUTORA',
         'ESTÁGIO', 'VIABILIDADE', 'OBS', 'Previsão de Entrega',
-        'ACOMPANHAMENTO',  # NOVO: adicionado ao reimportável
+        'ACOMPANHAMENTO',
     ]
     df_export = df_prospeccao.copy()
     if 'FASE_ORIGINAL' in df_export.columns:
@@ -226,7 +445,7 @@ def enviar_email_backup(arquivo_tratado: bytes, arquivo_reimportavel: bytes,
           <td style="padding:8px 12px;"><strong>backup_tratado_{data_str}.xlsx</strong></td>
           <td style="padding:8px 12px;">Dados tratados com abas por fase, análises e resumo executivo</td>
         </tr>
-        <tr style="background:#eaf4fb;">
+        <tr>
           <td style="padding:8px 12px;"><strong>backup_reimportavel_{data_str}.xlsx</strong></td>
           <td style="padding:8px 12px;">Formato original — pode ser reimportado diretamente pelo sistema</td>
         </tr>
@@ -370,7 +589,7 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
 
     for col in ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'FASE_CLASSIFICADA',
                 'PRIORIDADE', 'CONSTRUTORA', 'NOME', 'BAIRRO', 'Região', 'ENDEREÇO', 'BLOCO',
-                'ACOMPANHAMENTO']:  # NOVO: incluir Acompanhamento
+                'ACOMPANHAMENTO']:
         if col in df_para_salvar.columns:
             df_para_salvar[col] = df_para_salvar[col].astype(str).fillna('')
             df_para_salvar[col] = df_para_salvar[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN', ''], '')
@@ -451,13 +670,11 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         df_edit_alt = df_editado[linhas_com_alteracao].copy()
         ids_alterados = df_orig_alt['_id'].values
 
-        # 🔑 RESTAURAR valores originais onde o editor retornou NaN (células não editadas)
         for col in df_edit_alt.columns:
             if col in df_orig_alt.columns:
                 mask = df_edit_alt[col].isna() & df_orig_alt[col].notna()
                 df_edit_alt.loc[mask, col] = df_orig_alt.loc[mask, col]
 
-        # 🔧 FORÇAR recálculo das colunas derivadas para garantir consistência
         if 'ESTÁGIO' in df_edit_alt.columns:
             df_edit_alt['FASE_CLASSIFICADA'] = classificar_fase_vetorizado(df_edit_alt['ESTÁGIO'])
         if 'VIABILIDADE' in df_edit_alt.columns:
@@ -479,7 +696,6 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         for idx, record_id in enumerate(ids_alterados):
             updates = {}
             
-            # 1. Colunas editáveis pelo usuário
             for col in colunas_para_comparar:
                 if col in df_edit_alt.columns:
                     v_edit = df_edit_alt[col].iloc[idx]
@@ -488,7 +704,6 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
                     if str(v_orig) != str(v_edit):
                         updates[col] = None if (v_edit == '') else v_edit
 
-            # 2. Colunas calculadas (usar sempre o valor recalculado)
             for col in ['FASE_CLASSIFICADA', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES', 'PRIORIDADE']:
                 if col in df_edit_alt.columns:
                     val_new = df_edit_alt[col].iloc[idx]
@@ -657,7 +872,7 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
         for fase, nome_aba in fases_map.items():
             df_fase = df_prospeccao[df_prospeccao['FASE_CLASSIFICADA'] == fase].copy()
             if not df_fase.empty:
-                extras = ['VIABILIDADE', 'OBS', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES', 'FASE_ORIGINAL', 'ACOMPANHAMENTO']  # NOVO: incluir Acompanhamento
+                extras = ['VIABILIDADE', 'OBS', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES', 'FASE_ORIGINAL', 'ACOMPANHAMENTO']
                 cols_final = [c for c in cols_base if c in df_fase.columns] + [c for c in extras if c in df_fase.columns]
                 df_exp = df_fase[cols_final].copy()
                 if 'PREVISAO_ENTREGA' in df_exp.columns:
@@ -810,9 +1025,33 @@ def render_prospeccao_condominios():
             else:
                 st.warning("⚠️ Carregue os dados primeiro para habilitar o backup manual.")
 
+            # ==================== SISTEMA DE ALERTAS - ÁREA ADMIN ====================
+            st.markdown("---")
+            st.markdown("#### ⏰ Alertas de Prazo")
+
+            col_alerta1, col_alerta2, col_alerta3 = st.columns(3)
+
+            with col_alerta1:
+                if st.button("🔔 Verificar Alertas Agora", key="btn_verificar_alertas", use_container_width=True):
+                    with st.spinner("Verificando prazos e enviando alertas..."):
+                        ok, msg = verificar_disparo_automatico(db, df_adm if df_adm is not None else pd.DataFrame())
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.info(msg)
+
+            with col_alerta2:
+                st.caption(f"⏰ Horário automático: {ALERTAS_CONFIG['horario_envio']:02d}:00")
+                st.caption("Alertas diários para prazos < 7 dias")
+
+            with col_alerta3:
+                if st.button("🗑️ Limpar Histórico Alertas", key="btn_limpar_alertas", use_container_width=True):
+                    removidos = limpar_historico_alertas(db, 30)
+                    st.success(f"✅ {removidos} registros antigos removidos")
+
     st.markdown("---")
 
-    # ==================== BARRA LATERAL - FILTRO POR RESPONSÁVEL (NOVO) ====================
+    # ==================== BARRA LATERAL - FILTRO POR RESPONSÁVEL ====================
     # Carregar dados primeiro para usar no filtro lateral
     if st.session_state.get("reload_prospeccao") or "df_prospeccao_cached" not in st.session_state:
         with st.spinner('🔄 Carregando dados do banco...'):
@@ -849,15 +1088,14 @@ def render_prospeccao_condominios():
         st.info("📂 Faça upload da planilha para visualizar os dados")
         return
 
-    # NOVO: Filtro por Responsável na Barra Lateral
+    # Filtro por Responsável na Barra Lateral
     with st.sidebar:
         st.markdown("---")
         st.markdown("### 👤 Filtro por Responsável")
         
         if "ACOMPANHAMENTO" in df_prospeccao.columns:
-            # Opção de lembrar o usuário na sessão
             if "meu_nome" not in st.session_state:
-                st.session_state.meu_nome = "Diego Roberto"  # Default para você
+                st.session_state.meu_nome = "Diego Roberto"
             
             meu_nome_input = st.text_input(
                 "Seu nome (como aparece na planilha):",
@@ -867,7 +1105,6 @@ def render_prospeccao_condominios():
             if meu_nome_input != st.session_state.meu_nome:
                 st.session_state.meu_nome = meu_nome_input
             
-            # Opções de filtro
             filtro_opcao = st.radio(
                 "Visualização:",
                 options=["🌍 Todos os condomínios", f"👤 Apenas meus ({st.session_state.meu_nome})"],
@@ -888,31 +1125,59 @@ def render_prospeccao_condominios():
                 st.session_state.filtro_ativo = False
                 st.info(f"🌍 Mostrando todos os {len(df_prospeccao)} condomínios")
             
-            # Botão rápido para limpar filtro
             if st.button("🔄 Limpar filtro", use_container_width=True):
                 st.session_state.filtro_ativo = False
                 st.rerun()
             
             st.markdown("---")
             
-            # Estatísticas rápidas do responsável (se filtro ativo)
             if st.session_state.get("filtro_ativo", False):
                 st.markdown("#### 📊 Meu resumo")
                 meus_dados = df_prospeccao
                 
                 col_s1, col_s2 = st.columns(2)
                 with col_s1:
-                    # Em negociação ativa
                     em_neg = len(meus_dados[meus_dados["FASE_CLASSIFICADA"].isin(["✅ Entramos", "💼 Em Negociação"])])
                     st.metric("💼 Em negociação", em_neg, delta=None)
                 with col_s2:
-                    # Urgentes
                     urgentes = len(meus_dados[meus_dados.get("PRIORIDADE", "") == "🔴 Urgente"])
                     st.metric("⚠️ Urgentes", urgentes, delta=None)
+                
+                st.markdown("---")
+                st.markdown("#### 🔔 Alertas")
+                if st.button("📧 Verificar alertas dos meus projetos", use_container_width=True):
+                    with st.spinner("Verificando prazos..."):
+                        df_meus_alerta = df_prospeccao[df_prospeccao["ACOMPANHAMENTO"] == st.session_state.meu_nome].copy()
+                        ok, msg = verificar_disparo_automatico(db, df_meus_alerta)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.info(msg)
         else:
             st.info("💡 **Dica:** Adicione a coluna 'Acompanhamento' na sua planilha para filtrar por responsável!")
             st.caption("Exemplo: preencha com 'Diego Roberto', 'Maria Silva', etc. e depois filtre na lateral.")
             st.markdown("---")
+
+    # ==================== VERIFICAÇÃO DE BACKUP DIÁRIO AUTOMÁTICO ====================
+    _backup_enviou, _backup_msg = verificar_e_disparar_backup_diario(db, df_prospeccao)
+    if _backup_enviou:
+        st.toast(_backup_msg, icon="📧")
+    elif _backup_msg:
+        st.toast(f"⚠️ {_backup_msg}", icon="⚠️")
+
+    # ==================== VERIFICAÇÃO DE ALERTAS DIÁRIA ====================
+    if "ultima_verificacao_alertas" not in st.session_state:
+        st.session_state.ultima_verificacao_alertas = None
+
+    agora = datetime.now()
+    if (st.session_state.ultima_verificacao_alertas is None or 
+        (agora - st.session_state.ultima_verificacao_alertas).days >= 1):
+        
+        with st.spinner("Verificando prazos de entrega..."):
+            ok, msg = verificar_disparo_automatico(db, df_prospeccao)
+        if ok:
+            st.toast(msg, icon="🔔")
+        st.session_state.ultima_verificacao_alertas = agora
 
     # ==================== GERENCIAMENTO DE DADOS ====================
     st.subheader("📂 Gerenciamento de Dados")
@@ -977,9 +1242,9 @@ def render_prospeccao_condominios():
                     'obs': 'OBS', 'observações': 'OBS',
                     'data da atualização': 'Data da Atualização',
                     'previsão de entrega': 'Previsão de Entrega',
-                    'acompanhamento': 'ACOMPANHAMENTO',  # NOVO
-                    'responsável': 'ACOMPANHAMENTO',     # NOVO - alias
-                    'responsavel': 'ACOMPANHAMENTO',     # NOVO - alias
+                    'acompanhamento': 'ACOMPANHAMENTO',
+                    'responsável': 'ACOMPANHAMENTO',
+                    'responsavel': 'ACOMPANHAMENTO',
                 }
                 df_prospeccao.columns = [str(col).strip() for col in df_prospeccao.columns]
                 cols_lower_map = {c.lower(): c for c in df_prospeccao.columns}
@@ -1013,7 +1278,7 @@ def render_prospeccao_condominios():
                 df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao.get("PREVISAO_ENTREGA"))
                 df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
 
-                for col in ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'ACOMPANHAMENTO']:  # NOVO: incluir Acompanhamento
+                for col in ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'ACOMPANHAMENTO']:
                     if col in df_prospeccao.columns:
                         df_prospeccao[col] = df_prospeccao[col].astype(str).fillna('')
                         df_prospeccao[col] = df_prospeccao[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN', 'Na N'], '')
@@ -1034,7 +1299,6 @@ def render_prospeccao_condominios():
                     elapsed = time.time() - start_time
                     st.success(f"✅ Dados importados! {len(df_prospeccao)} projetos de {len(metadata['construtoras'])} construtoras (Tempo: {elapsed:.2f}s)")
 
-                    # Aviso sobre coluna Acompanhamento
                     if "ACOMPANHAMENTO" in df_prospeccao.columns:
                         responsaveis = df_prospeccao["ACOMPANHAMENTO"].unique().tolist()
                         responsaveis_validos = [r for r in responsaveis if r and r != '']
@@ -1083,18 +1347,11 @@ def render_prospeccao_condominios():
             finally:
                 progress_bar.empty()
 
-    # ==================== VERIFICAÇÃO DE BACKUP DIÁRIO AUTOMÁTICO ====================
-    _backup_enviou, _backup_msg = verificar_e_disparar_backup_diario(db, df_prospeccao)
-    if _backup_enviou:
-        st.toast(_backup_msg, icon="📧")
-    elif _backup_msg:
-        st.toast(f"⚠️ {_backup_msg}", icon="⚠️")
-
     # ==================== ABAS PRINCIPAIS ====================
     tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5, tab_meus = st.tabs([
         "✏️ Atualizar Empreendimentos", "➕ Novo Cadastro", "📊 Por Construtora",
         "🗺️ Por Região", "⏱️ Timeline", "🎯 Priorização", "📋 Lista Completa",
-        "⭐ MEUS ACOMPANHAMENTOS",  # NOVO
+        "⭐ MEUS ACOMPANHAMENTOS",
     ])
 
     # --- ABA: ATUALIZAR EMPREENDIMENTOS ---
@@ -1106,8 +1363,6 @@ def render_prospeccao_condominios():
         construtoras_opts = sorted(df_prospeccao["CONSTRUTORA"].dropna().unique().tolist()) if "CONSTRUTORA" in df_prospeccao.columns else []
         regioes_opts = sorted(df_prospeccao["Região"].dropna().unique().tolist()) if "Região" in df_prospeccao.columns else (sorted(df_prospeccao["ZONA"].dropna().unique().tolist()) if "ZONA" in df_prospeccao.columns else [])
         fases_opts = sorted(df_prospeccao["FASE_CLASSIFICADA"].dropna().unique().tolist()) if "FASE_CLASSIFICADA" in df_prospeccao.columns else []
-        
-        # NOVO: Filtro por responsável na aba de edição
         responsaveis_opts = sorted(df_prospeccao["ACOMPANHAMENTO"].dropna().unique().tolist()) if "ACOMPANHAMENTO" in df_prospeccao.columns else []
 
         with c1: filter_construtora = st.multiselect("Construtora", options=construtoras_opts, placeholder="Todas", key="f_construtora_upd")
@@ -1135,7 +1390,7 @@ def render_prospeccao_condominios():
             cols_editaveis = ["NOME", "CONSTRUTORA", "BAIRRO",
                               "Região" if "Região" in df_filtered.columns else "ZONA",
                               "ESTÁGIO", "VIABILIDADE", "APTO", "OBS", "PREVISAO_ENTREGA",
-                              "ACOMPANHAMENTO"]  # NOVO: tornar editável
+                              "ACOMPANHAMENTO"]
             cols_existing = [c for c in cols_editaveis if c in df_filtered.columns]
             
             cols_para_exibir = cols_existing.copy()
@@ -1161,7 +1416,7 @@ def render_prospeccao_condominios():
                     help="Calculada automaticamente com base no Estágio. Não editável.",
                     disabled=True
                 ),
-                "ACOMPANHAMENTO": st.column_config.TextColumn(  # NOVO
+                "ACOMPANHAMENTO": st.column_config.TextColumn(
                     "👤 Responsável",
                     help="Quem acompanha este condomínio",
                     width="medium",
@@ -1210,7 +1465,7 @@ def render_prospeccao_condominios():
                 ])
                 viabilidade = st.text_area("Viabilidade / Observações", placeholder="Ex: Previsão entrega 12/2025.")
                 obs_geral = st.text_area("Observações Gerais")
-                acompanhamento = st.text_input("Responsável pelo Acompanhamento", placeholder="Ex: Diego Roberto", help="Quem será responsável por acompanhar este condomínio")  # NOVO
+                acompanhamento = st.text_input("Responsável pelo Acompanhamento", placeholder="Ex: Diego Roberto", help="Quem será responsável por acompanhar este condomínio")
 
             if st.form_submit_button("Cadastrar Empreendimento"):
                 if not nome or not construtora:
@@ -1219,7 +1474,7 @@ def render_prospeccao_condominios():
                     new_data = {"NOME": nome, "CONSTRUTORA": construtora, "BAIRRO": bairro,
                                 "Região": regiao, "ENDEREÇO": endereco, "BLOCO": bloco,
                                 "APTO": apto, "ESTÁGIO": estagio, "VIABILIDADE": viabilidade, 
-                                "OBS": obs_geral, "ACOMPANHAMENTO": acompanhamento}  # NOVO
+                                "OBS": obs_geral, "ACOMPANHAMENTO": acompanhamento}
                     if insert_new_record(db, new_data):
                         st.success("✅ Empreendimento cadastrado!")
                         st.cache_data.clear()
@@ -1369,7 +1624,7 @@ def render_prospeccao_condominios():
     # --- ABA: LISTA COMPLETA ---
     with tab_dash5:
         st.header("📋 Lista Completa de Projetos")
-        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)  # ALTERADO: +1 coluna
+        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
         col_regiao = "Região" if "Região" in df_prospeccao.columns else "ZONA" if "ZONA" in df_prospeccao.columns else None
         
         with col_f1:
@@ -1383,7 +1638,7 @@ def render_prospeccao_condominios():
             fase_sel = st.multiselect("Fase", options=fases_disp, key="lista_fase")
         with col_f4:
             search_nome_lista = st.text_input("Buscar por Nome", placeholder="Ex: Brito...", key="lista_busca_nome")
-        with col_f5:  # NOVO: filtro por responsável
+        with col_f5:
             if "ACOMPANHAMENTO" in df_prospeccao.columns:
                 resp_disp = df_prospeccao["ACOMPANHAMENTO"].dropna().unique().tolist()
                 responsavel_sel = st.multiselect("Responsável", options=resp_disp, key="lista_responsavel")
@@ -1404,13 +1659,13 @@ def render_prospeccao_condominios():
             df_filt = df_filt[df_filt["ACOMPANHAMENTO"].isin(responsavel_sel)]
 
         st.markdown(f"### 📊 {len(df_filt)} projetos encontrados")
-        cols_disp = [c for c in ["NOME", "CONSTRUTORA", "BAIRRO", "Região", "FASE_CLASSIFICADA", "APTO", "PRIORIDADE", "ACOMPANHAMENTO"] if c in df_filt.columns]  # NOVO: incluir Acompanhamento
+        cols_disp = [c for c in ["NOME", "CONSTRUTORA", "BAIRRO", "Região", "FASE_CLASSIFICADA", "APTO", "PRIORIDADE", "ACOMPANHAMENTO"] if c in df_filt.columns]
         df_lista = df_filt[cols_disp].copy()
         if "APTO" in df_lista.columns:
             df_lista["APTO"] = df_lista["APTO"].apply(lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "N/A")
         df_lista = df_lista.rename(columns={"NOME": "Condomínio", "CONSTRUTORA": "Construtora", "BAIRRO": "Bairro", 
                                              "Região": "Região", "FASE_CLASSIFICADA": "Fase", "APTO": "APTs", 
-                                             "PRIORIDADE": "Prioridade", "ACOMPANHAMENTO": "Responsável"})  # NOVO
+                                             "PRIORIDADE": "Prioridade", "ACOMPANHAMENTO": "Responsável"})
         st.dataframe(df_lista, use_container_width=True)
 
         st.markdown("---")
@@ -1438,7 +1693,7 @@ def render_prospeccao_condominios():
             - 11: Por Região
             """)
 
-    # ==================== NOVA ABA: MEUS ACOMPANHAMENTOS ====================
+    # ==================== ABA: MEUS ACOMPANHAMENTOS ====================
     with tab_meus:
         st.header("⭐ Meus Condomínios sob Acompanhamento")
         
@@ -1454,14 +1709,12 @@ def render_prospeccao_condominios():
             **Alternativa:** Você também pode editar os registros na aba "Atualizar Empreendimentos" e preencher o campo "Responsável" manualmente.
             """)
         else:
-            # Lista de responsáveis disponíveis
             responsaveis = df_prospeccao["ACOMPANHAMENTO"].dropna().unique().tolist()
-            responsaveis = [r for r in responsaveis if r and r != '']  # Remove vazios
+            responsaveis = [r for r in responsaveis if r and r != '']
             
             if not responsaveis:
                 st.info("📭 Nenhum responsável cadastrado ainda. Preencha a coluna 'Acompanhamento' na planilha ou edite os registros.")
             else:
-                # Seletor de usuário (com memória na sessão)
                 usuario_atual = st.selectbox(
                     "👤 Selecione seu nome para ver seus condomínios:",
                     options=["Selecione..."] + responsaveis,
@@ -1475,7 +1728,6 @@ def render_prospeccao_condominios():
                     if df_meus.empty:
                         st.info(f"📭 Nenhum condomínio designado para **{usuario_atual}** ainda.")
                     else:
-                        # Cards de resumo visual
                         st.markdown("### 📊 Meu Dashboard")
                         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                         
@@ -1493,7 +1745,6 @@ def render_prospeccao_condominios():
                         
                         st.markdown("---")
                         
-                        # Gráfico de distribuição de fases dos meus condomínios
                         st.markdown("### 📈 Distribuição por Fase")
                         fases_meus = df_meus["FASE_CLASSIFICADA"].value_counts().reset_index()
                         fases_meus.columns = ["Fase", "Quantidade"]
@@ -1504,26 +1755,33 @@ def render_prospeccao_condominios():
                         st.plotly_chart(fig_meus_fases, use_container_width=True)
                         
                         st.markdown("---")
+                        st.markdown("### 🔔 Alertas dos meus projetos")
+                        if st.button("📧 Verificar alertas dos meus projetos agora", key="btn_alerta_meus_aba"):
+                            with st.spinner("Verificando prazos..."):
+                                df_meus_alerta = df_prospeccao[df_prospeccao["ACOMPANHAMENTO"] == usuario_atual].copy()
+                                ok, msg = verificar_disparo_automatico(db, df_meus_alerta)
+                            if ok:
+                                st.success(msg)
+                            else:
+                                st.info(msg)
+                        
+                        st.markdown("---")
                         st.markdown("### 📋 Lista dos meus condomínios")
                         
-                        # Tabela com foco no essencial para acompanhamento
                         cols_meus = ["NOME", "CONSTRUTORA", "BAIRRO", "Região", "FASE_CLASSIFICADA", 
                                     "PRIORIDADE", "PREVISAO_ENTREGA", "DIAS_RESTANTES", "OBS"]
                         cols_existentes = [c for c in cols_meus if c in df_meus.columns]
                         df_meus_display = df_meus[cols_existentes].copy()
                         
-                        # Formatação bonita das datas
                         if "PREVISAO_ENTREGA" in df_meus_display.columns:
                             df_meus_display["PREVISAO_ENTREGA"] = pd.to_datetime(df_meus_display["PREVISAO_ENTREGA"], errors='coerce').dt.strftime("%d/%m/%Y")
                         
-                        # Formatação dos dias restantes
                         if "DIAS_RESTANTES" in df_meus_display.columns:
                             df_meus_display["DIAS_RESTANTES"] = df_meus_display["DIAS_RESTANTES"].apply(
                                 lambda x: f"{int(x)} dias" if pd.notna(x) and x > 0 else 
                                          (f"🔴 {abs(int(x))} dias atrasado" if pd.notna(x) and x < 0 else "—")
                             )
                         
-                        # Renomear colunas para exibição
                         df_meus_display = df_meus_display.rename(columns={
                             "NOME": "Condomínio", "CONSTRUTORA": "Construtora", "BAIRRO": "Bairro",
                             "Região": "Região", "FASE_CLASSIFICADA": "Fase", "PRIORIDADE": "Prioridade",
@@ -1532,7 +1790,6 @@ def render_prospeccao_condominios():
                         
                         st.dataframe(df_meus_display, use_container_width=True)
                         
-                        # Exportar apenas meus dados
                         st.markdown("---")
                         st.markdown("### 📎 Exportar meus dados")
                         col_exp1, col_exp2 = st.columns(2)
@@ -1551,7 +1808,6 @@ def render_prospeccao_condominios():
                             )
                         
                         with col_exp2:
-                            # Botão para marcar como "Em contato" (funcionalidade futura)
                             st.info("💡 **Dica:** Use os filtros na barra lateral para visualizar apenas seus condomínios em todas as abas!")
 
     st.markdown("---")
@@ -1562,6 +1818,8 @@ def render_prospeccao_condominios():
     - A fase **🎉 Entregue** identifica projetos concluídos.
     - **NOVO:** Use o filtro na **barra lateral** para ver apenas os condomínios sob sua responsabilidade!
     - **NOVO:** A aba **⭐ MEUS ACOMPANHAMENTOS** mostra um dashboard personalizado com seus condomínios.
+    - **NOVO:** O sistema envia **alertas automáticos por email** quando um prazo de entrega está próximo (90, 60, 30, 14, 7, 3, 1 dia ou atrasado)!
+    - **NOVO:** Alertas são enviados para **destinatários fixos** + responsável (se for email).
     """)
 
 if __name__ == "__main__":
