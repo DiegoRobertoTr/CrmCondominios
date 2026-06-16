@@ -1,9 +1,10 @@
 """
-Módulo de Relatórios de Condomínios para a DR Tracecom Suite Analítica.
+Módulo de Relatórios de Condomínios
 VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - Processamento de 300k+ registros em < 3 segundos
 - Análise temporal individual por condomínio selecionado
 - Dashboard de impacto de campanhas por condomínio específico
+- INTEGRAÇÃO COM MEUS ACOMPANHAMENTOS do módulo de prospecção
 """
 import streamlit as st
 import pandas as pd
@@ -78,6 +79,9 @@ def initialize_session_state():
         'ultimo_resultado_inadimplencia': None,
         'ultima_analise_temporal': None,
         'temporal_calculado': False,
+        # NOVO: Para integração com Meus Acompanhamentos
+        'meus_condominios_ids': None,
+        'meus_condominios_nomes': None,
     }
     
     for key, value in defaults.items():
@@ -90,6 +94,115 @@ def titulo_principal(texto):
 
 def subtitulo(texto):
     st.markdown(f"<h3 style='color: #34495e;'>{texto}</h3>", unsafe_allow_html=True)
+
+# ==================== FUNÇÕES DE INTEGRAÇÃO - MEUS ACOMPANHAMENTOS ====================
+
+def carregar_meus_condominios_prospeccao(db):
+    """
+    Carrega a lista de condomínios da aba 'Meus Acompanhamentos' do módulo de prospecção.
+    """
+    try:
+        # Buscar dados mais recentes da prospecção
+        meta = db["prospeccao_meta"].find_one(sort=[("timestamp", -1)])
+        if not meta:
+            return None, None
+        
+        batch_id = meta.get("batch_id")
+        cursor = db["prospeccao_condominios"].find(
+            {"_import_batch": batch_id},
+            {"_id": 0, "NOME": 1, "ACOMPANHAMENTO": 1, "CONSTRUTORA": 1, "BAIRRO": 1, "Região": 1}
+        )
+        
+        df_prospeccao = pd.DataFrame(list(cursor))
+        
+        if df_prospeccao.empty:
+            return None, None
+        
+        # Filtrar apenas os que têm responsável definido
+        df_com_responsavel = df_prospeccao[df_prospeccao["ACOMPANHAMENTO"].notna() & 
+                                           (df_prospeccao["ACOMPANHAMENTO"] != "")].copy()
+        
+        if df_com_responsavel.empty:
+            return None, None
+        
+        # Obter nome do usuário (da sessão do outro módulo ou input)
+        meu_nome = st.session_state.get("meu_nome_prospeccao", "Diego Roberto")
+        
+        # Filtrar apenas os meus condomínios
+        df_meus = df_com_responsavel[df_com_responsavel["ACOMPANHAMENTO"] == meu_nome].copy()
+        
+        if df_meus.empty:
+            return None, None
+        
+        # Extrair IDs e nomes para matching
+        meus_ids = set()
+        meus_nomes = set()
+        
+        for _, row in df_meus.iterrows():
+            nome = row.get("NOME", "")
+            if nome:
+                meus_nomes.add(nome.strip())
+        
+        return meus_nomes, df_meus
+        
+    except Exception as e:
+        print(f"Erro ao carregar meus condomínios: {e}")
+        return None, None
+
+def filtrar_condominios_meus(df_condominios, meus_nomes):
+    """
+    Filtra o DataFrame de condomínios para incluir apenas os que estão na lista de acompanhamento.
+    """
+    if df_condominios is None or df_condominios.empty:
+        return pd.DataFrame()
+    
+    if not meus_nomes:
+        return pd.DataFrame()
+    
+    # Normalizar nomes para comparação
+    df_condominios['nome_normalizado'] = df_condominios['Condomínio'].str.strip().str.upper()
+    meus_nomes_normalizados = {nome.strip().upper() for nome in meus_nomes}
+    
+    # Filtrar
+    df_filtrado = df_condominios[df_condominios['nome_normalizado'].isin(meus_nomes_normalizados)].copy()
+    
+    # Remover coluna auxiliar
+    if 'nome_normalizado' in df_filtrado.columns:
+        df_filtrado = df_filtrado.drop(columns=['nome_normalizado'])
+    
+    return df_filtrado
+
+def render_seletor_usuario():
+    """
+    Renderiza seletor de usuário para integração com Meus Acompanhamentos.
+    """
+    st.markdown("### 👤 Configuração de Usuário")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Nome do usuário (vem do módulo de prospecção ou input manual)
+        nome_atual = st.session_state.get("meu_nome_prospeccao", "Diego Roberto")
+        nome_usuario = st.text_input(
+            "Seu nome (como aparece na coluna 'Acompanhamento' da prospecção):",
+            value=nome_atual,
+            key="meu_nome_prospeccao_input",
+            help="Digite exatamente como está na planilha de prospecção"
+        )
+        
+        if nome_usuario != st.session_state.get("meu_nome_prospeccao"):
+            st.session_state.meu_nome_prospeccao = nome_usuario
+            # Resetar cache dos meus condomínios
+            st.session_state.meus_condominios_ids = None
+            st.session_state.meus_condominios_nomes = None
+    
+    with col2:
+        if st.button("🔄 Atualizar Lista de Meus Condomínios", key="btn_atualizar_meus", use_container_width=True):
+            st.session_state.meus_condominios_ids = None
+            st.session_state.meus_condominios_nomes = None
+            st.rerun()
+    
+    return nome_usuario
 
 # ==================== NOVA FUNÇÃO: ANÁLISE TEMPORAL POR CONDOMÍNIO ====================
 
@@ -906,6 +1019,15 @@ def criar_indices_mongodb(db):
         db["condominios_meta"].create_index([("timestamp", DESCENDING)])
         db["condominios_meta"].create_index([("batch_id", ASCENDING)])
         db["condominios_meta"].create_index([("module", ASCENDING)])
+        
+        # Índices para a coleção de prospecção (integração)
+        db["prospeccao_condominios"].create_index([("NOME", ASCENDING)])
+        db["prospeccao_condominios"].create_index([("ACOMPANHAMENTO", ASCENDING)])
+        db["prospeccao_condominios"].create_index([("_import_batch", ASCENDING)])
+        
+        # Índice para metadados da prospecção
+        db["prospeccao_meta"].create_index([("timestamp", DESCENDING)])
+        
     except Exception as e:
         print(f"⚠️ Aviso ao criar índices: {e}")
 
@@ -988,16 +1110,13 @@ def converter_dataframe_dates(df):
 
         if eh_data or pd.api.types.is_datetime64_any_dtype(df[col]):
             s = pd.to_datetime(df[col], errors='coerce')
-            # Remover timezone para o MongoDB não rejeitar
             if s.dt.tz is not None:
                 s = s.dt.tz_localize(None)
-            # Converter para array de objetos Python ANTES do where,
-            # para que NaT não seja reintroduzido pelo numpy ao avaliar o branch
-            py_dates = s.dt.to_pydatetime()          # ndarray de datetime objects (NaT sobrevive aqui)
-            mask_nat = s.isna().values                # bool array
-            result = np.empty(len(s), dtype=object)  # array object puro
-            result[:] = py_dates                     # copia valores (NaT fica como pd.NaT object)
-            result[mask_nat] = None                  # substitui NaT por None explicitamente
+            py_dates = s.dt.to_pydatetime()
+            mask_nat = s.isna().values
+            result = np.empty(len(s), dtype=object)
+            result[:] = py_dates
+            result[mask_nat] = None
             df[col] = result
 
     return df
@@ -1012,11 +1131,8 @@ def safe_mongo_docs(df):
 
     df = df.copy()
 
-    # 1. Substituir inf/-inf por NaN — vetorizado
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # 2. Converter colunas datetime64 remanescentes para python datetime sem timezone
-    #    (colunas já tratadas por converter_dataframe_dates serão dtype=object e pulam este loop)
     for col in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             s = df[col]
@@ -1029,10 +1145,8 @@ def safe_mongo_docs(df):
             result[mask_nat] = None
             df[col] = result
 
-    # 3. to_dict em lote
     records = df.to_dict('records')
 
-    # 4. Passe leve: tratar NaN residuais em floats e qualquer NaT/Timestamp que tenha escapado
     _NAT = pd.NaT
     safe_records = []
     for doc in records:
@@ -1045,7 +1159,6 @@ def safe_mongo_docs(df):
             elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 safe_doc[k] = None
             elif isinstance(v, pd.Timestamp):
-                # Timestamp residual — converter para datetime sem tz
                 try:
                     safe_doc[k] = v.to_pydatetime().replace(tzinfo=None)
                 except Exception:
@@ -1102,7 +1215,6 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
     batch_id = metadata["batch_id"]
     module = metadata.get("module", "condominios")
     
-    # Limpar apenas dados antigos deste módulo
     count_clientes_del = collection_clientes.delete_many({
         "_import_batch": {"$ne": batch_id},
         "module": module
@@ -1116,7 +1228,6 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
     if count_clientes_del > 0 or count_meta_del > 0:
         print(f"🧹 Limpeza: {count_clientes_del} clientes e {count_meta_del} metadados antigos removidos.")
     
-    # Preparar dados de clientes
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
     df_clientes_limpo["_import_batch"] = batch_id
@@ -1126,12 +1237,10 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
     docs = safe_mongo_docs(df_clientes_limpo)
     
     if docs:
-        # Inserção em lotes para evitar timeout e pressão de memória
         _BATCH = 5000
         for i in range(0, len(docs), _BATCH):
             collection_clientes.insert_many(docs[i:i + _BATCH], ordered=False)
     
-    # Preparar parcelas para o MongoDB
     if df_parcelas is not None and not df_parcelas.empty:
         df_parcelas_limpo = converter_dataframe_dates(df_parcelas)
         df_parcelas_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
@@ -1145,11 +1254,9 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
             for i in range(0, len(parcelas_docs), _BATCH):
                 collection_clientes.insert_many(parcelas_docs[i:i + _BATCH], ordered=False)
     
-    # Preparar condomínios para metadados
     condominios_records = safe_mongo_docs(df_condominios)
     metadata["condominios"] = condominios_records
     
-    # Salvar parcelas no metadado também
     if df_parcelas is not None and not df_parcelas.empty:
         metadata["has_parcelas"] = True
         metadata["total_parcelas"] = len(df_parcelas)
@@ -1179,8 +1286,6 @@ def carregar_dados_mais_recentes(db):
         source_file_id = meta.get('source_file_id')
         file_name = meta.get('filename', 'Arquivo carregado')
         
-        # Projeção: excluir apenas _id (MongoDB retorna tudo menos _id se projection={'_id': 0})
-        # Isso evita trazer campos de controle desnecessários para memória
         projection = {'_id': 0, '_import_timestamp': 0, '_import_batch': 0,
                       'source_file_id': 0, 'module': 0}
         
@@ -1189,7 +1294,6 @@ def carregar_dados_mais_recentes(db):
             projection
         )
         
-        # Ler em chunks para não explodir a memória de uma vez
         _CHUNK = 10000
         chunks = []
         buf = []
@@ -1210,7 +1314,6 @@ def carregar_dados_mais_recentes(db):
         if df_all.empty:
             return False
         
-        # Separar clientes de parcelas
         if 'CONDOMANIO' in df_all.columns:
             df_clientes = df_all[df_all['CONDOMANIO'].notna()].copy()
         else:
@@ -1285,11 +1388,9 @@ def processar_upload_condominios(db, uploaded_file):
     
     with st.spinner('🔄 Processando planilha...'):
         try:
-            # Ler as 3 abas
             df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
             df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
             
-            # Tentar ler a aba Base Parcelas (opcional)
             try:
                 df_parcelas = pd.read_excel(uploaded_file, sheet_name="Base Parcelas")
                 st.info(f"📋 Aba 'Base Parcelas' encontrada com {len(df_parcelas):,} registros")
@@ -1302,7 +1403,6 @@ def processar_upload_condominios(db, uploaded_file):
             if not df_parcelas.empty:
                 df_parcelas = df_parcelas.replace({pd.NaT: None, np.nan: None})
             
-            # Validar colunas obrigatórias
             colunas_faltantes_clientes = [
                 col for col in CONDOMINIOS_CONFIG['colunas_obrigatorias_clientes'] 
                 if col not in df_clientes.columns
@@ -1317,7 +1417,6 @@ def processar_upload_condominios(db, uploaded_file):
             if colunas_faltantes_condominios:
                 st.warning(f"⚠️ Colunas faltantes em Condominios: {colunas_faltantes_condominios}")
             
-            # Normalizar chaves
             if "CONDOMANIO" in df_clientes.columns:
                 df_clientes["CONDOMANIO"] = pd.to_numeric(
                     df_clientes["CONDOMANIO"], errors="coerce"
@@ -1333,7 +1432,6 @@ def processar_upload_condominios(db, uploaded_file):
                     df_condominios["Apartamentos"], errors="coerce"
                 ).fillna(0).astype(int)
             
-            # Normalizar ID nas parcelas
             if not df_parcelas.empty and "ID" in df_parcelas.columns:
                 df_parcelas["ID"] = pd.to_numeric(
                     df_parcelas["ID"], errors="coerce"
@@ -1409,10 +1507,8 @@ def gerar_dashboard_principal(df_clientes, df_condominios, modo_ativos="somente_
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["Apartamentos"] = pd.to_numeric(df_condominios["Apartamentos"], errors="coerce").fillna(0).astype(int)
     
-    # Classificação vetorizada
     df_clientes["status_classificacao"] = classificar_status_serie(df_clientes["STATUS ACESSO"])
     
-    # Agregação otimizada
     clientes_agg = df_clientes.groupby("CONDOMANIO").agg(
         total_clientes=("CONDOMANIO", "count"),
         ativos_puros=("status_classificacao", lambda x: (x == "Ativo").sum()),
@@ -1468,7 +1564,6 @@ def calcular_penetracao(df_clientes, df_condominios):
     df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
     df_condominios["ID"] = pd.to_numeric(df_condominios["ID"], errors="coerce").fillna(0).astype(int)
     
-    # Classificação vetorizada para identificar ativos
     df_clientes["status_classificacao"] = classificar_status_serie(df_clientes["STATUS ACESSO"])
     clientes_ativos = df_clientes[df_clientes["status_classificacao"] == "Ativo"]
     
@@ -1487,7 +1582,6 @@ def calcular_penetracao(df_clientes, df_condominios):
     df_merged["taxa_penetracao"] = (df_merged["clientes_ativos"] / df_merged["Apartamentos"].replace(0, np.nan) * 100).round(2)
     df_merged["Apartamentos"] = df_merged["Apartamentos"].fillna(0).astype(int)
     
-    # Classificação vetorizada de penetração — sem .apply
     taxa = df_merged["taxa_penetracao"]
     df_merged["classificacao"] = np.select(
         [taxa >= 50, taxa >= 25],
@@ -1510,7 +1604,6 @@ def analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desat
             ~df_clientes["STATUS ACESSO"].str.lower().str.contains("desativado|cancelado", na=False)
         ].copy()
     
-    # Classificação vetorizada — sem .apply por linha
     s = df_clientes["FINANCEIRO EM ATRASO"].fillna("").astype(str).str.strip().str.lower()
     _em_dia_vals = {"", "00/00/0000", "0", "nan", "nat", "none", "null"}
     df_clientes["situacao_inadimplencia"] = np.where(s.isin(_em_dia_vals), "Em Dia", "Em Atraso")
@@ -1837,6 +1930,245 @@ def preparar_dados_maturidade(df_clientes, df_condominios):
         lambda x: calcular_meses_cadastro(x, data_ref))
     
     return df_maturidade
+
+# ==================== NOVA FUNÇÃO: DASHBOARD MEUS ACOMPANHAMENTOS ====================
+
+def render_dashboard_meus_acompanhamentos(df_clientes, df_condominios, df_parcelas, meus_nomes, df_meus_prospeccao):
+    """
+    Renderiza dashboard completo com foco nos condomínios de acompanhamento.
+    """
+    st.subheader("⭐ Meus Condomínios - Acompanhamento Estratégico")
+    
+    if not meus_nomes or df_meus_prospeccao is None or df_meus_prospeccao.empty:
+        st.warning("⚠️ Nenhum condomínio encontrado em 'Meus Acompanhamentos'.")
+        st.info("💡 Certifique-se de que: 1) A planilha de prospecção foi importada, 2) Você preencheu seu nome na coluna 'Acompanhamento', 3) Seu nome está correto no campo acima.")
+        return
+    
+    # Filtrar condomínios do relatório que estão na lista de acompanhamento
+    df_condominios_filtrados = filtrar_condominios_meus(df_condominios, meus_nomes)
+    
+    if df_condominios_filtrados.empty:
+        st.warning("⚠️ Nenhum dos condomínios de 'Meus Acompanhamentos' foi encontrado na base de dados de relatórios.")
+        st.info("📌 Verifique se os nomes dos condomínios estão escritos exatamente iguais em ambas as planilhas.")
+        
+        # Mostrar os nomes esperados
+        with st.expander("📋 Ver lista de condomínios esperados"):
+            st.dataframe(df_meus_prospeccao[["NOME", "CONSTRUTORA", "BAIRRO", "Região"]], use_container_width=True)
+        return
+    
+    # Exibir informações de contexto
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🏢 Condomínios sob sua responsabilidade", len(df_meus_prospeccao))
+    with col2:
+        st.metric("📊 Encontrados no relatório", len(df_condominios_filtrados))
+    with col3:
+        st.metric("📅 Última atualização", datetime.now().strftime("%d/%m/%Y %H:%M"))
+    
+    st.markdown("---")
+    
+    # Dashboard resumido para os meus condomínios
+    dashboard_meus = gerar_dashboard_principal(df_clientes, df_condominios_filtrados, "somente_ativos")
+    
+    if not dashboard_meus.empty:
+        # Métricas rápidas
+        col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+        with col_m1:
+            total_ativos = dashboard_meus["Qtd Ativos"].sum()
+            st.metric("👥 Total Ativos", formatar_numero_br(total_ativos))
+        with col_m2:
+            total_atrasos = dashboard_meus["Total Atrasos"].sum()
+            st.metric("⚠️ Em Atraso", formatar_numero_br(total_atrasos))
+        with col_m3:
+            total_aptos = dashboard_meus["Total Apartamentos"].sum()
+            st.metric("🏢 Apartamentos", formatar_numero_br(total_aptos))
+        with col_m4:
+            media_penetracao = dashboard_meus["% Ativos (Penetração)"].mean()
+            st.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
+        with col_m5:
+            capacidade = dashboard_meus["% Capacidade de Exploração"].mean()
+            st.metric("🎯 Potencial Médio", f"{capacidade:.1f}%")
+        
+        st.markdown("---")
+        
+        # Tabela detalhada dos meus condomínios
+        st.subheader("📋 Detalhamento dos Meus Condomínios")
+        
+        # Adicionar coluna de origem (da prospecção)
+        df_prospeccao_info = df_meus_prospeccao[["NOME", "CONSTRUTORA", "BAIRRO", "Região"]].copy()
+        df_prospeccao_info = df_prospeccao_info.rename(columns={
+            "NOME": "Condomínio_Prospec",
+            "CONSTRUTORA": "Construtora",
+            "BAIRRO": "Bairro",
+            "Região": "Região_Prospec"
+        })
+        
+        # Fazer merge com o dashboard
+        dashboard_meus = dashboard_meus.merge(
+            df_prospeccao_info,
+            left_on="Condomínio",
+            right_on="Condomínio_Prospec",
+            how="left"
+        )
+        
+        # Reorganizar colunas
+        colunas_ordem = [
+            "Condomínio", "Construtora", "Bairro", "Região",
+            "Qtd Ativos", "% Ativos (Penetração)", 
+            "Total Atrasos", "% Atraso",
+            "% Capacidade de Exploração", "Total Apartamentos",
+            "Total Ocupados", "Ativos Puros", "Em Atraso", "Bloqueio Automático", "Desativados"
+        ]
+        colunas_existentes = [c for c in colunas_ordem if c in dashboard_meus.columns]
+        
+        st.dataframe(
+            dashboard_meus[colunas_existentes],
+            use_container_width=True,
+            height=400,
+            column_config={
+                "% Ativos (Penetração)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                "% Atraso": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                "Qtd Ativos": st.column_config.NumberColumn(format="%d"),
+                "Total Apartamentos": st.column_config.NumberColumn(format="%d"),
+                "Total Ocupados": st.column_config.NumberColumn(format="%d"),
+                "Ativos Puros": st.column_config.NumberColumn(format="%d"),
+                "Em Atraso": st.column_config.NumberColumn(format="%d"),
+                "Bloqueio Automático": st.column_config.NumberColumn(format="%d"),
+                "Desativados": st.column_config.NumberColumn(format="%d"),
+            }
+        )
+        
+        st.markdown("---")
+        
+        # Gráficos específicos dos meus condomínios
+        col_g1, col_g2 = st.columns(2)
+        
+        with col_g1:
+            # Top meus condomínios por penetração
+            fig_meus = px.bar(
+                dashboard_meus.sort_values("% Ativos (Penetração)", ascending=True).tail(10),
+                x="% Ativos (Penetração)",
+                y="Condomínio",
+                color="% Ativos (Penetração)",
+                color_continuous_scale="Viridis",
+                title="📊 Penetração dos Meus Condomínios",
+                orientation="h"
+            )
+            fig_meus.update_layout(height=400)
+            st.plotly_chart(fig_meus, use_container_width=True, config={'displayModeBar': False})
+        
+        with col_g2:
+            # Capacidade de exploração
+            fig_cap = px.bar(
+                dashboard_meus.sort_values("% Capacidade de Exploração", ascending=True).tail(10),
+                x="% Capacidade de Exploração",
+                y="Condomínio",
+                color="% Capacidade de Exploração",
+                color_continuous_scale="Oranges",
+                title="🎯 Potencial de Crescimento",
+                orientation="h"
+            )
+            fig_cap.update_layout(height=400)
+            st.plotly_chart(fig_cap, use_container_width=True, config={'displayModeBar': False})
+        
+        st.markdown("---")
+        
+        # Análise temporal apenas para os meus condomínios (se houver dados de data)
+        if df_condominios_filtrados is not None and not df_condominios_filtrados.empty:
+            st.subheader("📈 Evolução Temporal - Meus Condomínios")
+            
+            # Preparar dados para análise temporal agregada dos meus condomínios
+            df_clientes_temp = df_clientes.copy()
+            df_clientes_temp['CONDOMANIO'] = pd.to_numeric(df_clientes_temp['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
+            df_condominios_filtrados['ID'] = pd.to_numeric(df_condominios_filtrados['ID'], errors='coerce').fillna(0).astype(int)
+            
+            # IDs dos meus condomínios
+            meus_ids = set(df_condominios_filtrados['ID'].unique())
+            
+            # Filtrar clientes dos meus condomínios
+            clientes_meus = df_clientes_temp[df_clientes_temp['CONDOMANIO'].isin(meus_ids)].copy()
+            
+            if not clientes_meus.empty:
+                data_col = identificar_coluna_data(clientes_meus)
+                
+                if data_col:
+                    clientes_meus[data_col] = pd.to_datetime(clientes_meus[data_col], errors='coerce')
+                    clientes_meus = clientes_meus.dropna(subset=[data_col])
+                    
+                    if not clientes_meus.empty:
+                        clientes_meus['data_normalizada'] = clientes_meus[data_col].dt.date
+                        novos_por_dia = clientes_meus.groupby('data_normalizada').size().reset_index(name='novos_clientes')
+                        novos_por_dia = novos_por_dia.sort_values('data_normalizada')
+                        novos_por_dia['acumulado'] = novos_por_dia['novos_clientes'].cumsum()
+                        
+                        # Agregação mensal
+                        clientes_meus['ano_mes'] = clientes_meus[data_col].dt.to_period('M')
+                        novos_por_mes = clientes_meus.groupby('ano_mes').size().reset_index(name='novos_clientes')
+                        novos_por_mes['acumulado'] = novos_por_mes['novos_clientes'].cumsum()
+                        novos_por_mes['ano_mes_str'] = novos_por_mes['ano_mes'].astype(str)
+                        
+                        # Gráfico acumulado dos meus condomínios
+                        fig_meus_acum = px.line(
+                            novos_por_mes,
+                            x='ano_mes_str',
+                            y='acumulado',
+                            title=f'📈 Evolução de Clientes - Meus Condomínios (Total: {len(meus_ids)} condomínios)',
+                            labels={'ano_mes_str': 'Mês/Ano', 'acumulado': 'Total de Clientes'},
+                            markers=True
+                        )
+                        fig_meus_acum.update_traces(line=dict(color='#2ecc71', width=3))
+                        fig_meus_acum.update_layout(height=400)
+                        st.plotly_chart(fig_meus_acum, use_container_width=True, config={'displayModeBar': False})
+                        
+                        # Novos clientes por mês
+                        fig_meus_novos = px.bar(
+                            novos_por_mes,
+                            x='ano_mes_str',
+                            y='novos_clientes',
+                            title='📊 Novos Clientes por Mês',
+                            labels={'ano_mes_str': 'Mês/Ano', 'novos_clientes': 'Novos Clientes'},
+                            color='novos_clientes',
+                            color_continuous_scale='Viridis'
+                        )
+                        fig_meus_novos.update_layout(height=350)
+                        st.plotly_chart(fig_meus_novos, use_container_width=True, config={'displayModeBar': False})
+        
+        st.markdown("---")
+        
+        # Exportação específica dos meus condomínios
+        st.subheader("📎 Exportar Dados dos Meus Condomínios")
+        
+        col_exp1, col_exp2 = st.columns(2)
+        
+        with col_exp1:
+            output_meus = io.BytesIO()
+            with pd.ExcelWriter(output_meus, engine='openpyxl') as writer:
+                dashboard_meus.to_excel(writer, sheet_name='Meus_Condominios', index=False)
+                if df_meus_prospeccao is not None and not df_meus_prospeccao.empty:
+                    df_meus_prospeccao.to_excel(writer, sheet_name='Prospeccao_Referencia', index=False)
+            output_meus.seek(0)
+            
+            st.download_button(
+                "📥 Exportar Meus Condomínios",
+                output_meus,
+                f"meus_condominios_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        
+        with col_exp2:
+            st.info("💡 **Dica:** Esta exportação inclui todos os dados dos seus condomínios, incluindo as informações de prospecção.")
+        
+        # Mostrar lista de referência da prospecção
+        with st.expander("📋 Ver dados de referência da prospecção"):
+            st.dataframe(
+                df_meus_prospeccao[["NOME", "CONSTRUTORA", "BAIRRO", "Região", "ACOMPANHAMENTO", "FASE_CLASSIFICADA"]],
+                use_container_width=True
+            )
+    
+    else:
+        st.warning("⚠️ Não foi possível gerar o dashboard para os condomínios selecionados.")
 
 # ==================== INTERFACE DE UPLOAD ====================
 def upload_mode(db):
@@ -2187,11 +2519,12 @@ def exibir_dashboard_principal():
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
     
-    # Agora são 9 abas (a última é a nova análise temporal)
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    # Agora são 10 abas (nova: Meus Acompanhamentos)
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
         "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", 
         "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", 
-        "⏳ Maturidade", "🎯 Consulta de Crédito", "📈 Análise Temporal"
+        "⏳ Maturidade", "🎯 Consulta de Crédito", "📈 Análise Temporal",
+        "⭐ MEUS ACOMPANHAMENTOS"  # NOVA ABA
     ])
     
     # TAB 1: PENETRAÇÃO
@@ -2668,32 +3001,25 @@ def exibir_dashboard_principal():
             
             if filtros['aplicar_filtros']:
                 with st.spinner(f"🔄 Processando {len(df_parcelas):,} parcelas..."):
-                    # Criar hash para cache
-                    data_ref_str = filtros['data_referencia'].isoformat()
-                    
-                    # Hash leve: usa shape + hash do índice + nome do arquivo — evita .tobytes() em 300k linhas
                     def _df_fingerprint(df_):
                         return f"{df_.shape}_{df_.index[0] if len(df_) else 0}_{df_.index[-1] if len(df_) else 0}"
 
-                    # Usar função otimizada com cache
                     df_inad_periodo, df_clientes_inad, df_parcelas_vencidas = analisar_inadimplencia_periodo_otimizado(
                         _df_fingerprint(df_parcelas),
                         _df_fingerprint(df_clientes),
                         _df_fingerprint(df_condominios),
                         filtros['dias_atraso'],
-                        data_ref_str,
+                        filtros['data_referencia'].isoformat(),
                         df_parcelas.shape,
                         df_clientes.shape
                     )
                     
-                    # Armazenar resultado para uso na função de identificação
                     st.session_state.ultimo_resultado_inadimplencia = df_inad_periodo
                 
                 if df_inad_periodo.empty:
                     st.warning("⚠️ Nenhuma inadimplência encontrada com os critérios atuais.")
                     st.info("Tente ajustar os filtros para um período maior ou taxas menores.")
                 else:
-                    # Exibir resumo do período
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("📅 Dias de Atraso", f"{filtros['dias_atraso']} dias")
@@ -2708,7 +3034,6 @@ def exibir_dashboard_principal():
                     
                     st.markdown("---")
                     
-                    # Identificar condomínios aptos
                     df_aptos, df_top_oportunidades = identificar_condominios_aptos_consulta_flexivel_otimizado(
                         _df_fingerprint(df_inad_periodo),
                         filtros['taxa_minima'],
@@ -2718,10 +3043,8 @@ def exibir_dashboard_principal():
                         df_inad_periodo.shape
                     )
                     
-                    # Renderizar painel de aptos
                     render_painel_condominios_aptos(df_aptos, df_top_oportunidades)
                     
-                    # Mostrar detalhamento de parcelas vencidas do top 1
                     if not df_aptos.empty:
                         st.markdown("---")
                         st.subheader("📄 Detalhamento Adicional")
@@ -2770,9 +3093,63 @@ def exibir_dashboard_principal():
                 </div>
                 """, unsafe_allow_html=True)
     
-    # TAB 9: ANÁLISE TEMPORAL (NOVA FUNCIONALIDADE)
+    # TAB 9: ANÁLISE TEMPORAL
     with tab9:
         render_analise_temporal_condominio(df_clientes, df_condominios)
+    
+    # ==================== TAB 10: MEUS ACOMPANHAMENTOS (NOVA) ====================
+    with tab10:
+        st.markdown("""
+        <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
+        <strong>⭐ Meus Acompanhamentos - Integração com Prospecção</strong><br>
+        Esta aba exibe os condomínios que você está acompanhando no módulo de prospecção,
+        com todas as métricas e análises disponíveis nos relatórios.
+        <br><br>
+        <strong>📌 Como funciona:</strong>
+        <ol>
+            <li>Informe seu nome exatamente como aparece na coluna "Acompanhamento" da prospecção</li>
+            <li>O sistema busca automaticamente os condomínios sob sua responsabilidade</li>
+            <li>Exibe um dashboard completo com todas as métricas dos relatórios</li>
+            <li>Permite exportar dados específicos dos seus condomínios</li>
+        </ol>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Seletor de usuário
+        nome_usuario = render_seletor_usuario()
+        
+        # Carregar meus condomínios da prospecção
+        with st.spinner("🔄 Carregando seus condomínios da prospecção..."):
+            meus_nomes, df_meus_prospeccao = carregar_meus_condominios_prospeccao(db)
+            
+            if meus_nomes and df_meus_prospeccao is not None:
+                # Armazenar em sessão para uso em outras abas
+                st.session_state.meus_condominios_ids = meus_nomes
+                st.session_state.meus_condominios_nomes = df_meus_prospeccao
+                
+                # Renderizar dashboard completo
+                render_dashboard_meus_acompanhamentos(
+                    df_clientes, 
+                    df_condominios, 
+                    df_parcelas,
+                    meus_nomes, 
+                    df_meus_prospeccao
+                )
+            else:
+                st.warning("⚠️ Nenhum condomínio encontrado em 'Meus Acompanhamentos'.")
+                st.info("""
+                💡 **Para configurar:**
+                1. Certifique-se de que a planilha de prospecção foi importada no módulo **prospeccao_condominios.py**
+                2. A planilha deve ter uma coluna **'Acompanhamento'** com seu nome
+                3. Seu nome no campo acima deve ser **exatamente igual** ao da planilha
+                4. Clique em **"Atualizar Lista de Meus Condomínios"** após corrigir
+                """)
+                
+                # Botão para tentar recarregar
+                if st.button("🔄 Tentar recarregar novamente", use_container_width=True):
+                    st.session_state.meus_condominios_ids = None
+                    st.session_state.meus_condominios_nomes = None
+                    st.rerun()
 
 # ==================== FUNÇÃO PRINCIPAL ====================
 def render_relatorios_condominios():
@@ -2781,7 +3158,7 @@ def render_relatorios_condominios():
     initialize_session_state()
     
     titulo_principal("🏢 Relatórios Estratégicos - Condomínios")
-    st.markdown("Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, maturidade e análise temporal por condomínio")
+    st.markdown("Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, maturidade, análise temporal por condomínio e integração com Meus Acompanhamentos")
     
     db = init_mongo()
     
