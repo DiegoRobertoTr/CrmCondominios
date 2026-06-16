@@ -5,7 +5,7 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - Análise temporal individual por condomínio selecionado
 - Dashboard de impacto de campanhas por condomínio específico
 - INTEGRAÇÃO COM MEUS ACOMPANHAMENTOS do módulo de prospecção
-- ANÁLISE DE CRESCIMENTO INDIVIDUAL POR CONDOMÍNIO
+- ANÁLISE DE CRESCIMENTO INDIVIDUAL POR CONDOMÍNIO COM FILTRO POR MÚLTIPLAS FASES
 """
 import streamlit as st
 import pandas as pd
@@ -21,6 +21,7 @@ from urllib.parse import quote_plus
 import io
 import traceback
 import warnings
+import calendar
 import hashlib
 
 warnings.filterwarnings('ignore')
@@ -194,12 +195,13 @@ def render_seletor_usuario():
     
     return nome_usuario
 
-# ==================== NOVA FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
+# ==================== FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
 
 def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_prospeccao, data_inicio_padrao=None):
     """
     Análise de crescimento individual por condomínio
     Comparativo: Clientes em período inicial vs período final
+    Com filtro por múltiplas fases
     """
     st.subheader("📈 Crescimento Individual por Condomínio")
     
@@ -231,6 +233,7 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     # Preparar dados
     df_clientes_temp = df_clientes.copy()
     df_condominios_temp = df_condominios.copy()
+    df_meus_prospeccao_temp = df_meus_prospeccao.copy()
     
     # Normalizar IDs
     if 'CONDOMANIO' in df_clientes_temp.columns:
@@ -258,8 +261,43 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     df_clientes_temp['status_classificacao'] = classificar_status_serie(df_clientes_temp.get('STATUS ACESSO', pd.Series()))
     df_clientes_temp['is_active'] = df_clientes_temp['status_classificacao'] == 'Ativo'
     
-    # Lista de condomínios da prospecção
-    meus_nomes = set(df_meus_prospeccao['NOME'].str.strip().str.upper().unique())
+    # ========== FILTRO POR FASE (MÚLTIPLAS FASES) ==========
+    st.markdown("### 🎯 Filtro por Fase")
+    
+    # Lista de fases disponíveis nos meus condomínios
+    fases_disponiveis = sorted(df_meus_prospeccao_temp['FASE_CLASSIFICADA'].dropna().unique().tolist())
+    
+    # Se não houver fases, usar lista padrão
+    if not fases_disponiveis:
+        fases_disponiveis = [
+            "✅ Entramos", "💼 Em Negociação", "📢 Lançamento",
+            "🚧 Início de Obra", "🔨 Obra em Andamento", "🏁 Final de Obra",
+            "🎉 Entregue", "🏡 Pronto Para Morar", "📅 Futuro Lançamento", "❌ Não Entramos"
+        ]
+    
+    # Opção "Todas" como primeira opção
+    opcoes_fases = ["Todas"] + fases_disponiveis
+    
+    fases_selecionadas = st.multiselect(
+        "Selecione as fases que deseja analisar:",
+        options=opcoes_fases,
+        default=["Todas"],
+        key="fases_filter_crescimento",
+        help="Selecione uma ou mais fases. 'Todas' inclui todos os condomínios."
+    )
+    
+    # Filtrar por fases selecionadas
+    if "Todas" not in fases_selecionadas and fases_selecionadas:
+        df_meus_prospeccao_temp = df_meus_prospeccao_temp[df_meus_prospeccao_temp['FASE_CLASSIFICADA'].isin(fases_selecionadas)]
+        if df_meus_prospeccao_temp.empty:
+            st.warning(f"⚠️ Nenhum condomínio encontrado nas fases selecionadas: {', '.join(fases_selecionadas)}")
+            return
+        st.info(f"🎯 Filtrando condomínios nas fases: **{', '.join(fases_selecionadas)}**")
+    else:
+        st.info("🌍 Mostrando **todos** os condomínios (todas as fases)")
+    
+    # Lista de condomínios da prospecção (após filtro de fases)
+    meus_nomes = set(df_meus_prospeccao_temp['NOME'].str.strip().str.upper().unique())
     
     # Filtrar condomínios que estão na lista de acompanhamento
     df_condominios_temp['nome_normalizado'] = df_condominios_temp['Condomínio'].str.strip().str.upper()
@@ -278,57 +316,91 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        periodo_preset = st.selectbox(
-            "Período pré-definido:",
-            options=[
-                "Personalizado",
-                "Desde que assumi (Jun/2026)",
-                "Últimos 3 meses",
-                "Últimos 6 meses",
-                "Último ano",
-                "Últimos 2 anos",
-                "Todos os dados"
-            ],
-            index=1,
-            key="crescimento_periodo_preset"
-        )
-    
-    with col2:
-        if periodo_preset == "Personalizado":
-            col_data1, col_data2 = st.columns(2)
-            with col_data1:
-                data_inicio_date = st.date_input(
-                    "Data inicial:",
-                    value=data_inicio_padrao.date(),
-                    key="crescimento_data_inicio"
-                )
-            with col_data2:
-                data_fim_date = st.date_input(
-                    "Data final:",
-                    value=datetime.now().date(),
-                    key="crescimento_data_fim"
-                )
-            data_inicio = datetime.combine(data_inicio_date, datetime.min.time())
-            data_fim = datetime.combine(data_fim_date, datetime.min.time())
-        elif periodo_preset == "Desde que assumi (Jun/2026)":
-            data_inicio = data_inicio_padrao
-            data_fim = datetime.now().replace(tzinfo=None)
-            st.info(f"📅 Período: {data_inicio.strftime('%d/%m/%Y')} até {data_fim.strftime('%d/%m/%Y')}")
-        elif periodo_preset == "Últimos 3 meses":
-            data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=90)
-            data_fim = datetime.now().replace(tzinfo=None)
-        elif periodo_preset == "Últimos 6 meses":
-            data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=180)
-            data_fim = datetime.now().replace(tzinfo=None)
-        elif periodo_preset == "Último ano":
-            data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=365)
-            data_fim = datetime.now().replace(tzinfo=None)
-        elif periodo_preset == "Últimos 2 anos":
-            data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=730)
-            data_fim = datetime.now().replace(tzinfo=None)
+        usar_preset = st.checkbox("Usar período pré-definido", value=True, key="usar_preset_crescimento")
+        
+        if usar_preset:
+            periodo_preset = st.selectbox(
+                "Período:",
+                options=[
+                    "Junho/2026 até hoje",
+                    "Últimos 3 meses",
+                    "Últimos 6 meses",
+                    "Último ano",
+                    "Últimos 2 anos",
+                    "Todos os dados"
+                ],
+                index=0,
+                key="crescimento_periodo_preset"
+            )
+            
+            if periodo_preset == "Junho/2026 até hoje":
+                data_inicio = datetime(2026, 6, 1)
+                data_fim = datetime.now().replace(tzinfo=None)
+                st.info(f"📅 Período: {data_inicio.strftime('%B/%Y')} até {data_fim.strftime('%d/%m/%Y')}")
+            elif periodo_preset == "Últimos 3 meses":
+                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=90)
+                data_fim = datetime.now().replace(tzinfo=None)
+            elif periodo_preset == "Últimos 6 meses":
+                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=180)
+                data_fim = datetime.now().replace(tzinfo=None)
+            elif periodo_preset == "Último ano":
+                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=365)
+                data_fim = datetime.now().replace(tzinfo=None)
+            elif periodo_preset == "Últimos 2 anos":
+                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=730)
+                data_fim = datetime.now().replace(tzinfo=None)
+            else:  # Todos os dados
+                data_inicio = df_clientes_temp[data_col].min()
+                data_fim = datetime.now().replace(tzinfo=None)
         else:
-            data_inicio = df_clientes_temp[data_col].min()
-            data_fim = datetime.now().replace(tzinfo=None)
+            # Seleção personalizada com mês/ano
+            st.markdown("#### Data Inicial")
+            col_mes1, col_ano1 = st.columns(2)
+            with col_mes1:
+                mes_inicio = st.selectbox(
+                    "Mês",
+                    options=list(range(1, 13)),
+                    format_func=lambda x: ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                                           "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][x-1],
+                    index=5,  # Junho
+                    key="mes_inicio_cresc"
+                )
+            with col_ano1:
+                ano_inicio = st.number_input(
+                    "Ano",
+                    min_value=2020,
+                    max_value=2030,
+                    value=2026,
+                    key="ano_inicio_cresc",
+                    step=1
+                )
+            data_inicio = datetime(ano_inicio, mes_inicio, 1)
+            
+            st.markdown("#### Data Final")
+            col_mes2, col_ano2 = st.columns(2)
+            with col_mes2:
+                mes_fim = st.selectbox(
+                    "Mês",
+                    options=list(range(1, 13)),
+                    format_func=lambda x: ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                                           "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][x-1],
+                    index=datetime.now().month - 1,
+                    key="mes_fim_cresc"
+                )
+            with col_ano2:
+                ano_fim = st.number_input(
+                    "Ano",
+                    min_value=2020,
+                    max_value=2030,
+                    value=datetime.now().year,
+                    key="ano_fim_cresc",
+                    step=1
+                )
+            # Último dia do mês
+            ultimo_dia = calendar.monthrange(ano_fim, mes_fim)[1]
+            data_fim = datetime(ano_fim, mes_fim, ultimo_dia)
+            
+            st.info(f"📅 Período: {data_inicio.strftime('%B/%Y')} até {data_fim.strftime('%B/%Y')}")
     
     with col3:
         if st.button("🔄 Atualizar Análise", key="btn_atualizar_crescimento", use_container_width=True):
@@ -376,7 +448,7 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
                 status = "➡️ Estável"
             
             fase_prospec = "N/A"
-            info_prospec = df_meus_prospeccao[df_meus_prospeccao['NOME'].str.strip().str.upper() == cond_nome.upper()]
+            info_prospec = df_meus_prospeccao_temp[df_meus_prospeccao_temp['NOME'].str.strip().str.upper() == cond_nome.upper()]
             if not info_prospec.empty:
                 fase_prospec = info_prospec.iloc[0].get('FASE_CLASSIFICADA', 'N/A')
             
@@ -419,6 +491,10 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     with col_m4:
         st.metric("📊 Crescimento Total", f"{total_crescimento:+.0f} clientes", 
                   delta=f"{total_crescimento:+.0f}", delta_color="normal" if total_crescimento > 0 else "inverse")
+    
+    # Mostrar quais fases estão sendo analisadas
+    if "Todas" not in fases_selecionadas and fases_selecionadas:
+        st.info(f"🎯 Filtrando condomínios nas fases: **{', '.join(fases_selecionadas)}**")
     
     st.markdown("---")
     
@@ -2525,7 +2601,7 @@ def exibir_dashboard_principal(db=None):
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
     
-    # AGORA SÃO 11 ABAS (NOVA: CRESCIMENTO POR CONDOMÍNIO)
+    # 11 ABAS (incluindo a nova de Crescimento por Condomínio)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
         "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", 
         "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", 
@@ -3417,7 +3493,7 @@ def exibir_dashboard_principal(db=None):
         else:
             st.warning("⚠️ Conexão com banco de dados não disponível para carregar Meus Acompanhamentos.")
     
-    # TAB 11: CRESCIMENTO POR CONDOMÍNIO (NOVA)
+    # ==================== TAB 11: CRESCIMENTO POR CONDOMÍNIO ====================
     with tab11:
         if db is not None:
             # Buscar dados de meus condomínios para análise de crescimento
@@ -3454,7 +3530,7 @@ def render_relatorios_condominios():
     initialize_session_state()
     
     titulo_principal("🏢 Relatórios Estratégicos - Condomínios")
-    st.markdown("Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, maturidade, análise temporal por condomínio, integração com Meus Acompanhamentos e análise de crescimento individual")
+    st.markdown("Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, maturidade, análise temporal por condomínio, integração com Meus Acompanhamentos e análise de crescimento individual com filtro por múltiplas fases")
     
     db = init_mongo()
     
