@@ -833,6 +833,350 @@ def timeline_entregas(df_prospeccao):
     df_t["MES_ENTREGA"] = df_t["PREVISAO_ENTREGA"].dt.to_period('M')
     return df_t.sort_values("PREVISAO_ENTREGA")
 
+# ==================== NOVA FUNÇÃO: AGENDA DE ENTREGAS ====================
+@st.cache_data
+def agenda_entregas_mensal(df_prospeccao, ano=None):
+    """
+    Cria uma agenda mensal com quantidade de entregas por mês/ano
+    """
+    if "PREVISAO_ENTREGA" not in df_prospeccao.columns:
+        return pd.DataFrame()
+    
+    df_agenda = df_prospeccao.copy()
+    df_agenda["PREVISAO_ENTREGA"] = pd.to_datetime(df_agenda["PREVISAO_ENTREGA"], errors='coerce')
+    df_agenda = df_agenda[df_agenda["PREVISAO_ENTREGA"].notna()].copy()
+    
+    if df_agenda.empty:
+        return pd.DataFrame()
+    
+    # Criar colunas de ano e mês
+    df_agenda["ANO"] = df_agenda["PREVISAO_ENTREGA"].dt.year
+    df_agenda["MES"] = df_agenda["PREVISAO_ENTREGA"].dt.month
+    df_agenda["MES_NOME"] = df_agenda["PREVISAO_ENTREGA"].dt.strftime('%B')
+    
+    # Filtrar por ano se especificado
+    if ano:
+        df_agenda = df_agenda[df_agenda["ANO"] == ano]
+    
+    if df_agenda.empty:
+        return pd.DataFrame()
+    
+    # Agrupar por mês
+    agenda = df_agenda.groupby(["ANO", "MES", "MES_NOME"]).agg(
+        total_projetos=("NOME", "count"),
+        total_apartamentos=("APTO", lambda x: pd.to_numeric(x, errors='coerce').sum()),
+        projetos=("NOME", lambda x: list(x)),
+        construtoras=("CONSTRUTORA", lambda x: list(x.dropna().unique()))
+    ).reset_index()
+    
+    # Ordenar por mês
+    agenda = agenda.sort_values(["ANO", "MES"])
+    
+    return agenda
+
+def render_agenda_entregas(df_prospeccao):
+    """Renderiza a agenda visual de entregas"""
+    st.header("📅 Agenda de Entregas")
+    st.markdown("Visualize a distribuição de entregas de condomínios ao longo do ano.")
+    
+    # Obter anos disponíveis
+    df_temp = df_prospeccao.copy()
+    if "PREVISAO_ENTREGA" in df_temp.columns:
+        df_temp["PREVISAO_ENTREGA"] = pd.to_datetime(df_temp["PREVISAO_ENTREGA"], errors='coerce')
+        anos_disponiveis = sorted(df_temp["PREVISAO_ENTREGA"].dt.year.dropna().unique().astype(int))
+    else:
+        st.warning("⚠️ Sem dados de previsão de entrega")
+        return
+    
+    if not anos_disponiveis:
+        st.warning("⚠️ Nenhuma data de entrega disponível")
+        return
+    
+    # Seletor de ano
+    col_ano, col_extra = st.columns([2, 3])
+    with col_ano:
+        ano_selecionado = st.selectbox(
+            "📆 Selecione o ano:",
+            options=anos_disponiveis,
+            index=len(anos_disponiveis) - 1 if anos_disponiveis else 0,
+            key="agenda_ano"
+        )
+    
+    # Gerar agenda
+    agenda = agenda_entregas_mensal(df_prospeccao, ano_selecionado)
+    
+    if agenda.empty:
+        st.info(f"ℹ️ Nenhuma entrega prevista para {ano_selecionado}")
+        return
+    
+    # === VISUALIZAÇÃO 1: HEATMAP MENSAL ===
+    st.subheader(f"📊 Distribuição Mensal - {ano_selecionado}")
+    
+    # Criar DataFrame para heatmap (todos os meses)
+    meses_nomes = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 
+                   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+    
+    # Criar mapa de meses
+    mes_map = {i+1: nome for i, nome in enumerate(meses_nomes)}
+    agenda['MES_NOME'] = agenda['MES'].map(mes_map)
+    
+    # Preencher meses faltantes
+    meses_completos = pd.DataFrame({
+        'MES': list(range(1, 13)),
+        'MES_NOME': meses_nomes,
+        'ANO': ano_selecionado
+    })
+    
+    agenda_completa = meses_completos.merge(
+        agenda[['ANO', 'MES', 'MES_NOME', 'total_projetos', 'total_apartamentos']], 
+        on=['ANO', 'MES', 'MES_NOME'], 
+        how='left'
+    ).fillna(0)
+    
+    agenda_completa['total_projetos'] = agenda_completa['total_projetos'].astype(int)
+    agenda_completa['total_apartamentos'] = agenda_completa['total_apartamentos'].astype(int)
+    
+    # Heatmap com Plotly
+    col_h1, col_h2 = st.columns(2)
+    
+    with col_h1:
+        fig_heatmap = px.bar(
+            agenda_completa,
+            x='MES_NOME',
+            y='total_projetos',
+            title=f'🏗️ Projetos por Mês - {ano_selecionado}',
+            color='total_projetos',
+            color_continuous_scale='Viridis',
+            text='total_projetos'
+        )
+        fig_heatmap.update_traces(texttemplate='%{text}', textposition='outside')
+        fig_heatmap.update_layout(
+            height=400, 
+            xaxis_title='Mês', 
+            yaxis_title='Nº de Projetos',
+            xaxis={'categoryorder': 'array', 'categoryarray': meses_nomes}
+        )
+        st.plotly_chart(fig_heatmap, use_container_width=True)
+    
+    with col_h2:
+        fig_aptos = px.bar(
+            agenda_completa,
+            x='MES_NOME',
+            y='total_apartamentos',
+            title=f'🏠 Apartamentos por Mês - {ano_selecionado}',
+            color='total_apartamentos',
+            color_continuous_scale='Plasma',
+            text='total_apartamentos'
+        )
+        fig_aptos.update_traces(texttemplate='%{text}', textposition='outside')
+        fig_aptos.update_layout(
+            height=400, 
+            xaxis_title='Mês', 
+            yaxis_title='Nº de Apartamentos',
+            xaxis={'categoryorder': 'array', 'categoryarray': meses_nomes}
+        )
+        st.plotly_chart(fig_aptos, use_container_width=True)
+    
+    # === VISUALIZAÇÃO 2: CALENDÁRIO VISUAL MENSAL ===
+    st.subheader(f"📅 Calendário de Entregas - {ano_selecionado}")
+    
+    # Opção de visualização: por mês específico
+    col_mes, col_status = st.columns([2, 3])
+    with col_mes:
+        mes_selecionado = st.selectbox(
+            "📌 Selecione um mês para detalhar:",
+            options=list(range(1, 13)),
+            format_func=lambda x: meses_nomes[x-1],
+            key="agenda_mes_detalhe"
+        )
+    
+    # Filtrar projetos do mês selecionado
+    projetos_mes = df_prospeccao.copy()
+    projetos_mes["PREVISAO_ENTREGA"] = pd.to_datetime(projetos_mes["PREVISAO_ENTREGA"], errors='coerce')
+    projetos_mes = projetos_mes[projetos_mes["PREVISAO_ENTREGA"].notna()]
+    projetos_mes = projetos_mes[
+        (projetos_mes["PREVISAO_ENTREGA"].dt.year == ano_selecionado) &
+        (projetos_mes["PREVISAO_ENTREGA"].dt.month == mes_selecionado)
+    ]
+    
+    # Estatísticas do mês
+    with col_status:
+        if not projetos_mes.empty:
+            total_aptos_mes = pd.to_numeric(projetos_mes['APTO'], errors='coerce').sum()
+            st.metric(
+                f"📊 {meses_nomes[mes_selecionado-1]}", 
+                f"{len(projetos_mes)} projetos",
+                f"🏠 {int(total_aptos_mes)} APTs"
+            )
+        else:
+            st.info(f"ℹ️ Nenhum projeto em {meses_nomes[mes_selecionado-1]}")
+    
+    if not projetos_mes.empty:
+        st.markdown(f"#### 📋 Projetos com entrega em **{meses_nomes[mes_selecionado-1]}/{ano_selecionado}**")
+        
+        # Ordenar por data
+        projetos_mes = projetos_mes.sort_values("PREVISAO_ENTREGA")
+        
+        # Criar cards para cada projeto
+        col_cards1, col_cards2, col_cards3 = st.columns(3)
+        cols_cards = [col_cards1, col_cards2, col_cards3]
+        
+        for idx, (_, row) in enumerate(projetos_mes.head(15).iterrows()):
+            with cols_cards[idx % 3]:
+                dias_rest = row.get("DIAS_RESTANTES", 0)
+                if pd.notna(dias_rest):
+                    if dias_rest < 0:
+                        cor_status = "🔴"
+                        status_text = f"{abs(int(dias_rest))} dias atrasado"
+                    elif dias_rest < 30:
+                        cor_status = "🔴"
+                        status_text = f"{int(dias_rest)} dias"
+                    elif dias_rest < 60:
+                        cor_status = "🟠"
+                        status_text = f"{int(dias_rest)} dias"
+                    elif dias_rest < 90:
+                        cor_status = "🟡"
+                        status_text = f"{int(dias_rest)} dias"
+                    else:
+                        cor_status = "🟢"
+                        status_text = f"{int(dias_rest)} dias"
+                else:
+                    cor_status = "⚪"
+                    status_text = "?"
+                
+                fase = row.get("FASE_CLASSIFICADA", "")
+                cor_fase = "🟢" if "Entramos" in fase or "Negociação" in fase else "🔵" if "Lançamento" in fase else "🟠" if "Obra" in fase else "🟣"
+                
+                st.markdown(f"""
+                <div style="border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 5px 0; background: #f9f9f9;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <strong>🏢 {row['NOME']}</strong>
+                        <span style="font-size: 0.8em;">{cor_fase}</span>
+                    </div>
+                    <span style="color: #666; font-size: 0.9em;">{row.get('CONSTRUTORA', 'N/A')}</span><br>
+                    <span style="font-size: 0.9em;">📅 {row['PREVISAO_ENTREGA'].strftime('%d/%m/%Y')}</span><br>
+                    <span style="font-size: 0.9em;">{cor_status} {status_text}</span><br>
+                    <span style="font-size: 0.8em; color: #888;">🏠 {int(row.get('APTO', 0)) if pd.notna(row.get('APTO', 0)) else 0} APTs</span>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        if len(projetos_mes) > 15:
+            st.info(f"📌 Mostrando os 15 primeiros de {len(projetos_mes)} projetos. Use a aba 'Lista Completa' para ver todos.")
+        
+        # Tabela detalhada
+        with st.expander("📋 Ver todos os projetos do mês em tabela"):
+            cols_tab = ["NOME", "CONSTRUTORA", "BAIRRO", "PREVISAO_ENTREGA", "APTO", "DIAS_RESTANTES", "FASE_CLASSIFICADA"]
+            cols_exist = [c for c in cols_tab if c in projetos_mes.columns]
+            df_mes = projetos_mes[cols_exist].copy()
+            
+            if "PREVISAO_ENTREGA" in df_mes.columns:
+                df_mes["PREVISAO_ENTREGA"] = df_mes["PREVISAO_ENTREGA"].dt.strftime("%d/%m/%Y")
+            
+            if "DIAS_RESTANTES" in df_mes.columns:
+                df_mes["DIAS_RESTANTES"] = df_mes["DIAS_RESTANTES"].apply(
+                    lambda x: f"{int(x)} dias" if pd.notna(x) and x > 0 else 
+                              (f"🔴 {abs(int(x))} dias atrasado" if pd.notna(x) and x < 0 else "—")
+                )
+            
+            df_mes = df_mes.rename(columns={
+                "NOME": "Condomínio", "CONSTRUTORA": "Construtora", "BAIRRO": "Bairro",
+                "PREVISAO_ENTREGA": "Data Entrega", "APTO": "APTs", 
+                "DIAS_RESTANTES": "Prazo", "FASE_CLASSIFICADA": "Fase"
+            })
+            
+            st.dataframe(df_mes, use_container_width=True)
+    
+    # === VISUALIZAÇÃO 3: LINHA DO TEMPO MENSAL ===
+    st.subheader("📈 Evolução Mensal de Entregas")
+    
+    # Criar dados para linha do tempo
+    timeline_data = agenda_completa[agenda_completa['total_projetos'] > 0].copy()
+    if not timeline_data.empty:
+        fig_timeline = go.Figure()
+        
+        fig_timeline.add_trace(go.Scatter(
+            x=timeline_data['MES_NOME'],
+            y=timeline_data['total_projetos'],
+            mode='lines+markers+text',
+            name='Projetos',
+            text=timeline_data['total_projetos'],
+            textposition='top center',
+            line=dict(color='#2E86AB', width=3),
+            marker=dict(size=12, color='#2E86AB'),
+        ))
+        
+        fig_timeline.add_trace(go.Bar(
+            x=timeline_data['MES_NOME'],
+            y=timeline_data['total_apartamentos'],
+            name='Apartamentos',
+            marker_color='#A23B72',
+            yaxis='y2',
+            opacity=0.6
+        ))
+        
+        fig_timeline.update_layout(
+            title=f'Evolução de Entregas - {ano_selecionado}',
+            xaxis_title='Mês',
+            yaxis_title='Nº de Projetos',
+            xaxis={'categoryorder': 'array', 'categoryarray': meses_nomes},
+            yaxis2=dict(
+                title='Nº de Apartamentos',
+                overlaying='y',
+                side='right'
+            ),
+            height=400,
+            hovermode='x unified',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        )
+        
+        st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    # === VISUALIZAÇÃO 4: RESUMO EXECUTIVO DA AGENDA ===
+    st.subheader("📊 Resumo da Agenda")
+    
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+    
+    with col_r1:
+        total_projetos_ano = agenda['total_projetos'].sum()
+        st.metric("📦 Projetos no Ano", f"{int(total_projetos_ano)}")
+    
+    with col_r2:
+        total_aptos_ano = agenda['total_apartamentos'].sum()
+        st.metric("🏠 Apartamentos no Ano", f"{int(total_aptos_ano):,}".replace(",", "."))
+    
+    with col_r3:
+        meses_com_entrega = len(agenda[agenda['total_projetos'] > 0])
+        st.metric("📅 Meses com Entrega", f"{meses_com_entrega}/12")
+    
+    with col_r4:
+        if not agenda.empty and agenda['total_projetos'].max() > 0:
+            mes_mais_projetos = agenda.loc[agenda['total_projetos'].idxmax(), 'MES_NOME']
+            qtd_mais = agenda['total_projetos'].max()
+            st.metric("🏆 Mês com + Projetos", f"{mes_mais_projetos} ({int(qtd_mais)})")
+        else:
+            st.metric("🏆 Mês com + Projetos", "-")
+    
+    # Mostrar tabela resumo
+    with st.expander("📋 Tabela Resumo Mensal"):
+        df_resumo = agenda_completa[['MES_NOME', 'total_projetos', 'total_apartamentos']].copy()
+        df_resumo.columns = ['Mês', 'Projetos', 'Apartamentos']
+        df_resumo['Projetos'] = df_resumo['Projetos'].astype(int)
+        df_resumo['Apartamentos'] = df_resumo['Apartamentos'].astype(int)
+        st.dataframe(df_resumo, use_container_width=True)
+        
+        # Botão para exportar a agenda
+        excel_agenda = io.BytesIO()
+        with pd.ExcelWriter(excel_agenda, engine='openpyxl') as writer:
+            df_resumo.to_excel(writer, index=False, sheet_name=f'Agenda_{ano_selecionado}')
+        excel_agenda.seek(0)
+        st.download_button(
+            "📥 Baixar Agenda em Excel",
+            data=excel_agenda,
+            file_name=f"agenda_entregas_{ano_selecionado}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
 # ==================== EXPORTAÇÃO EXCEL (SISTEMA) ====================
 def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
     output = io.BytesIO()
@@ -1348,10 +1692,10 @@ def render_prospeccao_condominios():
                 progress_bar.empty()
 
     # ==================== ABAS PRINCIPAIS ====================
-    tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5, tab_meus = st.tabs([
+    tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5, tab_agenda, tab_meus = st.tabs([
         "✏️ Atualizar Empreendimentos", "➕ Novo Cadastro", "📊 Por Construtora",
         "🗺️ Por Região", "⏱️ Timeline", "🎯 Priorização", "📋 Lista Completa",
-        "⭐ MEUS ACOMPANHAMENTOS",
+        "📅 Agenda Entregas", "⭐ MEUS ACOMPANHAMENTOS",
     ])
 
     # --- ABA: ATUALIZAR EMPREENDIMENTOS ---
@@ -1693,6 +2037,10 @@ def render_prospeccao_condominios():
             - 11: Por Região
             """)
 
+    # ==================== NOVA ABA: AGENDA DE ENTREGAS ====================
+    with tab_agenda:
+        render_agenda_entregas(df_prospeccao)
+
     # ==================== ABA: MEUS ACOMPANHAMENTOS ====================
     with tab_meus:
         st.header("⭐ Meus Condomínios sob Acompanhamento")
@@ -1816,6 +2164,7 @@ def render_prospeccao_condominios():
     - Use **✏️ Atualizar Empreendimentos** para corrigir fases ou adicionar observações.
     - A fase **✅ Entramos** tem alta prioridade (🟢 Ação Imediata).
     - A fase **🎉 Entregue** identifica projetos concluídos.
+    - **📅 Agenda Entregas:** Visualize a distribuição de entregas por mês e ano!
     - **NOVO:** Use o filtro na **barra lateral** para ver apenas os condomínios sob sua responsabilidade!
     - **NOVO:** A aba **⭐ MEUS ACOMPANHAMENTOS** mostra um dashboard personalizado com seus condomínios.
     - **NOVO:** O sistema envia **alertas automáticos por email** quando um prazo de entrega está próximo (90, 60, 30, 14, 7, 3, 1 dia ou atrasado)!
