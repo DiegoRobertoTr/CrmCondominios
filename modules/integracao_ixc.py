@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO COMPLETA E ATUALIZADA
+# modules/integracao_ixc.py - VERSÃO CORRIGIDA (baseada no teste R6P01)
 import requests
 import re
 import base64
@@ -79,145 +79,6 @@ def validar_cpf(cpf: str) -> bool:
     return int(cpf[10]) == digito2
 
 # ============================================================================
-# BUSCAR ID DA CIDADE/UF NO IXC
-# ============================================================================
-def _buscar_id_cidade(host_limpo: str, auth_string: str, cidade_nome: str, uf_sigla: str) -> tuple:
-    """Busca os IDs numericos de cidade e UF no IXC. Fallback para RJ."""
-    id_cidade = ID_CIDADE_RJ
-    id_uf = ID_UF_RJ
-    try:
-        h = {
-            "Authorization": f"Basic {auth_string}",
-            "ixcsoft": "listar",
-            "Content-Type": "application/json"
-        }
-        r = requests.post(
-            f"https://{host_limpo}/webservice/v1/cidade",
-            json={
-                "qtype": "cidade.nome",
-                "query": cidade_nome,
-                "oper": "=",
-                "page": "1",
-                "rp": "10"
-            },
-            headers=h,
-            timeout=10,
-            verify=False
-        )
-        if r.status_code == 200:
-            rj = r.json()
-            regs = rj.get("registros") or rj.get("data") or []
-            if regs:
-                match = next((x for x in regs if str(x.get("uf", "")).upper() == uf_sigla.upper()), regs[0])
-                id_cidade = str(match.get("id", id_cidade))
-                id_uf = str(match.get("uf", id_uf))
-    except Exception as e:
-        print(f"⚠️ Não foi possível buscar ID da cidade '{cidade_nome}': {e} — usando fallback RJ")
-    return id_cidade, id_uf
-
-# ============================================================================
-# BUSCAR CLIENTE POR CPF NO IXC
-# ============================================================================
-def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
-    """Busca cliente no IXC pelo CPF."""
-    cpf_digits = "".join(filter(str.isdigit, str(cpf)))
-    if not cpf_digits or len(cpf_digits) < 11:
-        return None
-
-    cpf_fmt = fmt_cpf(cpf_digits)
-    host_limpo = _sanitizar_host(config["host"])
-    url = f"https://{host_limpo}/webservice/v1/cliente"
-    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "listar"
-    }
-    
-    try:
-        for cpf_query in [cpf_fmt, cpf_digits]:
-            payload = {
-                "qtype": "cliente.cnpj_cpf",
-                "query": cpf_query,
-                "oper": "=",
-                "page": "1",
-                "rp": "1"
-            }
-            response = requests.post(url, json=payload, headers=headers, timeout=15, verify=False)
-            
-            if response.status_code == 200:
-                dados = response.json()
-                regs = dados.get("registros") or dados.get("data") or []
-                if regs:
-                    return str(regs[0].get("id"))
-        return None
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar cliente: {e}")
-        return None
-
-# ============================================================================
-# BUSCAR DADOS COMPLETOS DO CLIENTE NO IXC
-# ============================================================================
-def buscar_dados_cliente_ixc(id_ixc: str, config: Dict) -> Optional[Dict]:
-    """
-    Busca os dados atuais de um cliente no IXC para comparação.
-    """
-    host_limpo = _sanitizar_host(config["host"])
-    url = f"https://{host_limpo}/webservice/v1/cliente/{id_ixc}"
-    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
-    
-    headers = {
-        "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "listar"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=15, verify=False)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar dados do cliente IXC: {e}")
-        return None
-
-# ============================================================================
-# VERIFICAR SE CLIENTE EXISTE NO IXC
-# ============================================================================
-def verificar_cliente_existente_ixc(cpf: str, config: Dict) -> Dict:
-    """
-    Verifica se um cliente com este CPF já existe no IXC.
-    Retorna dados completos para exibição.
-    """
-    resultado = {
-        "existe": False,
-        "id_ixc": None,
-        "dados": None,
-        "erro": None
-    }
-    
-    if not cpf or not config:
-        return resultado
-    
-    try:
-        # Buscar ID no IXC
-        id_ixc = buscar_cliente_ixc_por_cpf(cpf, config)
-        if id_ixc:
-            resultado["existe"] = True
-            resultado["id_ixc"] = id_ixc
-            
-            # Buscar dados completos
-            dados = buscar_dados_cliente_ixc(id_ixc, config)
-            if dados:
-                resultado["dados"] = dados
-                
-    except Exception as e:
-        resultado["erro"] = str(e)
-        print(f"⚠️ Erro ao verificar cliente no IXC: {e}")
-    
-    return resultado
-
-# ============================================================================
 # CONSTRUÇÃO DO PAYLOAD - VERSÃO CORRIGIDA (baseada no R6P01)
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
@@ -234,7 +95,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     cpf = fmt_cpf(cpf_digits)
     
     if not validar_cpf(cpf_digits):
-        return {}, f"CPF inválido: '{cpf_raw}'. Verifique os dígitos."
+        return {}, f"CPF inválido: '{cpf_raw}'"
 
     # Nome
     nome = safe(cliente_data.get("nome_completo"))
@@ -265,16 +126,13 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     endereco = safe(cliente_data.get("endereco"))
     numero = safe(cliente_data.get("numero"))
     bairro = safe(cliente_data.get("bairro"))
-    complemento = safe(cliente_data.get("complemento"))
     
     # Cidade e UF - SEMPRE usar IDs numéricos (como no R6P01)
-    cidade_nome = safe(cliente_data.get("cidade", "Rio de Janeiro"))
-    uf_sigla = safe(cliente_data.get("uf", "RJ")).upper()
-    
-    # Buscar IDs de cidade e UF
-    host_limpo = _sanitizar_host(config["host"])
-    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
-    cidade_id, uf_id = _buscar_id_cidade(host_limpo, auth_string, cidade_nome, uf_sigla)
+    cidade_id = ID_CIDADE_RJ  # 3241
+    uf_id = ID_UF_RJ          # 24
+
+    # Complemento
+    complemento = safe(cliente_data.get("complemento"))
 
     # ========== 3. CONDOMÍNIO ==========
     id_condominio_ixc = None
@@ -351,8 +209,8 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "endereco": endereco if endereco else "Rua Conde de Bonfim",
         "numero": numero if numero else "255",
         "bairro": bairro if bairro else "Tijuca",
-        "cidade": cidade_id,  # ID numérico, não texto!
-        "uf": uf_id,          # ID numérico, não texto!
+        "cidade": cidade_id,  # 3241 (ID, não texto!)
+        "uf": uf_id,          # 24 (ID, não texto!)
         "tipo_localidade": "U",
         
         # Acesso
@@ -377,10 +235,6 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "obs": safe(cliente_data.get("observacoes", f"Cadastro CRM - {datetime.now().strftime('%d/%m/%Y')}"))
     }
 
-    # Adicionar complemento se existir
-    if complemento:
-        payload["complemento"] = complemento
-
     # ========== 6. ADICIONAR CONDOMÍNIO SE TIVER ==========
     if id_condominio_ixc:
         payload["id_condominio"] = id_condominio_ixc
@@ -395,13 +249,52 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     return payload, None
 
 # ============================================================================
-# FUNÇÃO PRINCIPAL - ENVIAR CLIENTE PARA IXC
+# BUSCAR CLIENTE POR CPF
+# ============================================================================
+def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
+    """Busca cliente no IXC pelo CPF."""
+    cpf_digits = "".join(filter(str.isdigit, str(cpf)))
+    if not cpf_digits or len(cpf_digits) < 11:
+        return None
+
+    cpf_fmt = fmt_cpf(cpf_digits)
+    host_limpo = _sanitizar_host(config["host"])
+    url = f"https://{host_limpo}/webservice/v1/cliente"
+    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Basic {auth_string}",
+        "ixcsoft": "listar"
+    }
+    
+    try:
+        for cpf_query in [cpf_fmt, cpf_digits]:
+            payload = {
+                "qtype": "cliente.cnpj_cpf",
+                "query": cpf_query,
+                "oper": "=",
+                "page": "1",
+                "rp": "1"
+            }
+            response = requests.post(url, json=payload, headers=headers, timeout=15, verify=False)
+            
+            if response.status_code == 200:
+                dados = response.json()
+                regs = dados.get("registros") or dados.get("data") or []
+                if regs:
+                    return str(regs[0].get("id"))
+        return None
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar cliente: {e}")
+        return None
+
+# ============================================================================
+# FUNÇÃO PRINCIPAL - ENVIAR CLIENTE
 # ============================================================================
 def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Envia cliente para o IXC usando o formato que funcionou no teste R6P01.
-    
-    Retorna: (sucesso, id_ixc, mensagem_erro)
     """
     print("\n" + "=" * 70)
     print("🚀 ENVIANDO CLIENTE PARA IXC (formato R6P01)")
@@ -411,17 +304,15 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     if not config:
         return False, None, "Configuração do IXC não encontrada"
 
-    # ========== VERIFICAR SE CLIENTE JÁ EXISTE ==========
+    # Verifica se cliente já existe
     cpf = cliente_data.get("cpf", "")
     if cpf and len("".join(filter(str.isdigit, str(cpf)))) >= 11:
-        print(f"🔍 Verificando se CPF {cpf} já existe no IXC...")
         id_existente = buscar_cliente_ixc_por_cpf(cpf, config)
         if id_existente:
-            print(f"✅ Cliente já existe no IXC com ID: {id_existente}")
-            # Retorna sucesso com o ID existente, NÃO atualiza o IXC
+            print(f"✅ Cliente já existe no IXC (ID: {id_existente})")
             return True, id_existente, None
 
-    # ========== CONSTRUIR PAYLOAD ==========
+    # Constrói payload
     payload, erro = construir_payload_ixc(cliente_data, config)
     if erro:
         return False, None, erro
@@ -432,7 +323,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
         payload_log["cnpj_cpf"] = "***" + payload_log["cnpj_cpf"][-4:]
     print(f"📤 Payload: {json.dumps(payload_log, indent=2, ensure_ascii=False)}")
 
-    # ========== ENVIAR PARA O IXC ==========
+    # Envia para o IXC
     host_limpo = _sanitizar_host(config["host"])
     url = f"https://{host_limpo}/webservice/v1/cliente"
     auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
@@ -475,12 +366,12 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     except requests.exceptions.Timeout:
         return False, None, "Timeout na conexão com o IXC"
     except requests.exceptions.ConnectionError:
-        return False, None, "Erro de conexão: IXC inacessível. Verifique IP liberado e Webservice ativo."
+        return False, None, "Erro de conexão: IXC inacessível"
     except Exception as e:
         return False, None, str(e)
 
 # ============================================================================
-# REGISTRAR PENDÊNCIA DE INTEGRAÇÃO
+# REGISTRAR PENDÊNCIA
 # ============================================================================
 def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
     """Registra cliente para sincronização posterior."""
@@ -535,32 +426,3 @@ def testar_conexao_ixc() -> Dict:
             
     except Exception as e:
         return {"sucesso": False, "erro": str(e)}
-
-# ============================================================================
-# PAINEL DE ADMIN - TESTE DE CONEXÃO
-# ============================================================================
-def render_teste_conexao():
-    """Renderiza um painel de teste de conexão com o IXC (para usar no admin)."""
-    st.subheader("🔌 Teste de Conexão com IXCsoft")
-    
-    if st.button("🧪 Testar Conexão", key="testar_ixc"):
-        with st.spinner("Testando conexão..."):
-            resultado = testar_conexao_ixc()
-            
-            if resultado["sucesso"]:
-                st.success("🎉 Conexão com IXC funcionando corretamente!")
-                st.json(resultado)
-            else:
-                st.error(f"❌ Falha na conexão: {resultado.get('erro', 'Erro desconhecido')}")
-                st.info("""
-                **Possíveis causas:**
-                1. O host do IXC não está acessível publicamente
-                2. O token está inválido ou expirado
-                3. Firewall bloqueando a conexão
-                4. O Streamlit Cloud não consegue acessar sua rede interna
-                
-                **Soluções:**
-                - Verifique se o IXC está exposto na internet
-                - Considere usar um Proxy ou VPN
-                - Entre em contato com o suporte do IXC
-                """)
