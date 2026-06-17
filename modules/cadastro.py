@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM BOTÃO AMARELO PARA IXC EXISTENTE)
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM CORREÇÃO DO CONDOMÍNIO)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -35,6 +35,24 @@ def safe_session_state_set(key, value):
         st.session_state[key] = ""
     else:
         st.session_state[key] = value
+
+def obter_dados_condominio(suffix):
+    """
+    Obtém todos os dados do condomínio do session_state.
+    Retorna um dicionário com todos os campos.
+    """
+    return {
+        "condominio_id": safe_session_state_get(f"condominio_id_{suffix}"),
+        "condominio_nome": safe_session_state_get(f"condominio_nome_{suffix}"),
+        "bloco": safe_session_state_get(f"bloco_{suffix}"),
+        "apartamento": safe_session_state_get(f"apartamento_{suffix}"),
+        "endereco": safe_session_state_get(f"endereco_{suffix}"),
+        "numero": safe_session_state_get(f"numero_{suffix}"),
+        "bairro": safe_session_state_get(f"bairro_{suffix}"),
+        "cidade": safe_session_state_get(f"cidade_{suffix}"),
+        "cep": safe_session_state_get(f"cep_{suffix}"),
+    }
+
 
 # ============================================================================
 # 🏢 CONDOMÍNIO - Import Correto
@@ -121,12 +139,12 @@ def garantir_indices(clientes_collection):
         return False
 
 # ============================================================================
-# ✅ ATUALIZAR ENDEREÇO E CEP POR CONDOMÍNIO
+# ✅ ATUALIZAR ENDEREÇO E CEP POR CONDOMÍNIO - VERSÃO CORRIGIDA
 # ============================================================================
 def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_options):
     """
     Atualiza o session_state com dados do condomínio selecionado.
-    Agora inclui CEP também.
+    Agora inclui CEP, bloco e apartamento também.
     """
     cond_id = condominio_options.get(condominio_nome)
     if cond_id:
@@ -137,8 +155,14 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             safe_session_state_set(f"bairro_{suffix}", cond_data.get("bairro", ""))
             safe_session_state_set(f"cidade_{suffix}", cond_data.get("cidade", ""))
             safe_session_state_set(f"cep_{suffix}", cond_data.get("cep", ""))
-            safe_session_state_set(f"condominio_id_{suffix}", cond_id)
+            safe_session_state_set(f"condominio_id_{suffix}", str(cond_id))
             safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
+            
+            # 👇 NOVO: Salvar bloco e apartamento padrão se existirem
+            if cond_data.get("bloco_padrao"):
+                safe_session_state_set(f"bloco_{suffix}", cond_data.get("bloco_padrao", ""))
+            if cond_data.get("apartamento_padrao"):
+                safe_session_state_set(f"apartamento_{suffix}", cond_data.get("apartamento_padrao", ""))
 
 # ============================================================================
 # ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO ATUALIZADA
@@ -1401,6 +1425,7 @@ def render_cadastro(clientes_collection):
             key=f"condominio_select_novo_{st.session_state['form_key']}"
         )
         
+        # 👇 CRÍTICO: Atualizar session_state com os dados do condomínio
         if condominio_select and condominio_select != "Nenhum / Não se aplica":
             atualizar_endereco_por_condominio(condominio_select, st.session_state['form_key'], condominio_options)
 
@@ -1528,9 +1553,19 @@ def render_cadastro(clientes_collection):
 
                 col_bloco, col_apto = st.columns(2)
                 with col_bloco:
-                    bloco = st.text_input("Bloco", value="", key=f"bloco_{st.session_state['form_key']}")
+                    # 👇 CRÍTICO: Usar session_state para bloco
+                    bloco = st.text_input(
+                        "Bloco", 
+                        value=safe_session_state_get(f"bloco_{st.session_state['form_key']}", ""),
+                        key=f"bloco_{st.session_state['form_key']}"
+                    )
                 with col_apto:
-                    apartamento = st.text_input("Apartamento", value="", key=f"apartamento_{st.session_state['form_key']}")
+                    # 👇 CRÍTICO: Usar session_state para apartamento
+                    apartamento = st.text_input(
+                        "Apartamento", 
+                        value=safe_session_state_get(f"apartamento_{st.session_state['form_key']}", ""),
+                        key=f"apartamento_{st.session_state['form_key']}"
+                    )
 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1666,8 +1701,8 @@ def render_cadastro(clientes_collection):
                 tipo_moradia = ""
                 tempo_moradia_valor = 0
                 tempo_moradia_unidade = "Anos"
-                bloco = ""
-                apartamento = ""
+                bloco = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
+                apartamento = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
 
             # ================== BOTÕES DE GERAÇÃO DE DOCUMENTOS ==================
             col1, col2 = st.columns(2)
@@ -1801,8 +1836,7 @@ def render_cadastro(clientes_collection):
                         cliente_existe_ixc = True
                         id_ixc_existente = resultado_ixc.get("id_ixc")
                         
-                        # Renderizar aviso e capturar resultado
-                        acao = render_aviso_cliente_existente_ixc(
+                        # Renderizar aviso e capturar resultado                        acao = render_aviso_cliente_existente_ixc(
                             {"cpf": cpf_digits}, 
                             config, 
                             str(st.session_state['form_key'])
@@ -1942,6 +1976,16 @@ def render_cadastro(clientes_collection):
                     temp_ponto_ref = st.session_state.get(f"ponto_referencia_{st.session_state['form_key']}")
                     ponto_ref_salvo = temp_ponto_ref.strip() if temp_ponto_ref else ""
 
+                    # ========== 👇 CRÍTICO: OBTER DADOS DO CONDOMÍNIO CORRETAMENTE ==========
+                    dados_cond = obter_dados_condominio(st.session_state['form_key'])
+                    
+                    # Log para debug
+                    print(f"🔍 DEBUG - Dados do condomínio salvos:")
+                    print(f"   condominio_id: {dados_cond['condominio_id']}")
+                    print(f"   condominio_nome: {dados_cond['condominio_nome']}")
+                    print(f"   bloco: {dados_cond['bloco']}")
+                    print(f"   apartamento: {dados_cond['apartamento']}")
+
                     cliente_data = {
                         "nome_completo": nome_completo,
                         "celular": celular_normalizado,
@@ -1990,10 +2034,11 @@ def render_cadastro(clientes_collection):
                         "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                         "endereco_bloqueado": False,
                         "observacoes_bloqueio_endereco": None,
-                        "condominio_id": safe_session_state_get(f"condominio_id_{st.session_state['form_key']}"),
-                        "condominio_nome": safe_session_state_get(f"condominio_nome_{st.session_state['form_key']}"),
-                        "bloco": bloco if bloco else None,
-                        "apartamento": apartamento if apartamento else None,
+                        # 👇 CRÍTICO: USAR OS DADOS OBTIDOS DA FUNÇÃO
+                        "condominio_id": dados_cond["condominio_id"],
+                        "condominio_nome": dados_cond["condominio_nome"],
+                        "bloco": dados_cond["bloco"],
+                        "apartamento": dados_cond["apartamento"],
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         "integrado_ixc": False,
                         "tentativas_integracao": 0,
