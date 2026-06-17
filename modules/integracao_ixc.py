@@ -1,4 +1,4 @@
-# modules/integracao_ixc.py - VERSÃO COMPLETA E ATUALIZADA
+# modules/integracao_ixc.py - CORREÇÃO PARA BUSCA DE DADOS
 import requests
 import re
 import base64
@@ -157,37 +157,54 @@ def buscar_cliente_ixc_por_cpf(cpf: str, config: Dict) -> Optional[str]:
         return None
 
 # ============================================================================
-# BUSCAR DADOS COMPLETOS DO CLIENTE NO IXC
+# BUSCAR DADOS DO CLIENTE NO IXC - CORRIGIDA
 # ============================================================================
 def buscar_dados_cliente_ixc(id_ixc: str, config: Dict) -> Optional[Dict]:
     """
-    Busca os dados atuais de um cliente no IXC para comparação.
+    Busca os dados atuais de um cliente no IXC.
+    CORRIGIDO: Usa POST com qtype ao invés de GET.
     """
+    if not id_ixc:
+        return None
+        
     host_limpo = _sanitizar_host(config["host"])
-    url = f"https://{host_limpo}/webservice/v1/cliente/{id_ixc}"
+    url = f"https://{host_limpo}/webservice/v1/cliente"
     auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
     
     headers = {
+        "Content-Type": "application/json",
         "Authorization": f"Basic {auth_string}",
         "ixcsoft": "listar"
     }
     
+    # Usa POST com filtro pelo ID (mesmo método que funciona para listar)
+    payload = {
+        "qtype": "cliente.id",
+        "query": id_ixc,
+        "oper": "=",
+        "page": "1",
+        "rp": "1"
+    }
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15, verify=False)
+        response = requests.post(url, json=payload, headers=headers, timeout=15, verify=False)
         if response.status_code == 200:
-            return response.json()
+            dados = response.json()
+            regs = dados.get("registros") or dados.get("data") or []
+            if regs:
+                return regs[0]
         return None
     except Exception as e:
         print(f"⚠️ Erro ao buscar dados do cliente IXC: {e}")
         return None
 
 # ============================================================================
-# VERIFICAR SE CLIENTE EXISTE NO IXC
+# VERIFICAR SE CLIENTE EXISTE NO IXC - VERSÃO SIMPLIFICADA
 # ============================================================================
 def verificar_cliente_existente_ixc(cpf: str, config: Dict) -> Dict:
     """
     Verifica se um cliente com este CPF já existe no IXC.
-    Retorna dados completos para exibição.
+    Retorna apenas ID e dados básicos (rápido).
     """
     resultado = {
         "existe": False,
@@ -206,10 +223,32 @@ def verificar_cliente_existente_ixc(cpf: str, config: Dict) -> Dict:
             resultado["existe"] = True
             resultado["id_ixc"] = id_ixc
             
-            # Buscar dados completos
-            dados = buscar_dados_cliente_ixc(id_ixc, config)
-            if dados:
-                resultado["dados"] = dados
+            # Buscar dados básicos (rápido - apenas para mostrar nome e telefone)
+            try:
+                dados = buscar_dados_cliente_ixc(id_ixc, config)
+                if dados:
+                    # Extrai apenas campos essenciais para comparação
+                    resultado["dados"] = {
+                        "id": dados.get("id"),
+                        "razao": dados.get("razao"),
+                        "nome_social": dados.get("nome_social"),
+                        "cnpj_cpf": dados.get("cnpj_cpf"),
+                        "email": dados.get("email"),
+                        "fone": dados.get("fone"),
+                        "endereco": dados.get("endereco"),
+                        "numero": dados.get("numero"),
+                        "bairro": dados.get("bairro"),
+                        "cidade": dados.get("cidade"),
+                        "uf": dados.get("uf"),
+                        "cep": dados.get("cep"),
+                        "ativo": dados.get("ativo"),
+                        "id_condominio": dados.get("id_condominio"),
+                        "bloco": dados.get("bloco"),
+                        "apartamento": dados.get("apartamento"),
+                    }
+            except Exception as e:
+                print(f"⚠️ Erro ao buscar dados detalhados: {e}")
+                # Mesmo sem dados detalhados, já sabemos que o cliente existe
                 
     except Exception as e:
         resultado["erro"] = str(e)
