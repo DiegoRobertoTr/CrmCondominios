@@ -11,6 +11,8 @@ from .utils import normalize_phone, validar_cpf, get_followup_date
 from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEADORES, PLANOS
 from pymongo.errors import DuplicateKeyError
 import copy
+from typing import Dict, Optional, Any
+
 
 # ============================================================================
 # 🛡️ FUNÇÃO AUXILIAR PARA ACESSAR SESSION_STATE COM SEGURANÇA
