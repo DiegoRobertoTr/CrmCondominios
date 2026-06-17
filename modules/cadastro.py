@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM INTEGRAÇÃO IXC)
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM INTEGRAÇÃO IXC CORRIGIDA)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -141,12 +141,12 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
 
 # ============================================================================
-# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC
+# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO SIMPLIFICADA
 # ============================================================================
 def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
     """
-    Renderiza um aviso informando que o cliente já existe no IXC,
-    mostrando os dados atuais para comparação.
+    Renderiza um aviso simplificado informando que o cliente já existe no IXC.
+    Apenas sinaliza e pede confirmação para prosseguir.
     """
     cpf = cliente_data.get("cpf")
     if not cpf:
@@ -156,7 +156,7 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
     if len(cpf_digits) != 11:
         return None
     
-    # Verificar no IXC
+    # Verificar no IXC (apenas ID e dados básicos)
     with st.spinner("🔍 Verificando cadastro no IXC..."):
         resultado = verificar_cliente_existente_ixc(cpf_digits, config)
     
@@ -164,6 +164,8 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
         return None  # Cliente não existe, prosseguir normalmente
     
     # ========== CLIENTE EXISTE NO IXC ==========
+    id_ixc = resultado.get("id_ixc", "N/A")
+    dados = resultado.get("dados", {})
     
     # Container com destaque
     with st.container(border=True):
@@ -176,88 +178,46 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
             unsafe_allow_html=True
         )
         
-        st.markdown(f"**ID no IXC:** `{resultado['id_ixc']}`")
+        st.markdown(f"**🆔 ID no IXC:** `{id_ixc}`")
         
-        # Dados atuais no IXC
-        if resultado["dados"]:
-            dados_ixc = resultado["dados"]
-            
-            st.markdown("### 📋 Dados atuais no IXC:")
-            
+        # Dados básicos do IXC
+        if dados:
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown(f"**📌 Nome:** `{dados_ixc.get('razao', 'N/A')}`")
-                st.markdown(f"**📧 Email:** `{dados_ixc.get('email', 'N/A')}`")
-                st.markdown(f"**📱 Telefone:** `{dados_ixc.get('fone', 'N/A')}`")
-                st.markdown(f"**🆔 CPF:** `{dados_ixc.get('cnpj_cpf', 'N/A')}`")
-                
-            with col2:
-                st.markdown(f"**🏠 Endereço:** `{dados_ixc.get('endereco', 'N/A')}, {dados_ixc.get('numero', 'N/A')}`")
-                st.markdown(f"**📍 Bairro:** `{dados_ixc.get('bairro', 'N/A')}`")
-                st.markdown(f"**🏙️ Cidade:** `{dados_ixc.get('cidade', 'N/A')}`")
-                st.markdown(f"**📅 Status:** `{'✅ Ativo' if dados_ixc.get('ativo') == 'S' else '❌ Inativo'}`")
+                if dados.get("razao"):
+                    st.markdown(f"**📌 Nome:** `{dados.get('razao', 'N/A')}`")
+                if dados.get("cnpj_cpf"):
+                    st.markdown(f"**🆔 CPF:** `{dados.get('cnpj_cpf', 'N/A')}`")
+                if dados.get("fone"):
+                    st.markdown(f"**📱 Telefone:** `{dados.get('fone', 'N/A')}`")
             
-            # Se tiver condomínio
-            if dados_ixc.get('id_condominio'):
-                st.markdown(f"**🏢 Condomínio ID:** `{dados_ixc.get('id_condominio')}`")
-                if dados_ixc.get('bloco'):
-                    st.markdown(f"**Bloco:** `{dados_ixc.get('bloco')}`")
-                if dados_ixc.get('apartamento'):
-                    st.markdown(f"**Apartamento:** `{dados_ixc.get('apartamento')}`")
-        
-        # Comparação com dados do CRM
-        st.markdown("### 🔍 Compare com os dados que está cadastrando:")
-        
-        crm_data = {
-            "Nome": cliente_data.get("nome_completo"),
-            "Email": cliente_data.get("email"),
-            "Telefone": cliente_data.get("celular"),
-            "Endereço": cliente_data.get("endereco"),
-            "Número": cliente_data.get("numero"),
-            "Bairro": cliente_data.get("bairro"),
-            "CEP": cliente_data.get("cep"),
-        }
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**📝 Dados NOVOS (CRM):**")
-            for campo, valor in crm_data.items():
-                if valor:
-                    st.markdown(f"- **{campo}:** `{valor}`")
-        
-        if resultado["dados"]:
             with col2:
-                st.markdown("**📋 Dados ANTIGOS (IXC):**")
-                ixc_data = {
-                    "Nome": resultado["dados"].get("razao"),
-                    "Email": resultado["dados"].get("email"),
-                    "Telefone": resultado["dados"].get("fone"),
-                    "Endereço": resultado["dados"].get("endereco"),
-                    "Número": resultado["dados"].get("numero"),
-                    "Bairro": resultado["dados"].get("bairro"),
-                    "CEP": resultado["dados"].get("cep"),
-                }
-                for campo, valor in ixc_data.items():
-                    if valor:
-                        st.markdown(f"- **{campo}:** `{valor}`")
+                if dados.get("email"):
+                    st.markdown(f"**📧 Email:** `{dados.get('email', 'N/A')}`")
+                if dados.get("endereco"):
+                    end = dados.get('endereco', '')
+                    num = dados.get('numero', '')
+                    st.markdown(f"**🏠 Endereço:** `{end} {num}`".strip())
+                if dados.get("ativo"):
+                    st.markdown(f"**📅 Status:** `{'✅ Ativo' if dados.get('ativo') == 'S' else '❌ Inativo'}`")
+        else:
+            st.info("ℹ️ Não foi possível carregar os dados detalhados, mas o cliente existe no sistema.")
         
         # Aviso final
         st.markdown(
             """
             <div style="background-color:#d1ecf1; padding:12px; border-radius:6px; margin-top:12px;">
-                <strong>💡 Recomendação:</strong>
+                <strong>💡 O que fazer?</strong>
                 <ul style="margin:8px 0 0 0; padding-left:20px;">
-                    <li>Verifique se os dados estão <strong>atualizados</strong> no IXC</li>
-                    <li>Se houver divergências, <strong>atualize manualmente</strong> no IXC</li>
-                    <li>O cadastro no CRM será salvo <strong>normalmente</strong>, mas o ID do IXC será vinculado</li>
+                    <li>Verifique se os dados acima estão <strong>corretos</strong></li>
+                    <li>Se os dados estiverem <strong>desatualizados</strong>, atualize manualmente no IXC</li>
+                    <li>O cadastro no CRM será salvo <strong>normalmente</strong>, vinculado ao ID existente</li>
                     <li>⚠️ <strong>Nenhum dado será alterado no IXC automaticamente</strong></li>
                 </ul>
             </div>
             """,
             unsafe_allow_html=True
         )
-        
-        st.info("ℹ️ O cadastro será salvo no CRM normalmente, vinculado ao ID existente no IXC.")
         
         # Botão para continuar
         col1, col2 = st.columns(2)
