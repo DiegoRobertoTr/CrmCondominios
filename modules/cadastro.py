@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM CORREÇÃO DO CONDOMÍNIO)
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM CORREÇÃO DO CONDOMÍNIO E INTEGRAÇÃO IXC)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -73,7 +73,10 @@ try:
         enviar_cliente_para_ixc, 
         registrar_pendencia_integracao,
         verificar_cliente_existente_ixc,
-        get_ixc_config
+        get_ixc_config,
+        sincronizar_condominio_crm_com_ixc,
+        buscar_condominio_completo_ixc,
+        render_painel_sincronizacao_condominios
     )
 except ImportError:
     # Funções dummy se módulo não existir
@@ -85,6 +88,12 @@ except ImportError:
         return {"existe": False, "id_ixc": None, "dados": None, "erro": None}
     def get_ixc_config():
         return None
+    def sincronizar_condominio_crm_com_ixc(condominio_id, config):
+        return {"sucesso": False, "erro": "Módulo não disponível"}
+    def buscar_condominio_completo_ixc(host, auth, nome):
+        return None
+    def render_painel_sincronizacao_condominios():
+        st.warning("Painel de sincronização não disponível")
 
 # ============================================================================
 # ✅ OTIMIZAÇÃO: Cache de Condomínios
@@ -1553,14 +1562,12 @@ def render_cadastro(clientes_collection):
 
                 col_bloco, col_apto = st.columns(2)
                 with col_bloco:
-                    # 👇 CRÍTICO: Usar session_state para bloco
                     bloco = st.text_input(
                         "Bloco", 
                         value=safe_session_state_get(f"bloco_{st.session_state['form_key']}", ""),
                         key=f"bloco_{st.session_state['form_key']}"
                     )
                 with col_apto:
-                    # 👇 CRÍTICO: Usar session_state para apartamento
                     apartamento = st.text_input(
                         "Apartamento", 
                         value=safe_session_state_get(f"apartamento_{st.session_state['form_key']}", ""),
@@ -1813,7 +1820,6 @@ def render_cadastro(clientes_collection):
             # ==================================================================
             
             # Primeiro, verificar se o cliente existe no IXC (fora do form para não travar)
-            # Esta verificação será feita antes do form ser submetido
             cliente_existe_ixc = False
             id_ixc_existente = None
             ixc_confirmado = False
@@ -1980,10 +1986,22 @@ def render_cadastro(clientes_collection):
                     # ========== 👇 CRÍTICO: OBTER DADOS DO CONDOMÍNIO CORRETAMENTE ==========
                     dados_cond = obter_dados_condominio(st.session_state['form_key'])
                     
+                    # Buscar o id_ixc do condomínio se disponível
+                    cond_id_ixc = None
+                    if dados_cond.get("condominio_id"):
+                        try:
+                            cond_data = get_condominio_by_id(dados_cond["condominio_id"])
+                            if cond_data:
+                                cond_id_ixc = cond_data.get("id_ixc")
+                                print(f"🔍 Condomínio encontrado no CRM: {cond_data.get('nome')} (ID IXC: {cond_id_ixc})")
+                        except Exception as e:
+                            print(f"⚠️ Erro ao buscar id_ixc do condomínio: {e}")
+                    
                     # Log para debug
                     print(f"🔍 DEBUG - Dados do condomínio salvos:")
                     print(f"   condominio_id: {dados_cond['condominio_id']}")
                     print(f"   condominio_nome: {dados_cond['condominio_nome']}")
+                    print(f"   condominio_id_ixc: {cond_id_ixc}")
                     print(f"   bloco: {dados_cond['bloco']}")
                     print(f"   apartamento: {dados_cond['apartamento']}")
 
@@ -2038,6 +2056,7 @@ def render_cadastro(clientes_collection):
                         # 👇 CRÍTICO: USAR OS DADOS OBTIDOS DA FUNÇÃO
                         "condominio_id": dados_cond["condominio_id"],
                         "condominio_nome": dados_cond["condominio_nome"],
+                        "condominio_id_ixc": cond_id_ixc,  # NOVO: ID do IXC para integração
                         "bloco": dados_cond["bloco"],
                         "apartamento": dados_cond["apartamento"],
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
