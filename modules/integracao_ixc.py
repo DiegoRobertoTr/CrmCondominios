@@ -622,12 +622,12 @@ def verificar_cliente_existente_ixc(cpf: str, config: Dict) -> Dict:
     return resultado
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD - COM SINCRONIZAÇÃO DE CONDOMÍNIO
+# CONSTRUÇÃO DO PAYLOAD - VERSÃO CORRIGIDA (BASEADA NO TESTE 5)
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
     """
     Constrói payload para o IXC seguindo o formato que funcionou no teste R6P01.
-    Com sincronização de condomínios.
+    Baseado no Teste 5 que funcionou com condomínio, bloco e apartamento.
     """
     def safe(val) -> str:
         return str(val).strip() if val is not None else ""
@@ -678,71 +678,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
     cidade_id, uf_id = _buscar_id_cidade(host_limpo, auth_string, cidade_nome, uf_sigla)
 
-    # ========== 3. CONDOMÍNIO - COM SINCRONIZAÇÃO ==========
-    id_condominio_ixc = None
-    cond_bloco = safe(cliente_data.get("bloco"))
-    cond_apto = safe(cliente_data.get("apartamento"))
-    cond_nome = safe(cliente_data.get("condominio_nome"))
-    cond_id_crm = cliente_data.get("condominio_id")
-    
-    # Flag para saber se o condomínio foi encontrado
-    condominio_encontrado = False
-    
-    # 3a. Se tem ID do CRM, tentar sincronizar
-    if cond_id_crm:
-        # Tenta sincronizar o condomínio com o IXC
-        resultado_sinc = sincronizar_condominio_crm_com_ixc(cond_id_crm, config)
-        
-        if resultado_sinc["sucesso"]:
-            id_condominio_ixc = resultado_sinc.get("id_ixc")
-            condominio_encontrado = True
-            
-            # Se houve alterações, mostrar no log
-            if resultado_sinc.get("alteracoes"):
-                print(f"🔄 Condomínio sincronizado com IXC. Alterações: {resultado_sinc['alteracoes']}")
-            
-            # Atualizar os dados do condomínio no cliente_data com os dados do IXC
-            if resultado_sinc.get("dados_ixc"):
-                dados_ixc = resultado_sinc["dados_ixc"]
-                # Atualizar endereço se veio do IXC
-                if dados_ixc.get("endereco"):
-                    cliente_data["endereco"] = dados_ixc["endereco"]
-                if dados_ixc.get("numero"):
-                    cliente_data["numero"] = dados_ixc["numero"]
-                if dados_ixc.get("bairro"):
-                    cliente_data["bairro"] = dados_ixc["bairro"]
-                if dados_ixc.get("cidade"):
-                    cliente_data["cidade"] = dados_ixc["cidade"]
-                if dados_ixc.get("uf"):
-                    cliente_data["uf"] = dados_ixc["uf"]
-                if dados_ixc.get("cep"):
-                    cliente_data["cep"] = dados_ixc["cep"]
-                
-                print(f"🏢 Dados do condomínio atualizados a partir do IXC")
-    
-    # 3b. Se não tem ID CRM mas tem nome, tentar buscar
-    if not id_condominio_ixc and cond_nome:
-        dados_ixc = buscar_condominio_completo_ixc(host_limpo, auth_string, cond_nome)
-        if dados_ixc:
-            id_condominio_ixc = dados_ixc["id_ixc"]
-            condominio_encontrado = True
-            print(f"🏢 Condomínio encontrado pelo nome: '{cond_nome}' -> IXC ID: {id_condominio_ixc}")
-            
-            # Atualizar dados do cliente com dados do IXC
-            if dados_ixc.get("endereco"):
-                cliente_data["endereco"] = dados_ixc["endereco"]
-            if dados_ixc.get("numero"):
-                cliente_data["numero"] = dados_ixc["numero"]
-            if dados_ixc.get("bairro"):
-                cliente_data["bairro"] = dados_ixc["bairro"]
-            if dados_ixc.get("cidade"):
-                cliente_data["cidade"] = dados_ixc["cidade"]
-            if dados_ixc.get("uf"):
-                cliente_data["uf"] = dados_ixc["uf"]
-            if dados_ixc.get("cep"):
-                cliente_data["cep"] = dados_ixc["cep"]
-
-    # ========== 4. DATA DE NASCIMENTO ==========
+    # ========== 3. DATA DE NASCIMENTO ==========
     data_nasc = ""
     raw_nasc = cliente_data.get("data_nascimento")
     if raw_nasc:
@@ -754,7 +690,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
             except ValueError:
                 continue
 
-    # ========== 5. PAYLOAD FINAL ==========
+    # ========== 4. PAYLOAD FINAL ==========
     payload = {
         # Dados obrigatórios
         "ativo": "S",
@@ -815,41 +751,114 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     if complemento:
         payload["complemento"] = complemento
 
-    # ========== 6. ADICIONAR CONDOMÍNIO SE ENCONTRADO ==========
-    if id_condominio_ixc and condominio_encontrado:
-        payload["id_condominio"] = id_condominio_ixc
+    # ========== 5. CONDOMÍNIO - FORMATO DO TESTE 5 QUE FUNCIONOU ==========
+    # Teste 5 usou: id_condominio="6", bloco="07", apartamento="508"
+    
+    cond_bloco = safe(cliente_data.get("bloco"))
+    cond_apto = safe(cliente_data.get("apartamento"))
+    cond_nome = safe(cliente_data.get("condominio_nome"))
+    cond_id_crm = cliente_data.get("condominio_id")
+    cond_id_ixc = cliente_data.get("condominio_id_ixc")
+    
+    # Flag para saber se adicionamos condomínio
+    condominio_adicionado = False
+    
+    print(f"\n🔍 PROCESSANDO CONDOMÍNIO:")
+    print(f"   cond_id_ixc: {cond_id_ixc}")
+    print(f"   cond_id_crm: {cond_id_crm}")
+    print(f"   cond_nome: '{cond_nome}'")
+    print(f"   cond_bloco: '{cond_bloco}'")
+    print(f"   cond_apto: '{cond_apto}'")
+    
+    # PRIORIDADE 1: Usar ID do IXC se disponível (já sincronizado)
+    if cond_id_ixc:
+        payload["id_condominio"] = str(cond_id_ixc)
+        condominio_adicionado = True
+        print(f"✅ Usando ID IXC do condomínio: {cond_id_ixc}")
+    
+    # PRIORIDADE 2: Se tem ID do CRM, buscar/sincronizar
+    elif cond_id_crm:
+        try:
+            # Tenta sincronizar para obter o ID do IXC
+            resultado_sinc = sincronizar_condominio_crm_com_ixc(cond_id_crm, config)
+            if resultado_sinc["sucesso"] and resultado_sinc.get("id_ixc"):
+                payload["id_condominio"] = str(resultado_sinc["id_ixc"])
+                condominio_adicionado = True
+                print(f"✅ Condomínio sincronizado: ID IXC = {resultado_sinc['id_ixc']}")
+            else:
+                print(f"⚠️ Condomínio não encontrado no IXC (ID CRM: {cond_id_crm})")
+        except Exception as e:
+            print(f"⚠️ Erro ao sincronizar condomínio: {e}")
+    
+    # PRIORIDADE 3: Se tem nome, buscar pelo nome
+    elif cond_nome:
+        try:
+            dados_ixc = buscar_condominio_completo_ixc(host_limpo, auth_string, cond_nome)
+            if dados_ixc and dados_ixc.get("id_ixc"):
+                payload["id_condominio"] = str(dados_ixc["id_ixc"])
+                condominio_adicionado = True
+                print(f"✅ Condomínio encontrado pelo nome: '{cond_nome}' -> ID IXC: {dados_ixc['id_ixc']}")
+                
+                # Atualizar dados do cliente com dados do IXC
+                if dados_ixc.get("endereco"):
+                    payload["endereco"] = dados_ixc["endereco"]
+                    print(f"   📍 Endereço atualizado do IXC: {dados_ixc['endereco']}")
+                if dados_ixc.get("numero"):
+                    payload["numero"] = dados_ixc["numero"]
+                if dados_ixc.get("bairro"):
+                    payload["bairro"] = dados_ixc["bairro"]
+                if dados_ixc.get("cep"):
+                    payload["cep"] = fmt_cep(dados_ixc["cep"])
+                
+                # Salvar ID no CRM para futuras referências
+                if cond_id_crm:
+                    try:
+                        from .condominios import update_condominio
+                        update_condominio(cond_id_crm, {"id_ixc": dados_ixc["id_ixc"]})
+                        print(f"💾 ID IXC salvo no CRM para o condomínio {cond_id_crm}")
+                    except Exception as e:
+                        print(f"⚠️ Não foi possível salvar ID IXC no CRM: {e}")
+            else:
+                print(f"⚠️ Condomínio não encontrado pelo nome: '{cond_nome}'")
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar condomínio pelo nome: {e}")
+    
+    # PRIORIDADE 4: Se tem endereço, tentar pelo endereço (fallback)
+    if not condominio_adicionado and endereco:
+        try:
+            id_cond = _buscar_condominio_por_endereco(host_limpo, auth_string, endereco, numero, bairro)
+            if id_cond:
+                payload["id_condominio"] = str(id_cond)
+                condominio_adicionado = True
+                print(f"✅ Condomínio encontrado pelo endereço: '{endereco}' -> ID IXC: {id_cond}")
+        except Exception as e:
+            print(f"⚠️ Erro ao buscar condomínio por endereço: {e}")
+    
+    # ========== 6. ADICIONAR BLOCO E APARTAMENTO ==========
+    # SÓ adicionar bloco/apto SE o condomínio foi encontrado/adicionado
+    if condominio_adicionado:
+        # Usar o formato exato do Teste 5: strings
         if cond_bloco:
-            payload["bloco"] = cond_bloco
+            payload["bloco"] = str(cond_bloco)
+            print(f"🏢 Adicionando bloco: {cond_bloco}")
         if cond_apto:
-            payload["apartamento"] = cond_apto
-        
-        # Usar dados atualizados do IXC no payload
-        if cliente_data.get("endereco"):
-            payload["endereco"] = cliente_data["endereco"]
-        if cliente_data.get("numero"):
-            payload["numero"] = cliente_data["numero"]
-        if cliente_data.get("bairro"):
-            payload["bairro"] = cliente_data["bairro"]
-        if cliente_data.get("cidade"):
-            # Buscar ID da cidade atualizada
-            cidade_id_atualizada, uf_id_atualizada = _buscar_id_cidade(
-                host_limpo, auth_string, cliente_data["cidade"], cliente_data.get("uf", "RJ")
-            )
-            payload["cidade"] = cidade_id_atualizada
-            payload["uf"] = uf_id_atualizada
-        if cliente_data.get("cep"):
-            payload["cep"] = fmt_cep(cliente_data["cep"])
-        
-        print(f"🏢 Adicionando ao payload: id_condominio={id_condominio_ixc}, bloco='{cond_bloco}', apto='{cond_apto}'")
+            payload["apartamento"] = str(cond_apto)
+            print(f"🏢 Adicionando apartamento: {cond_apto}")
     else:
-        # Log informativo sem ser erro
-        if cond_nome or cond_id_crm:
-            print(f"ℹ️ Condomínio não encontrado no IXC: '{cond_nome or cond_id_crm}'. Dados de bloco/apto não serão enviados.")
-        elif cond_bloco or cond_apto:
-            print(f"ℹ️ Bloco/Apto informados sem condomínio. Não serão enviados para o IXC.")
+        # Log informativo
+        if cond_bloco or cond_apto:
+            print(f"⚠️ Bloco/Apto ignorados porque o condomínio não foi encontrado no IXC")
+            print(f"   Bloco: {cond_bloco}, Apto: {cond_apto}")
+            print(f"   Nome: {cond_nome}, ID CRM: {cond_id_crm}")
 
     # ========== 7. REMOVER CAMPOS VAZIOS ==========
     payload = {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}
+    
+    # Log do payload final (debug)
+    print(f"\n📤 PAYLOAD FINAL - CONDOMÍNIO:")
+    print(f"   id_condominio: {payload.get('id_condominio', '❌ NÃO ENVIADO')}")
+    print(f"   bloco: {payload.get('bloco', '❌ NÃO ENVIADO')}")
+    print(f"   apartamento: {payload.get('apartamento', '❌ NÃO ENVIADO')}")
 
     return payload, None
 
@@ -889,7 +898,7 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     payload_log = payload.copy()
     if "cnpj_cpf" in payload_log:
         payload_log["cnpj_cpf"] = "***" + payload_log["cnpj_cpf"][-4:]
-    print(f"📤 Payload: {json.dumps(payload_log, indent=2, ensure_ascii=False)}")
+    print(f"\n📤 Payload completo: {json.dumps(payload_log, indent=2, ensure_ascii=False)}")
 
     # ========== ENVIAR PARA O IXC ==========
     host_limpo = _sanitizar_host(config["host"])
@@ -905,8 +914,8 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=30, verify=False)
         
-        print(f"📥 Status: {response.status_code}")
-        print(f"📥 Resposta: {response.text[:300]}")
+        print(f"\n📥 Status: {response.status_code}")
+        print(f"📥 Resposta: {response.text[:500]}")
 
         if response.status_code in [200, 201]:
             try:
