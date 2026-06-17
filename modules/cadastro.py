@@ -141,12 +141,12 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
 
 # ============================================================================
-# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO SIMPLIFICADA
+# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO SEM st.button() NO FORM
 # ============================================================================
 def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
     """
     Renderiza um aviso simplificado informando que o cliente já existe no IXC.
-    Apenas sinaliza e pede confirmação para prosseguir.
+    Usa st.warning e st.info ao invés de st.button() para evitar erro com forms.
     """
     cpf = cliente_data.get("cpf")
     if not cpf:
@@ -167,72 +167,50 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
     id_ixc = resultado.get("id_ixc", "N/A")
     dados = resultado.get("dados", {})
     
-    # Container com destaque
-    with st.container(border=True):
-        st.markdown(
-            """
-            <div style="background-color:#fff3cd; padding:15px; border-radius:8px; border-left:6px solid #ffc107;">
-                <h4 style="color:#856404; margin:0;">⚠️ ATENÇÃO: Cliente já possui cadastro no IXC!</h4>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        
-        st.markdown(f"**🆔 ID no IXC:** `{id_ixc}`")
-        
-        # Dados básicos do IXC
-        if dados:
-            col1, col2 = st.columns(2)
-            with col1:
-                if dados.get("razao"):
-                    st.markdown(f"**📌 Nome:** `{dados.get('razao', 'N/A')}`")
-                if dados.get("cnpj_cpf"):
-                    st.markdown(f"**🆔 CPF:** `{dados.get('cnpj_cpf', 'N/A')}`")
-                if dados.get("fone"):
-                    st.markdown(f"**📱 Telefone:** `{dados.get('fone', 'N/A')}`")
-            
-            with col2:
-                if dados.get("email"):
-                    st.markdown(f"**📧 Email:** `{dados.get('email', 'N/A')}`")
-                if dados.get("endereco"):
-                    end = dados.get('endereco', '')
-                    num = dados.get('numero', '')
-                    st.markdown(f"**🏠 Endereço:** `{end} {num}`".strip())
-                if dados.get("ativo"):
-                    st.markdown(f"**📅 Status:** `{'✅ Ativo' if dados.get('ativo') == 'S' else '❌ Inativo'}`")
-        else:
-            st.info("ℹ️ Não foi possível carregar os dados detalhados, mas o cliente existe no sistema.")
-        
-        # Aviso final
-        st.markdown(
-            """
-            <div style="background-color:#d1ecf1; padding:12px; border-radius:6px; margin-top:12px;">
-                <strong>💡 O que fazer?</strong>
-                <ul style="margin:8px 0 0 0; padding-left:20px;">
-                    <li>Verifique se os dados acima estão <strong>corretos</strong></li>
-                    <li>Se os dados estiverem <strong>desatualizados</strong>, atualize manualmente no IXC</li>
-                    <li>O cadastro no CRM será salvo <strong>normalmente</strong>, vinculado ao ID existente</li>
-                    <li>⚠️ <strong>Nenhum dado será alterado no IXC automaticamente</strong></li>
-                </ul>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        
-        # Botão para continuar
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Continuar com cadastro", key="continuar_ixc_existente"):
-                st.session_state["confirmar_ixc_existente"] = True
-                st.rerun()
-        
-        with col2:
-            if st.button("❌ Cancelar cadastro", key="cancelar_ixc_existente"):
-                st.session_state["confirmar_ixc_existente"] = False
-                st.warning("⚠️ Cadastro cancelado pelo operador.")
-                return "cancelar"
+    # Construir mensagem do aviso
+    mensagem = f"""
+⚠️ **ATENÇÃO: Cliente já possui cadastro no IXC!**
+
+**🆔 ID no IXC:** `{id_ixc}`
+"""
+    if dados.get("razao"):
+        mensagem += f"\n**📌 Nome:** `{dados.get('razao', 'N/A')}`"
+    if dados.get("cnpj_cpf"):
+        mensagem += f"\n**🆔 CPF:** `{dados.get('cnpj_cpf', 'N/A')}`"
+    if dados.get("fone"):
+        mensagem += f"\n**📱 Telefone:** `{dados.get('fone', 'N/A')}`"
+    if dados.get("email"):
+        mensagem += f"\n**📧 Email:** `{dados.get('email', 'N/A')}`"
+    if dados.get("endereco"):
+        end = dados.get('endereco', '')
+        num = dados.get('numero', '')
+        mensagem += f"\n**🏠 Endereço:** `{end} {num}`".strip()
+    if dados.get("ativo"):
+        mensagem += f"\n**📅 Status:** `{'✅ Ativo' if dados.get('ativo') == 'S' else '❌ Inativo'}`"
     
-    return "continuar" if st.session_state.get("confirmar_ixc_existente") else None
+    mensagem += """
+    
+💡 **O que fazer?**
+- Verifique se os dados acima estão **corretos**
+- Se estiverem **desatualizados**, atualize manualmente no IXC
+- O cadastro no CRM será salvo normalmente, vinculado ao ID existente
+- ⚠️ **Nenhum dado será alterado no IXC automaticamente**
+"""
+    
+    st.warning(mensagem)
+    
+    # Usar st.checkbox para confirmação (funciona dentro de forms)
+    continuar = st.checkbox(
+        "✅ Confirmo que verifiquei os dados e quero continuar com o cadastro",
+        key="confirmar_ixc_existente_checkbox"
+    )
+    
+    if continuar:
+        st.session_state["confirmar_ixc_existente"] = True
+        return "continuar"
+    else:
+        st.info("⏳ Marque a caixa acima para confirmar e prosseguir com o cadastro.")
+        return None
 
 # ============================================================================
 # CONFIGURAÇÕES GERAIS
@@ -1939,7 +1917,7 @@ def render_cadastro(clientes_collection):
                                     if acao == "cancelar":
                                         return
                                     if not st.session_state.get("confirmar_ixc_existente"):
-                                        st.info("⏳ Clique em 'Continuar com cadastro' para prosseguir.")
+                                        st.info("⏳ Marque a caixa de confirmação acima para prosseguir.")
                                         return
 
                     # ========== 💾 SALVAR NO MONGODB ==========
