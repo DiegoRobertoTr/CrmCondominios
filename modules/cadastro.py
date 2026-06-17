@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM INTEGRAÇÃO IXC CORRIGIDA)
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM BOTÃO AMARELO PARA IXC EXISTENTE)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -141,12 +141,13 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
 
 # ============================================================================
-# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO SEM st.button() NO FORM
+# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO ATUALIZADA
 # ============================================================================
-def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
+def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict, form_key: str = ""):
     """
-    Renderiza um aviso simplificado informando que o cliente já existe no IXC.
-    Usa st.warning e st.info ao invés de st.button() para evitar erro com forms.
+    Renderiza um aviso informando que o cliente já existe no IXC.
+    Retorna 'continuar' se o usuário confirmar, 'cancelar' se não.
+    Agora com botão amarelo "Salvar Assim Mesmo" logo abaixo do checkbox.
     """
     cpf = cliente_data.get("cpf")
     if not cpf:
@@ -199,10 +200,10 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
     
     st.warning(mensagem)
     
-    # Usar st.checkbox para confirmação (funciona dentro de forms)
+    # Usar checkbox para confirmação
     continuar = st.checkbox(
         "✅ Confirmo que verifiquei os dados e quero continuar com o cadastro",
-        key="confirmar_ixc_existente_checkbox"
+        key=f"confirmar_ixc_existente_checkbox_{form_key}"
     )
     
     if continuar:
@@ -1668,6 +1669,7 @@ def render_cadastro(clientes_collection):
                 bloco = ""
                 apartamento = ""
 
+            # ================== BOTÕES DE GERAÇÃO DE DOCUMENTOS ==================
             col1, col2 = st.columns(2)
             with col1:
                 if st.session_state["gerando_contrato_principal"]:
@@ -1771,7 +1773,105 @@ def render_cadastro(clientes_collection):
                 st.session_state["mensagem_confirmacao_novo"] = mensagem
                 st.success("✅ Mensagem gerada!")
 
-            enviado = st.form_submit_button("💾 Salvar Cadastro", type="primary")
+            # ==================================================================
+            # 🟡 BOTÃO DE SALVAR - VERSÃO COM COR AMARELA PARA IXC EXISTENTE
+            # ==================================================================
+            
+            # Primeiro, verificar se o cliente existe no IXC (fora do form para não travar)
+            # Esta verificação será feita antes do form ser submetido
+            cliente_existe_ixc = False
+            id_ixc_existente = None
+            ixc_confirmado = False
+            
+            # Verificação do IXC - será executada quando o form for renderizado
+            config = get_ixc_config()
+            if tipo_cadastro == "Cadastro CRM" and cpf and config:
+                cpf_digits = "".join(filter(str.isdigit, str(cpf)))
+                if len(cpf_digits) == 11:
+                    # Usar cache para não repetir a verificação a cada rerun
+                    cache_key = f"ixc_verification_{cpf_digits}"
+                    if cache_key not in st.session_state:
+                        with st.spinner("🔍 Verificando se cliente já existe no IXC..."):
+                            resultado_ixc = verificar_cliente_existente_ixc(cpf_digits, config)
+                            st.session_state[cache_key] = resultado_ixc
+                    else:
+                        resultado_ixc = st.session_state[cache_key]
+                    
+                    if resultado_ixc.get("existe"):
+                        cliente_existe_ixc = True
+                        id_ixc_existente = resultado_ixc.get("id_ixc")
+                        
+                        # Renderizar aviso e capturar resultado
+                        acao = render_aviso_cliente_existente_ixc(
+                            {"cpf": cpf_digits}, 
+                            config, 
+                            str(st.session_state['form_key'])
+                        )
+                        
+                        if acao == "cancelar":
+                            return
+                        elif acao == "continuar":
+                            ixc_confirmado = True
+                            st.session_state["confirmar_ixc_existente"] = True
+                        else:
+                            ixc_confirmado = False
+                            st.session_state["confirmar_ixc_existente"] = False
+
+            # Determinar qual botão mostrar
+            mostrar_botao_especial = cliente_existe_ixc and not ixc_confirmado
+
+            # CSS para o botão amarelo
+            if mostrar_botao_especial:
+                st.markdown("""
+                <style>
+                /* Estilo para o botão amarelo "Salvar Assim Mesmo" */
+                div[data-testid="stFormSubmitButton"] button {
+                    background-color: #FFD700 !important;
+                    color: #1a1a1a !important;
+                    font-weight: 700 !important;
+                    border: 2px solid #F5A623 !important;
+                    border-radius: 8px !important;
+                    padding: 0.6rem 2rem !important;
+                    font-size: 1.1rem !important;
+                    width: 100% !important;
+                    transition: all 0.3s ease !important;
+                }
+                div[data-testid="stFormSubmitButton"] button:hover {
+                    background-color: #F5A623 !important;
+                    color: #1a1a1a !important;
+                    transform: scale(1.02) !important;
+                    box-shadow: 0 4px 12px rgba(245, 166, 35, 0.4) !important;
+                }
+                div[data-testid="stFormSubmitButton"] button:active {
+                    transform: scale(0.98) !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
+            # Criar colunas para centralizar o botão
+            col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+            
+            with col_btn2:
+                if mostrar_botao_especial:
+                    # 🟡 BOTÃO AMARELO ESPECIAL
+                    enviado = st.form_submit_button(
+                        "🟡 Salvar Assim Mesmo", 
+                        type="secondary",
+                        use_container_width=True
+                    )
+                    # Texto de aviso abaixo do botão
+                    st.caption("⚠️ Cliente já existe no IXC - o cadastro será vinculado ao ID existente")
+                else:
+                    # 💾 BOTÃO NORMAL
+                    enviado = st.form_submit_button(
+                        "💾 Salvar Cadastro", 
+                        type="primary",
+                        use_container_width=True
+                    )
+
+            # ==================================================================
+            # PROCESSAMENTO DO ENVIO
+            # ==================================================================
             if enviado:
                 if not nome_completo or not celular_principal:
                     st.error("⚠️ Nome e Celular Principal são obrigatórios.")
@@ -1899,28 +1999,7 @@ def render_cadastro(clientes_collection):
                         "tentativas_integracao": 0,
                     }
 
-                    # ========== 🚀 VERIFICAR SE CLIENTE JÁ EXISTE NO IXC ==========
-                    config = get_ixc_config()
-                    cliente_existe_ixc = False
-                    id_ixc_existente = None
-                    
-                    if tipo_cadastro == "Cadastro CRM" and cpf_limpo and config:
-                        cpf_digits = "".join(filter(str.isdigit, str(cpf_limpo)))
-                        if len(cpf_digits) == 11:
-                            with st.spinner("🔍 Verificando se cliente já existe no IXC..."):
-                                resultado_ixc = verificar_cliente_existente_ixc(cpf_digits, config)
-                                if resultado_ixc.get("existe"):
-                                    cliente_existe_ixc = True
-                                    id_ixc_existente = resultado_ixc.get("id_ixc")
-                                    # Mostrar aviso e aguardar confirmação
-                                    acao = render_aviso_cliente_existente_ixc(cliente_data, config)
-                                    if acao == "cancelar":
-                                        return
-                                    if not st.session_state.get("confirmar_ixc_existente"):
-                                        st.info("⏳ Marque a caixa de confirmação acima para prosseguir.")
-                                        return
-
-                    # ========== 💾 SALVAR NO MONGODB ==========
+                    # ========== 🚀 SALVAR NO MONGODB ==========
                     try:
                         result = clientes_collection.insert_one(cliente_data)
                         st.success(f"✅ {tipo_cadastro} salvo com sucesso!")
@@ -1979,6 +2058,12 @@ def render_cadastro(clientes_collection):
                             del st.session_state["dados_temp_bloqueio"]
                         if "confirmar_ixc_existente" in st.session_state:
                             st.session_state["confirmar_ixc_existente"] = False
+                        # Limpar cache do IXC
+                        if cpf:
+                            cpf_digits_clean = "".join(filter(str.isdigit, str(cpf)))
+                            cache_key = f"ixc_verification_{cpf_digits_clean}"
+                            if cache_key in st.session_state:
+                                del st.session_state[cache_key]
 
                         if codigo_indicacao:
                             st.markdown(f"### 🎁 Código de Indicação: `{codigo_indicacao}`")
@@ -2126,6 +2211,11 @@ def render_cadastro(clientes_collection):
                 "dados_temp_bloqueio", "ignorar_bloqueio", "endereco_bloqueado_confirmado",
                 "confirmar_ixc_existente"
             ]
+            # Limpar também os caches do IXC
+            ixc_cache_keys = [k for k in st.session_state.keys() if k.startswith("ixc_verification_")]
+            for key in ixc_cache_keys:
+                del st.session_state[key]
+            
             suffixes = ["", "_completar", "_dialog", "_editar", "_visualizar", "_principal"]
             for base_key in keys_to_clear:
                 for suffix in suffixes:
