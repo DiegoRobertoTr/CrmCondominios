@@ -1836,7 +1836,8 @@ def render_cadastro(clientes_collection):
                         cliente_existe_ixc = True
                         id_ixc_existente = resultado_ixc.get("id_ixc")
                         
-                        # Renderizar aviso e capturar resultado                        acao = render_aviso_cliente_existente_ixc(
+                        # Renderizar aviso e capturar resultado
+                        acao = render_aviso_cliente_existente_ixc(
                             {"cpf": cpf_digits}, 
                             config, 
                             str(st.session_state['form_key'])
