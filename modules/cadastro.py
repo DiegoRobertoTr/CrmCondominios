@@ -1,4 +1,4 @@
-# cadastro.py - COMPLETO ATUALIZADO (VERSÃO ROBUSTA)
+# cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM INTEGRAÇÃO IXC)
 import streamlit as st
 from datetime import datetime, timedelta
 import base64
@@ -49,13 +49,22 @@ except ImportError:
 # ✅ INTEGRAÇÃO IXC
 # ============================================================================
 try:
-    from .integracao_ixc import enviar_cliente_para_ixc, registrar_pendencia_integracao
+    from .integracao_ixc import (
+        enviar_cliente_para_ixc, 
+        registrar_pendencia_integracao,
+        verificar_cliente_existente_ixc,
+        get_ixc_config
+    )
 except ImportError:
     # Funções dummy se módulo não existir
     def enviar_cliente_para_ixc(cliente_data):
         return False, None, "Módulo de integração IXC não disponível"
     def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
         pass
+    def verificar_cliente_existente_ixc(cpf, config):
+        return {"existe": False, "id_ixc": None, "dados": None, "erro": None}
+    def get_ixc_config():
+        return None
 
 # ============================================================================
 # ✅ OTIMIZAÇÃO: Cache de Condomínios
@@ -92,21 +101,17 @@ def garantir_indices(clientes_collection):
             clientes_collection.drop_index("celular_1")
             clientes_collection.create_index([("celular", 1)], unique=True, name="celular_1")
         
-        # 2. Outros índices úteis (opcionais, não críticos)
-        indices_opcionais = [
-            ("cpf_1", [("cpf", 1)]),
-            ("data_cadastro_-1", [("data_cadastro", -1)]),
-            ("integrado_ixc_1", [("integrado_ixc", 1)]),
-            ("status_1", [("status", 1)]),
-            ("condominio_nome_1", [("condominio_nome", 1)]),
-        ]
+        # 2. Índice para CPF (facilita buscas)
+        if "cpf_1" not in indices_existentes:
+            clientes_collection.create_index([("cpf", 1)], name="cpf_1")
         
-        for nome, keys in indices_opcionais:
-            if nome not in indices_existentes:
-                try:
-                    clientes_collection.create_index(keys, name=nome)
-                except:
-                    pass  # Ignora erro em índices opcionais
+        # 3. Índice para integração IXC
+        if "integrado_ixc_1" not in indices_existentes:
+            clientes_collection.create_index([("integrado_ixc", 1)], name="integrado_ixc_1")
+        
+        # 4. Índice para data de cadastro (ordenação)
+        if "data_cadastro_-1" not in indices_existentes:
+            clientes_collection.create_index([("data_cadastro", -1)], name="data_cadastro_-1")
         
         return True
     except Exception as e:
@@ -132,6 +137,140 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             safe_session_state_set(f"cep_{suffix}", cond_data.get("cep", ""))
             safe_session_state_set(f"condominio_id_{suffix}", cond_id)
             safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
+
+# ============================================================================
+# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC
+# ============================================================================
+def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict):
+    """
+    Renderiza um aviso informando que o cliente já existe no IXC,
+    mostrando os dados atuais para comparação.
+    """
+    cpf = cliente_data.get("cpf")
+    if not cpf:
+        return None
+    
+    cpf_digits = "".join(filter(str.isdigit, str(cpf)))
+    if len(cpf_digits) != 11:
+        return None
+    
+    # Verificar no IXC
+    with st.spinner("🔍 Verificando cadastro no IXC..."):
+        resultado = verificar_cliente_existente_ixc(cpf_digits, config)
+    
+    if not resultado["existe"]:
+        return None  # Cliente não existe, prosseguir normalmente
+    
+    # ========== CLIENTE EXISTE NO IXC ==========
+    
+    # Container com destaque
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div style="background-color:#fff3cd; padding:15px; border-radius:8px; border-left:6px solid #ffc107;">
+                <h4 style="color:#856404; margin:0;">⚠️ ATENÇÃO: Cliente já possui cadastro no IXC!</h4>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown(f"**ID no IXC:** `{resultado['id_ixc']}`")
+        
+        # Dados atuais no IXC
+        if resultado["dados"]:
+            dados_ixc = resultado["dados"]
+            
+            st.markdown("### 📋 Dados atuais no IXC:")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**📌 Nome:** `{dados_ixc.get('razao', 'N/A')}`")
+                st.markdown(f"**📧 Email:** `{dados_ixc.get('email', 'N/A')}`")
+                st.markdown(f"**📱 Telefone:** `{dados_ixc.get('fone', 'N/A')}`")
+                st.markdown(f"**🆔 CPF:** `{dados_ixc.get('cnpj_cpf', 'N/A')}`")
+                
+            with col2:
+                st.markdown(f"**🏠 Endereço:** `{dados_ixc.get('endereco', 'N/A')}, {dados_ixc.get('numero', 'N/A')}`")
+                st.markdown(f"**📍 Bairro:** `{dados_ixc.get('bairro', 'N/A')}`")
+                st.markdown(f"**🏙️ Cidade:** `{dados_ixc.get('cidade', 'N/A')}`")
+                st.markdown(f"**📅 Status:** `{'✅ Ativo' if dados_ixc.get('ativo') == 'S' else '❌ Inativo'}`")
+            
+            # Se tiver condomínio
+            if dados_ixc.get('id_condominio'):
+                st.markdown(f"**🏢 Condomínio ID:** `{dados_ixc.get('id_condominio')}`")
+                if dados_ixc.get('bloco'):
+                    st.markdown(f"**Bloco:** `{dados_ixc.get('bloco')}`")
+                if dados_ixc.get('apartamento'):
+                    st.markdown(f"**Apartamento:** `{dados_ixc.get('apartamento')}`")
+        
+        # Comparação com dados do CRM
+        st.markdown("### 🔍 Compare com os dados que está cadastrando:")
+        
+        crm_data = {
+            "Nome": cliente_data.get("nome_completo"),
+            "Email": cliente_data.get("email"),
+            "Telefone": cliente_data.get("celular"),
+            "Endereço": cliente_data.get("endereco"),
+            "Número": cliente_data.get("numero"),
+            "Bairro": cliente_data.get("bairro"),
+            "CEP": cliente_data.get("cep"),
+        }
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**📝 Dados NOVOS (CRM):**")
+            for campo, valor in crm_data.items():
+                if valor:
+                    st.markdown(f"- **{campo}:** `{valor}`")
+        
+        if resultado["dados"]:
+            with col2:
+                st.markdown("**📋 Dados ANTIGOS (IXC):**")
+                ixc_data = {
+                    "Nome": resultado["dados"].get("razao"),
+                    "Email": resultado["dados"].get("email"),
+                    "Telefone": resultado["dados"].get("fone"),
+                    "Endereço": resultado["dados"].get("endereco"),
+                    "Número": resultado["dados"].get("numero"),
+                    "Bairro": resultado["dados"].get("bairro"),
+                    "CEP": resultado["dados"].get("cep"),
+                }
+                for campo, valor in ixc_data.items():
+                    if valor:
+                        st.markdown(f"- **{campo}:** `{valor}`")
+        
+        # Aviso final
+        st.markdown(
+            """
+            <div style="background-color:#d1ecf1; padding:12px; border-radius:6px; margin-top:12px;">
+                <strong>💡 Recomendação:</strong>
+                <ul style="margin:8px 0 0 0; padding-left:20px;">
+                    <li>Verifique se os dados estão <strong>atualizados</strong> no IXC</li>
+                    <li>Se houver divergências, <strong>atualize manualmente</strong> no IXC</li>
+                    <li>O cadastro no CRM será salvo <strong>normalmente</strong>, mas o ID do IXC será vinculado</li>
+                    <li>⚠️ <strong>Nenhum dado será alterado no IXC automaticamente</strong></li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.info("ℹ️ O cadastro será salvo no CRM normalmente, vinculado ao ID existente no IXC.")
+        
+        # Botão para continuar
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Continuar com cadastro", key="continuar_ixc_existente"):
+                st.session_state["confirmar_ixc_existente"] = True
+                st.rerun()
+        
+        with col2:
+            if st.button("❌ Cancelar cadastro", key="cancelar_ixc_existente"):
+                st.session_state["confirmar_ixc_existente"] = False
+                st.warning("⚠️ Cadastro cancelado pelo operador.")
+                return "cancelar"
+    
+    return "continuar" if st.session_state.get("confirmar_ixc_existente") else None
 
 # ============================================================================
 # CONFIGURAÇÕES GERAIS
@@ -916,6 +1055,8 @@ def render_cadastro(clientes_collection):
         st.session_state["ignorar_bloqueio"] = False
     if "endereco_bloqueado_confirmado" not in st.session_state:
         st.session_state["endereco_bloqueado_confirmado"] = {}
+    if "confirmar_ixc_existente" not in st.session_state:
+        st.session_state["confirmar_ixc_existente"] = False
     
     st.markdown("### 🔍 Buscar cliente por nome, CPF ou Celular")
     busca_global = st.text_input(
@@ -1818,6 +1959,28 @@ def render_cadastro(clientes_collection):
                         "tentativas_integracao": 0,
                     }
 
+                    # ========== 🚀 VERIFICAR SE CLIENTE JÁ EXISTE NO IXC ==========
+                    config = get_ixc_config()
+                    cliente_existe_ixc = False
+                    id_ixc_existente = None
+                    
+                    if tipo_cadastro == "Cadastro CRM" and cpf_limpo and config:
+                        cpf_digits = "".join(filter(str.isdigit, str(cpf_limpo)))
+                        if len(cpf_digits) == 11:
+                            with st.spinner("🔍 Verificando se cliente já existe no IXC..."):
+                                resultado_ixc = verificar_cliente_existente_ixc(cpf_digits, config)
+                                if resultado_ixc.get("existe"):
+                                    cliente_existe_ixc = True
+                                    id_ixc_existente = resultado_ixc.get("id_ixc")
+                                    # Mostrar aviso e aguardar confirmação
+                                    acao = render_aviso_cliente_existente_ixc(cliente_data, config)
+                                    if acao == "cancelar":
+                                        return
+                                    if not st.session_state.get("confirmar_ixc_existente"):
+                                        st.info("⏳ Clique em 'Continuar com cadastro' para prosseguir.")
+                                        return
+
+                    # ========== 💾 SALVAR NO MONGODB ==========
                     try:
                         result = clientes_collection.insert_one(cliente_data)
                         st.success(f"✅ {tipo_cadastro} salvo com sucesso!")
@@ -1825,28 +1988,47 @@ def render_cadastro(clientes_collection):
                         st.session_state["mostrar_botao_novo"] = True
 
                         # ========== 🚀 INTEGRAÇÃO COM IXC ==========
-                        try:
-                            sucesso_ixc, id_ixc, erro_ixc = enviar_cliente_para_ixc(cliente_data)
-                            
-                            if sucesso_ixc:
-                                update_fields = {
-                                    "integrado_ixc": True,
-                                    "data_integracao_ixc": datetime.now()
-                                }
-                                if id_ixc and id_ixc not in ["ok", "existente"]:
-                                    update_fields["id_ixc"] = id_ixc
-                                
-                                clientes_collection.update_one(
-                                    {"_id": result.inserted_id},
-                                    {"$set": update_fields}
-                                )
-                                st.success("✅ Cliente também integrado ao IXCsoft com sucesso!")
-                            else:
-                                registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
-                                st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
-                                st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
-                        except Exception as e:
-                            st.warning(f"⚠️ Erro na integração com IXC (cadastro salvo localmente): {str(e)[:100]}")
+                        if tipo_cadastro == "Cadastro CRM":
+                            try:
+                                if cliente_existe_ixc and id_ixc_existente:
+                                    # Cliente já existe no IXC - apenas vincular
+                                    update_fields = {
+                                        "integrado_ixc": True,
+                                        "data_integracao_ixc": datetime.now(),
+                                        "id_ixc": id_ixc_existente
+                                    }
+                                    clientes_collection.update_one(
+                                        {"_id": result.inserted_id},
+                                        {"$set": update_fields}
+                                    )
+                                    st.info(f"ℹ️ Cliente já existia no IXC (ID: {id_ixc_existente}). Nenhum dado foi alterado no IXC.")
+                                    st.success("✅ Cliente vinculado ao IXC com sucesso!")
+                                else:
+                                    # Tentar criar no IXC
+                                    sucesso_ixc, id_ixc, erro_ixc = enviar_cliente_para_ixc(cliente_data)
+                                    
+                                    if sucesso_ixc:
+                                        update_fields = {
+                                            "integrado_ixc": True,
+                                            "data_integracao_ixc": datetime.now()
+                                        }
+                                        if id_ixc and id_ixc not in ["ok", "existente"]:
+                                            update_fields["id_ixc"] = id_ixc
+                                        
+                                        clientes_collection.update_one(
+                                            {"_id": result.inserted_id},
+                                            {"$set": update_fields}
+                                        )
+                                        st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                                    else:
+                                        registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
+                                        st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
+                                        st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
+                            except Exception as e:
+                                st.warning(f"⚠️ Erro na integração com IXC (cadastro salvo localmente): {str(e)[:100]}")
+                        else:
+                            # Cadastro Simples - não integra com IXC
+                            st.info("💡 Cadastro simples salvo. Para integrar com o IXC, complete o cadastro usando a opção 'Completar Cadastro Existente'.")
                         # ========== FIM DA INTEGRAÇÃO ==========
 
                         if "ignorar_bloqueio" in st.session_state:
@@ -1855,6 +2037,8 @@ def render_cadastro(clientes_collection):
                             del st.session_state["endereco_bloqueado_confirmado"]
                         if "dados_temp_bloqueio" in st.session_state:
                             del st.session_state["dados_temp_bloqueio"]
+                        if "confirmar_ixc_existente" in st.session_state:
+                            st.session_state["confirmar_ixc_existente"] = False
 
                         if codigo_indicacao:
                             st.markdown(f"### 🎁 Código de Indicação: `{codigo_indicacao}`")
@@ -1999,7 +2183,8 @@ def render_cadastro(clientes_collection):
                 "dados_temp_comodato_visualizar", "nome_arquivo_comodato_visualizar",
                 "dados_temp_contrato_completar", "nome_arquivo_contrato_completar",
                 "dados_temp_comodato_completar", "nome_arquivo_comodato_completar",
-                "dados_temp_bloqueio", "ignorar_bloqueio", "endereco_bloqueado_confirmado"
+                "dados_temp_bloqueio", "ignorar_bloqueio", "endereco_bloqueado_confirmado",
+                "confirmar_ixc_existente"
             ]
             suffixes = ["", "_completar", "_dialog", "_editar", "_visualizar", "_principal"]
             for base_key in keys_to_clear:
