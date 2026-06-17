@@ -2057,8 +2057,8 @@ def render_cadastro(clientes_collection):
                         "condominio_id": dados_cond["condominio_id"],
                         "condominio_nome": dados_cond["condominio_nome"],
                         "condominio_id_ixc": cond_id_ixc,  # NOVO: ID do IXC para integração
-                        "bloco": dados_cond["bloco"],
-                        "apartamento": dados_cond["apartamento"],
+                        "bloco": dados_cond["bloco"] if dados_cond["bloco"] else None,
+                        "apartamento": dados_cond["apartamento"] if dados_cond["apartamento"] else None,
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         "integrado_ixc": False,
                         "tentativas_integracao": 0,
