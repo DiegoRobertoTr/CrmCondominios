@@ -1,8 +1,10 @@
-# modules/condominios.py - COMPLETO ATUALIZADO
+# modules/condominios.py - COMPLETO ATUALIZADO COM IMPORTAÇÃO
 import streamlit as st
 from datetime import datetime
 from pymongo import MongoClient
 import urllib.parse
+import pandas as pd
+import re
 
 # Lista de opções de Zona
 OPCOES_ZONA = [
@@ -38,7 +40,11 @@ def render_cadastro_condominio():
     st.title("🏢 Cadastro de Condomínios")
     
     # Abas para Cadastro e Lista/Edição
-    tab1, tab2 = st.tabs(["📝 Novo Condomínio", "📋 Lista / Editar IDs IXC"])
+    tab1, tab2, tab3 = st.tabs([
+        "📝 Novo Condomínio", 
+        "📋 Lista / Editar IDs IXC",
+        "📥 Importar do IXC"
+    ])
     
     with tab1:
         with st.form("form_condominio"):
@@ -92,7 +98,7 @@ def render_cadastro_condominio():
                         "endereco": endereco.strip(),
                         "numero": numero.strip(),
                         "cep": cep.strip() if cep else None,
-                        "id_ixc": id_ixc.strip() if id_ixc else None,  # ✅ ID do IXC
+                        "id_ixc": id_ixc.strip() if id_ixc else None,
                         "sindico": sindico.strip() if sindico else None,
                         "cel_sindico": cel_sindico.strip() if cel_sindico else None,
                         "contato": contato.strip() if contato else None,
@@ -114,6 +120,10 @@ def render_cadastro_condominio():
     
     with tab2:
         render_lista_condominios()
+    
+    with tab3:
+        render_importacao_condominios()
+
 
 def render_lista_condominios():
     """Exibe lista de condomínios e permite editar IDs do IXC"""
@@ -151,7 +161,7 @@ def render_lista_condominios():
             "Cidade": c.get("cidade", ""),
             "Endereço": f"{c.get('endereco', '')}, {c.get('numero', '')}",
             "Zona": c.get("zona", ""),
-            "_id": str(c["_id"])  # Guarda o ID para edição
+            "_id": str(c["_id"])
         })
     
     st.dataframe(dados, use_container_width=True, height=400)
@@ -198,6 +208,408 @@ def render_lista_condominios():
                         st.warning(f"⚠️ ID do IXC removido para '{cond_atual['nome']}'. A integração não enviará este campo.")
                     st.rerun()
 
+
+# ============================================================================
+# FUNÇÕES PARA IMPORTAÇÃO COMPLETA DE CONDOMÍNIOS
+# ============================================================================
+
+def render_importacao_condominios():
+    """Renderiza o painel de importação de condomínios com senha"""
+    
+    st.subheader("📥 Importar/Substituir Condomínios do IXC")
+    
+    st.warning("""
+    ⚠️ **ATENÇÃO - LEIA COM CUIDADO!**
+    
+    Esta operação irá **SUBSTITUIR COMPLETAMENTE** os dados dos condomínios no CRM
+    pelos dados da planilha do IXC.
+    
+    **O que será substituído:**
+    - ✅ Nome do condomínio
+    - ✅ Endereço completo
+    - ✅ Número
+    - ✅ Cidade
+    - ✅ CEP
+    - ✅ ID do IXC
+    
+    **O que será PRESERVADO:**
+    - ✅ **VÍNCULOS COM CLIENTES** (o `_id` do MongoDB é mantido)
+    - ✅ Dados do síndico (se existirem no CRM)
+    - ✅ Data de cadastro original
+    """)
+    
+    # ⚠️ CAMPO DE SENHA
+    senha = st.text_input(
+        "🔐 Digite a senha para importar:",
+        type="password",
+        placeholder="Digite a senha de autorização",
+        key="senha_importacao_condominios"
+    )
+    
+    # Upload do arquivo
+    arquivo = st.file_uploader(
+        "📂 Selecione o arquivo CSV ou Excel com os dados do IXC:",
+        type=["csv", "xlsx", "xls"],
+        help="O arquivo deve conter as colunas: ID, Condomínio, Cidade, Endereço, Número, CEP"
+    )
+    
+    if arquivo and senha:
+        # Verificar senha
+        SENHA_CORRETA = "3540170"
+        
+        if senha == SENHA_CORRETA:
+            st.success("🔓 Senha confirmada! Processando arquivo...")
+            
+            # Ler arquivo
+            try:
+                if arquivo.name.endswith('.csv'):
+                    df = pd.read_csv(arquivo)
+                else:
+                    df = pd.read_excel(arquivo)
+                
+                # Normalizar nomes das colunas (remover espaços, acentos, etc.)
+                df.columns = df.columns.str.strip()
+                
+                st.success(f"✅ Arquivo lido com sucesso! {len(df)} registros encontrados.")
+                
+                # Mostrar prévia dos dados
+                with st.expander("📋 Prévia dos dados que serão importados"):
+                    st.dataframe(df.head(10), use_container_width=True)
+                    
+                    # Mostrar estatísticas
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total de registros", len(df))
+                    with col2:
+                        col_id = next((c for c in df.columns if 'id' in c.lower()), None)
+                        st.metric("Com ID", len(df[df[col_id].notna()]) if col_id else 0)
+                    with col3:
+                        col_end = next((c for c in df.columns if 'endereco' in c.lower() or 'endereço' in c.lower()), None)
+                        st.metric("Com endereço", len(df[df[col_end].notna()]) if col_end else 0)
+                
+                # Mapear colunas de forma flexível
+                mapa_colunas = {}
+                
+                # ID do IXC
+                for nome in ['ID', 'Id', 'id', 'ID_IXC', 'id_ixc', 'Código', 'codigo']:
+                    if nome in df.columns:
+                        mapa_colunas['id_ixc'] = nome
+                        break
+                
+                # Nome do Condomínio
+                for nome in ['Condomínio', 'Condominio', 'condominio', 'NOME', 'Nome', 'nome']:
+                    if nome in df.columns:
+                        mapa_colunas['nome'] = nome
+                        break
+                
+                # Cidade
+                for nome in ['Cidade', 'cidade', 'CIDADE', 'Município', 'Municipio']:
+                    if nome in df.columns:
+                        mapa_colunas['cidade'] = nome
+                        break
+                
+                # Endereço
+                for nome in ['Endereço', 'Endereco', 'endereco', 'endereço', 'Logradouro']:
+                    if nome in df.columns:
+                        mapa_colunas['endereco'] = nome
+                        break
+                
+                # Número
+                for nome in ['Número', 'Numero', 'numero', 'número']:
+                    if nome in df.columns:
+                        mapa_colunas['numero'] = nome
+                        break
+                
+                # CEP
+                for nome in ['CEP', 'Cep', 'cep']:
+                    if nome in df.columns:
+                        mapa_colunas['cep'] = nome
+                        break
+                
+                # CNPJ (opcional)
+                for nome in ['CNPJ', 'Cnpj', 'cnpj']:
+                    if nome in df.columns:
+                        mapa_colunas['cnpj'] = nome
+                        break
+                
+                # Verificar colunas obrigatórias
+                colunas_obrigatorias = ['id_ixc', 'nome', 'cidade', 'endereco']
+                colunas_faltando = [c for c in colunas_obrigatorias if c not in mapa_colunas]
+                
+                if colunas_faltando:
+                    st.error(f"❌ Colunas obrigatórias não encontradas: {colunas_faltando}")
+                    st.info("📌 O arquivo deve conter as colunas: ID, Condomínio, Cidade, Endereço")
+                    st.write("Colunas disponíveis:", list(df.columns))
+                    return
+                
+                # Mostrar mapeamento das colunas
+                with st.expander("🔍 Mapeamento das colunas detectado"):
+                    for campo, coluna in mapa_colunas.items():
+                        st.write(f"- **{campo}** → '{coluna}'")
+                
+                # Botão de confirmação final
+                st.divider()
+                st.markdown("### ⚠️ Confirmação Final")
+                
+                # Mostrar quais condomínios serão afetados
+                st.markdown("**Condomínios que serão atualizados/criados:**")
+                
+                # Listar os condomínios da planilha
+                nomes_planilha = df[mapa_colunas['nome']].tolist()
+                st.write(f"📋 {len(nomes_planilha)} condomínios da planilha:")
+                
+                # Buscar condomínios existentes no CRM
+                collection = get_condominios_collection()
+                
+                # Criar tabela de comparação
+                dados_comparacao = []
+                for _, row in df.iterrows():
+                    id_ixc = str(row[mapa_colunas['id_ixc']]).strip()
+                    nome = str(row[mapa_colunas['nome']]).strip()
+                    
+                    # Buscar no CRM
+                    cond_crm = collection.find_one({"id_ixc": id_ixc})
+                    if not cond_crm:
+                        cond_crm = collection.find_one({"nome": {"$regex": f"^{nome}$", "$options": "i"}})
+                    
+                    dados_comparacao.append({
+                        "ID IXC": id_ixc,
+                        "Nome (Planilha)": nome,
+                        "Nome (CRM)": cond_crm.get("nome", "❌ Não existe") if cond_crm else "❌ Não existe",
+                        "Status": "🔄 Atualizar" if cond_crm else "🆕 Novo"
+                    })
+                
+                st.dataframe(dados_comparacao, use_container_width=True)
+                
+                confirmar = st.checkbox(
+                    "✅ Confirmo que entendi que os dados do CRM serão **SUBSTITUÍDOS** pelos dados da planilha, preservando apenas os vínculos com clientes.",
+                    key="confirmar_importacao_completa"
+                )
+                
+                if confirmar and st.button("🚀 Confirmar Importação", type="primary"):
+                    with st.spinner("🔄 Importando dados..."):
+                        resultado = importar_condominios_completos(df, mapa_colunas)
+                        
+                        if resultado.get("erro"):
+                            st.error(f"❌ {resultado['erro']}")
+                        else:
+                            # Estatísticas
+                            st.success(f"""
+                            ✅ **Importação concluída com sucesso!**
+                            
+                            - 📊 Total processados: **{resultado['total']}**
+                            - 🔄 Atualizados: **{resultado['atualizados']}**
+                            - 🆕 Novos criados: **{resultado['novos']}**
+                            - ❌ Erros: **{resultado['erros']}**
+                            """)
+                            
+                            # Mostrar detalhes
+                            if resultado.get('detalhes'):
+                                with st.expander("📋 Detalhes da Importação", expanded=True):
+                                    for item in resultado['detalhes']:
+                                        if item['status'] == 'atualizado':
+                                            st.success(f"✅ **{item['nome']}** (ID IXC: {item.get('id_ixc')})")
+                                            if item.get('alteracoes'):
+                                                for alt in item['alteracoes']:
+                                                    st.write(f"   🔄 {alt}")
+                                        elif item['status'] == 'novo':
+                                            st.info(f"🆕 **{item['nome']}** - Novo condomínio criado (ID IXC: {item.get('id_ixc')})")
+                                        else:
+                                            st.error(f"❌ {item['nome']} - {item.get('erro', 'Erro desconhecido')}")
+                            
+                            # Mostrar resumo dos condomínios atualizados
+                            with st.expander("📊 Resumo dos Condomínios Atualizados"):
+                                condominios = list(collection.find().sort("nome", 1))
+                                
+                                dados_resumo = []
+                                for c in condominios:
+                                    dados_resumo.append({
+                                        "ID IXC": c.get("id_ixc", "N/A"),
+                                        "Nome": c.get("nome", ""),
+                                        "Endereço": f"{c.get('endereco', '')}, {c.get('numero', '')}",
+                                        "Cidade": c.get("cidade", ""),
+                                        "CEP": c.get("cep", ""),
+                                    })
+                                
+                                st.dataframe(dados_resumo, use_container_width=True)
+            
+            except Exception as e:
+                st.error(f"❌ Erro ao processar arquivo: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+        
+        elif senha != SENHA_CORRETA:
+            st.error("❌ Senha incorreta! Acesso negado.")
+    
+    elif arquivo and not senha:
+        st.warning("🔐 Digite a senha para prosseguir com a importação.")
+
+
+def importar_condominios_completos(df, mapa_colunas):
+    """
+    Importa/SUBSTITUI completamente os dados dos condomínios a partir de dados do IXC.
+    PRESERVA os vínculos com clientes (mantendo o _id).
+    """
+    resultado = {
+        "total": 0,
+        "atualizados": 0,
+        "novos": 0,
+        "erros": 0,
+        "detalhes": []
+    }
+    
+    try:
+        collection = get_condominios_collection()
+        
+        # Processar cada linha do DataFrame
+        for idx, row in df.iterrows():
+            resultado["total"] += 1
+            
+            try:
+                # Extrair dados da planilha
+                id_ixc = str(row[mapa_colunas['id_ixc']]).strip()
+                nome = str(row[mapa_colunas['nome']]).strip().upper()
+                cidade = str(row[mapa_colunas['cidade']]).strip()
+                endereco = str(row[mapa_colunas['endereco']]).strip()
+                numero = str(row.get(mapa_colunas.get('numero', ''), '')).strip() if mapa_colunas.get('numero') else ''
+                cep = str(row.get(mapa_colunas.get('cep', ''), '')).strip() if mapa_colunas.get('cep') else ''
+                cnpj = str(row.get(mapa_colunas.get('cnpj', ''), '')).strip() if mapa_colunas.get('cnpj') else ''
+                
+                # Limpar ID do IXC (remover caracteres não numéricos se necessário)
+                id_ixc = re.sub(r'[^0-9]', '', id_ixc)
+                
+                if not id_ixc or not nome or not cidade or not endereco:
+                    resultado["erros"] += 1
+                    resultado["detalhes"].append({
+                        "nome": nome or f"Linha {idx}",
+                        "status": "erro",
+                        "erro": f"Dados incompletos - ID: {id_ixc}, Nome: {nome}, Cidade: {cidade}, Endereco: {endereco}"
+                    })
+                    print(f"⚠️ Linha {idx}: Dados incompletos - ID: {id_ixc}, Nome: {nome}")
+                    continue
+                
+                # 🔍 PRIORIDADE 1: Buscar pelo ID do IXC
+                cond_existente = collection.find_one({"id_ixc": id_ixc})
+                
+                # 🔍 PRIORIDADE 2: Se não encontrou pelo ID, buscar pelo nome (normalizado)
+                if not cond_existente:
+                    # Normalizar nome para busca (remover caracteres especiais, espaços extras)
+                    nome_busca = re.sub(r'[^\w\s]', '', nome).strip()
+                    cond_existente = collection.find_one({
+                        "nome": {"$regex": f"^{nome_busca}$", "$options": "i"}
+                    })
+                    if cond_existente:
+                        print(f"🔍 Encontrado pelo nome: '{nome}' (ID CRM: {cond_existente['_id']})")
+                
+                if cond_existente:
+                    # ========== SUBSTITUIR COMPLETAMENTE OS DADOS ==========
+                    # Preservar dados importantes do CRM
+                    dados_preservados = {
+                        "_id": cond_existente["_id"],  # Mantém o ID para preservar vínculos
+                        "data_cadastro": cond_existente.get("data_cadastro", datetime.now()),
+                        "sindico": cond_existente.get("sindico"),
+                        "cel_sindico": cond_existente.get("cel_sindico"),
+                        "contato": cond_existente.get("contato"),
+                        "cel_contato": cond_existente.get("cel_contato"),
+                    }
+                    
+                    # Preparar os novos dados (SUBSTITUIÇÃO COMPLETA)
+                    novos_dados = {
+                        "nome": nome,
+                        "id_ixc": id_ixc,
+                        "cidade": cidade,
+                        "estado": "RJ",
+                        "endereco": endereco,
+                        "numero": numero if numero else "",
+                        "cep": cep if cep else "",
+                        "cnpj": cnpj if cnpj else cond_existente.get("cnpj", ""),
+                        "ultima_sincronizacao_ixc": datetime.now(),
+                        "ultima_atualizacao_completa": datetime.now()
+                    }
+                    
+                    # Combinar dados preservados com novos dados
+                    dados_atualizados = {**dados_preservados, **novos_dados}
+                    
+                    # Remover campos que não devem ser atualizados
+                    dados_atualizados.pop("_id", None)
+                    
+                    # Verificar alterações para log
+                    alteracoes = []
+                    for campo, valor in dados_atualizados.items():
+                        if campo in cond_existente and str(cond_existente[campo]) != str(valor):
+                            alteracoes.append(f"{campo}: '{cond_existente[campo]}' -> '{valor}'")
+                    
+                    # Se não houve alterações, apenas log
+                    if not alteracoes:
+                        alteracoes.append("Nenhuma alteração necessária - dados já estão corretos")
+                    
+                    # Atualizar no MongoDB
+                    collection.update_one(
+                        {"_id": cond_existente["_id"]},
+                        {"$set": dados_atualizados}
+                    )
+                    
+                    resultado["atualizados"] += 1
+                    resultado["detalhes"].append({
+                        "nome": nome,
+                        "id_ixc": id_ixc,
+                        "status": "atualizado",
+                        "alteracoes": alteracoes,
+                        "id_crm": str(cond_existente["_id"])
+                    })
+                    
+                    print(f"✅ Condomínio atualizado: {nome} (ID IXC: {id_ixc}) - {len(alteracoes)} alterações")
+                    
+                else:
+                    # ========== CRIAR NOVO CONDOMÍNIO ==========
+                    novo_cond = {
+                        "nome": nome,
+                        "id_ixc": id_ixc,
+                        "cidade": cidade,
+                        "estado": "RJ",
+                        "endereco": endereco,
+                        "numero": numero if numero else "",
+                        "cep": cep if cep else "",
+                        "cnpj": cnpj if cnpj else "",
+                        "data_cadastro": datetime.now(),
+                        "ultima_sincronizacao_ixc": datetime.now(),
+                        "ultima_atualizacao_completa": datetime.now()
+                    }
+                    
+                    result = collection.insert_one(novo_cond)
+                    resultado["novos"] += 1
+                    resultado["detalhes"].append({
+                        "nome": nome,
+                        "id_ixc": id_ixc,
+                        "status": "novo",
+                        "id_crm": str(result.inserted_id),
+                        "alteracoes": ["Condomínio criado a partir do IXC"]
+                    })
+                    
+                    print(f"🆕 Novo condomínio criado: {nome} (ID IXC: {id_ixc})")
+            
+            except Exception as e:
+                resultado["erros"] += 1
+                nome_linha = str(row.get(mapa_colunas.get('nome', ''), f"Linha {idx}"))
+                resultado["detalhes"].append({
+                    "nome": nome_linha,
+                    "status": "erro",
+                    "erro": str(e)
+                })
+                print(f"❌ Erro na linha {idx}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        return resultado
+    
+    except Exception as e:
+        return {"erro": str(e)}
+
+
+# ============================================================================
+# FUNÇÕES AUXILIARES
+# ============================================================================
+
 def get_condominio_by_id(condominio_id):
     """Busca condomínio por ID"""
     collection = get_condominios_collection()
@@ -228,3 +640,11 @@ def get_estatisticas_zonas():
         {"$sort": {"count": -1}}
     ]
     return list(collection.aggregate(pipeline))
+
+def update_condominio(condominio_id, updates):
+    """Atualiza um condomínio específico"""
+    collection = get_condominios_collection()
+    return collection.update_one(
+        {"_id": condominio_id},
+        {"$set": updates}
+    )
