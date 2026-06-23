@@ -684,12 +684,13 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA - CORRIGIDA
+# AGENDA VISUAL POR VENDEDORA - CORRIGIDA (USANDO COMPONENTES STREAMLIT)
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
     """
     Exibe agenda em formato visual (tabela) com edição manual
+    Usando componentes Streamlit em vez de HTML puro
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -848,7 +849,7 @@ def agenda_visual_por_vendedora(db):
             })
     
     # ============================================================
-    # EXIBIR TABELA COM STREAMLIT (SEM JAVASCRIPT)
+    # EXIBIR TABELA COM STREAMLIT (USANDO CONTAINERS)
     # ============================================================
     
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
@@ -870,191 +871,108 @@ def agenda_visual_por_vendedora(db):
     
     st.markdown("---")
     
-    # CSS para a tabela
-    st.markdown("""
-    <style>
-        .agenda-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-        .agenda-table th {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 10px;
-            text-align: center;
-            border: 1px solid #ddd;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-        .agenda-table td {
-            padding: 6px;
-            border: 1px solid #ddd;
-            text-align: center;
-            vertical-align: top;
-            min-height: 50px;
-        }
-        .agenda-table .dia-util {
-            background-color: #f9f9f9;
-        }
-        .agenda-table .sabado {
-            background-color: #e8f4fd;
-        }
-        .agenda-table .domingo {
-            background-color: #ffe6e6;
-        }
-        .agenda-table .feriado {
-            background-color: #ffcccc;
-        }
-        .status-agendado { color: #28a745; font-weight: bold; }
-        .status-concluido { color: #17a2b8; font-weight: bold; }
-        .status-cancelado { color: #dc3545; font-weight: bold; }
-        .status-chuva { color: #6c757d; font-style: italic; }
-        .status-falta { color: #dc3545; font-style: italic; }
-        .status-feriado { color: #ff6b6b; font-weight: bold; }
-        .visita-manual { border-left: 3px solid #ff6b6b; padding-left: 5px; }
-        .visita-auto { border-left: 3px solid #28a745; padding-left: 5px; }
-        .periodo-m { background-color: #e3f2fd; border-radius: 3px; padding: 1px 5px; font-size: 11px; }
-        .periodo-t { background-color: #fff3e0; border-radius: 3px; padding: 1px 5px; font-size: 11px; }
-        .periodo-mt { background-color: #f3e5f5; border-radius: 3px; padding: 1px 5px; font-size: 11px; }
-        .visita-item {
-            margin-bottom: 4px;
-            padding: 3px;
-            border-radius: 4px;
-            background-color: #f5f5f5;
-        }
-        .visita-item:hover {
-            background-color: #e8e8e8;
-        }
-        .data-cell {
-            font-weight: bold;
-            font-size: 14px;
-        }
-        .data-cell small {
-            font-weight: normal;
-            font-size: 11px;
-            color: #666;
-        }
-        .vazio {
-            color: #999;
-            font-size: 12px;
-            padding: 5px;
-        }
-        .add-btn {
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            font-size: 16px;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .add-btn:hover {
-            background: #764ba2;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+    # Criar cabeçalho da tabela
+    cols_cabecalho = st.columns([1] + [1] * len(vendedoras_selecionadas))
     
-    # Construir tabela
-    html_table = '<table class="agenda-table">'
+    with cols_cabecalho[0]:
+        st.markdown("**Data**")
     
-    # Cabeçalho
-    html_table += '<tr><th style="min-width: 80px;">Data</th>'
-    for vendedora in vendedoras_selecionadas:
-        html_table += f'<th>{vendedora}</th>'
-    html_table += '</tr>'
+    for i, vendedora in enumerate(vendedoras_selecionadas):
+        with cols_cabecalho[i + 1]:
+            st.markdown(f"**{vendedora}**")
     
-    # Linhas
+    st.markdown("---")
+    
+    # Criar linhas da tabela
     for data_str in sorted(agenda_data.keys()):
         data_info = agenda_data[data_str]
         data_obj = data_info["data"]
         dia_semana = data_obj.weekday()
         
-        if dia_semana == 6:
-            row_class = "domingo"
-        elif dia_semana == 5:
-            row_class = "sabado"
+        # Definir cor de fundo
+        if dia_semana == 6:  # Domingo
+            bg_color = "#ffe6e6"
+        elif dia_semana == 5:  # Sábado
+            bg_color = "#e8f4fd"
         else:
-            row_class = "dia-util"
+            bg_color = "#f9f9f9"
         
         if data_info.get("feriado"):
-            row_class = "feriado"
+            bg_color = "#ffcccc"
         
-        html_table += f'<tr class="{row_class}">'
+        # Criar colunas para esta linha
+        cols_linha = st.columns([1] + [1] * len(vendedoras_selecionadas))
         
         # Coluna da data
-        data_formatada = data_obj.strftime("%d/%m")
-        html_table += f'<td class="data-cell">{data_formatada}<br><small>{data_info["dia_semana"][:3]}</small></td>'
+        with cols_linha[0]:
+            data_formatada = data_obj.strftime("%d/%m")
+            dia_semana_abrev = data_info["dia_semana"][:3]
+            st.markdown(f"""
+            <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
+                <strong>{data_formatada}</strong><br>
+                <small>{dia_semana_abrev}</small>
+            </div>
+            """, unsafe_allow_html=True)
         
         # Colunas das vendedoras
-        for vendedora in vendedoras_selecionadas:
-            visitas = data_info["vendedoras"].get(vendedora, [])
-            
-            if data_info.get("feriado"):
-                html_table += '<td class="status-feriado">🔴 FERIADO</td>'
-                continue
-            
-            if not visitas:
-                # Célula vazia com indicador visual
-                html_table += f'''
-                <td>
-                    <div class="vazio">
-                        <span style="font-size: 16px;">➕</span>
-                        <br><small style="font-size: 9px;">Use o formulário abaixo</small>
+        for i, vendedora in enumerate(vendedoras_selecionadas):
+            with cols_linha[i + 1]:
+                visitas = data_info["vendedoras"].get(vendedora, [])
+                
+                if data_info.get("feriado"):
+                    st.markdown(f"""
+                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
+                        <span style="color: #ff6b6b; font-weight: bold;">🔴 FERIADO</span>
                     </div>
-                </td>
-                '''
-                continue
-            
-            # Construir conteúdo da célula com visitas
-            cell_content = ""
-            for visita in visitas:
-                status_icons = {
-                    "agendado": "🟢",
-                    "concluido": "✅",
-                    "cancelado": "🔴",
-                    "chuva": "🌧️",
-                    "falta": "⛔",
-                    "feriado": "📌"
-                }
-                status_icon = status_icons.get(visita["status"], "🟢")
-                status_class = f"status-{visita['status']}"
+                    """, unsafe_allow_html=True)
+                    continue
                 
-                periodo = visita.get("periodo", "M/T")
-                periodo_class = "periodo-mt"
-                if periodo == "M":
-                    periodo_class = "periodo-m"
-                elif periodo == "T":
-                    periodo_class = "periodo-t"
-                elif periodo == "M/T":
-                    periodo_class = "periodo-mt"
+                if not visitas:
+                    st.markdown(f"""
+                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
+                        <span style="font-size: 16px; color: #999;">➕</span>
+                        <br><small style="font-size: 9px; color: #999;">Use o formulário</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    continue
                 
-                manual_class = "visita-manual" if visita.get("manual") else "visita-auto"
+                # Construir conteúdo da célula com visitas
+                cell_content = ""
+                for visita in visitas:
+                    status_icons = {
+                        "agendado": "🟢",
+                        "concluido": "✅",
+                        "cancelado": "🔴",
+                        "chuva": "🌧️",
+                        "falta": "⛔"
+                    }
+                    status_icon = status_icons.get(visita["status"], "🟢")
+                    
+                    periodo = visita.get("periodo", "M/T")
+                    periodo_label = periodo
+                    
+                    manual_label = "📝" if visita.get("manual") else "🤖"
+                    
+                    cell_content += f"""
+                    <div style="margin-bottom: 4px; padding: 3px; border-radius: 4px; background-color: #f5f5f5; border-left: 3px solid {'#ff6b6b' if visita.get('manual') else '#28a745'};">
+                        <span style="background-color: {'#e3f2fd' if periodo == 'M' else '#fff3e0' if periodo == 'T' else '#f3e5f5'}; border-radius: 3px; padding: 1px 5px; font-size: 11px;">
+                            {periodo_label}
+                        </span>
+                        <strong>{visita['condominio']}</strong>
+                        <span>{status_icon}</span>
+                        <br>
+                        <span style="font-size: 10px; color: #666;">{manual_label}</span>
+                    </div>
+                    """
                 
-                cell_content += f'''
-                <div class="visita-item {manual_class}">
-                    <span class="{periodo_class}">{periodo}</span>
-                    <strong>{visita['condominio']}</strong>
-                    <span class="{status_class}">{status_icon}</span>
-                    <br>
-                    <span style="font-size: 10px; color: #666;">
-                        {'' if visita.get('manual') else '🤖 '}
-                    </span>
+                st.markdown(f"""
+                <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: left; min-height: 60px;">
+                    {cell_content}
                 </div>
-                '''
-            
-            html_table += f'<td>{cell_content}</td>'
+                """, unsafe_allow_html=True)
         
-        html_table += '</tr>'
-    
-    html_table += '</table>'
-    
-    st.markdown(html_table, unsafe_allow_html=True)
+        # Separador entre linhas
+        st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
     
     # ============================================================
     # EDITOR MANUAL DE VISITAS (FORMS STREAMLIT)
