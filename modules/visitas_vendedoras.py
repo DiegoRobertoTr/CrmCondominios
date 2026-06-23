@@ -670,7 +670,7 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
                     "prioridade": nec["prioridade"],
                     "adequacao": vp["nivel"],
                     "campanha_id": nec.get("campanha_id"),
-                    "periodo": "M/T"  # Padrão: manhã e tarde
+                    "periodo": "M/T"
                 })
                 
                 # Atualizar contadores
@@ -684,13 +684,12 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA
+# AGENDA VISUAL POR VENDEDORA - CORRIGIDA
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
     """
     Exibe agenda em formato visual (tabela) com edição manual
-    Similar ao print enviado
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -703,13 +702,11 @@ def agenda_visual_por_vendedora(db):
             value=datetime.now().date().replace(day=1),
             key="mes_agenda_visual"
         )
-        # Extrair mês e ano
         mes = mes_ano.month
         ano = mes_ano.year
         dias_no_mes = calendar.monthrange(ano, mes)[1]
     
     with col_per2:
-        # Selecionar vendedoras para exibir
         vendedoras_ativas = list(db.vendedoras.find({"ativo": True}))
         vendedoras_opcoes = [v["nome"] for v in vendedoras_ativas]
         
@@ -725,7 +722,6 @@ def agenda_visual_por_vendedora(db):
         )
     
     with col_per3:
-        # Filtro de status
         mostrar_status = st.multiselect(
             "Mostrar Status",
             options=["agendado", "concluido", "cancelado", "chuva", "falta", "feriado"],
@@ -749,26 +745,21 @@ def agenda_visual_por_vendedora(db):
         if st.button("🔃 Resetar para Sugestões", use_container_width=True):
             st.warning("⚠️ Isso irá substituir a agenda manual pelas sugestões automáticas.")
             if st.button("✅ Confirmar Reset", key="confirm_reset"):
-                # Gerar novas sugestões
                 data_inicio = datetime(ano, mes, 1).date()
                 data_fim = datetime(ano, mes, dias_no_mes).date()
                 
-                # Buscar campanha ativa
                 campanha_ativa = db.campanha_visitas.find_one({"ativo": True})
                 campanha_id = campanha_ativa.get("campanha_id") if campanha_ativa else None
                 
                 sugestoes = agendamento_inteligente(db, data_inicio, data_fim, campanha_id)
                 
                 if sugestoes:
-                    # Remover visitas manuais do período
                     db.visitas_vendedoras.delete_many({
                         "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
                         "manual": True
                     })
                     
-                    # Inserir novas sugestões
                     for sug in sugestoes:
-                        # Verificar se já existe visita para este dia/vendedora/condomínio
                         existente = db.visitas_vendedoras.find_one({
                             "data": sug["data"],
                             "vendedora": sug["vendedora"],
@@ -809,19 +800,17 @@ def agenda_visual_por_vendedora(db):
     st.markdown("---")
     
     # ============================================================
-    # CONSTRUIR A TABELA VISUAL
+    # BUSCAR DADOS
     # ============================================================
     
-    # Buscar visitas do mês
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
     data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
     
-    # Buscar todas as visitas do período
     visitas_db = list(db.visitas_vendedoras.find({
         "data": {"$gte": data_inicio_str, "$lte": data_fim_str}
     }))
     
-    # Criar estrutura de dados: {data: {vendedora: [visitas]}}
+    # Criar estrutura de dados
     agenda_data = {}
     for dia in range(1, dias_no_mes + 1):
         data_obj = datetime(ano, mes, dia).date()
@@ -842,16 +831,13 @@ def agenda_visual_por_vendedora(db):
         vendedora = visita["vendedora"]
         
         if data_str in agenda_data and vendedora in agenda_data[data_str]["vendedoras"]:
-            # Verificar se é feriado
             if visita.get("status") == "feriado":
                 agenda_data[data_str]["feriado"] = True
                 continue
             
-            # Verificar se deve mostrar baseado no status
             if mostrar_status and visita.get("status") not in mostrar_status:
                 continue
             
-            # Adicionar visita
             agenda_data[data_str]["vendedoras"][vendedora].append({
                 "id": str(visita["_id"]),
                 "condominio": visita["condominio_nome"],
@@ -862,10 +848,9 @@ def agenda_visual_por_vendedora(db):
             })
     
     # ============================================================
-    # EXIBIR TABELA COM HTML
+    # EXIBIR TABELA COM STREAMLIT (SEM JAVASCRIPT)
     # ============================================================
     
-    # Título do mês
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
     
     # Legenda
@@ -885,8 +870,8 @@ def agenda_visual_por_vendedora(db):
     
     st.markdown("---")
     
-    # Criar tabela com HTML/CSS customizado
-    html_table = """
+    # CSS para a tabela
+    st.markdown("""
     <style>
         .agenda-table {
             width: 100%;
@@ -942,32 +927,6 @@ def agenda_visual_por_vendedora(db):
         .visita-item:hover {
             background-color: #e8e8e8;
         }
-        .edit-btn {
-            background: none;
-            border: none;
-            color: #667eea;
-            cursor: pointer;
-            font-size: 11px;
-            padding: 2px 4px;
-            border-radius: 3px;
-        }
-        .edit-btn:hover {
-            background-color: #667eea;
-            color: white;
-        }
-        .delete-btn {
-            background: none;
-            border: none;
-            color: #dc3545;
-            cursor: pointer;
-            font-size: 11px;
-            padding: 2px 4px;
-            border-radius: 3px;
-        }
-        .delete-btn:hover {
-            background-color: #dc3545;
-            color: white;
-        }
         .data-cell {
             font-weight: bold;
             font-size: 14px;
@@ -982,11 +941,27 @@ def agenda_visual_por_vendedora(db):
             font-size: 12px;
             padding: 5px;
         }
+        .add-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            font-size: 16px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .add-btn:hover {
+            background: #764ba2;
+        }
     </style>
-    """
+    """, unsafe_allow_html=True)
     
-    # Iniciar tabela
-    html_table += '<table class="agenda-table">'
+    # Construir tabela
+    html_table = '<table class="agenda-table">'
     
     # Cabeçalho
     html_table += '<tr><th style="min-width: 80px;">Data</th>'
@@ -1000,10 +975,9 @@ def agenda_visual_por_vendedora(db):
         data_obj = data_info["data"]
         dia_semana = data_obj.weekday()
         
-        # Estilo da linha
-        if dia_semana == 6:  # Domingo
+        if dia_semana == 6:
             row_class = "domingo"
-        elif dia_semana == 5:  # Sábado
+        elif dia_semana == 5:
             row_class = "sabado"
         else:
             row_class = "dia-util"
@@ -1026,17 +1000,18 @@ def agenda_visual_por_vendedora(db):
                 continue
             
             if not visitas:
-                # Botão para adicionar visita
+                # Célula vazia com indicador visual
                 html_table += f'''
                 <td>
                     <div class="vazio">
-                        <button class="edit-btn" onclick="document.getElementById('adicionar_visita').style.display='block'">➕</button>
+                        <span style="font-size: 16px;">➕</span>
+                        <br><small style="font-size: 9px;">Use o formulário abaixo</small>
                     </div>
                 </td>
                 '''
                 continue
             
-            # Construir conteúdo da célula
+            # Construir conteúdo da célula com visitas
             cell_content = ""
             for visita in visitas:
                 status_icons = {
@@ -1050,7 +1025,6 @@ def agenda_visual_por_vendedora(db):
                 status_icon = status_icons.get(visita["status"], "🟢")
                 status_class = f"status-{visita['status']}"
                 
-                # Período
                 periodo = visita.get("periodo", "M/T")
                 periodo_class = "periodo-mt"
                 if periodo == "M":
@@ -1060,7 +1034,6 @@ def agenda_visual_por_vendedora(db):
                 elif periodo == "M/T":
                     periodo_class = "periodo-mt"
                 
-                # Classe manual/auto
                 manual_class = "visita-manual" if visita.get("manual") else "visita-auto"
                 
                 cell_content += f'''
@@ -1070,8 +1043,7 @@ def agenda_visual_por_vendedora(db):
                     <span class="{status_class}">{status_icon}</span>
                     <br>
                     <span style="font-size: 10px; color: #666;">
-                        <button class="edit-btn" onclick="alert('Editar visita: {visita["condominio"]}')">✏️</button>
-                        <button class="delete-btn" onclick="alert('Remover visita: {visita["condominio"]}')">🗑️</button>
+                        {'' if visita.get('manual') else '🤖 '}
                     </span>
                 </div>
                 '''
@@ -1082,104 +1054,107 @@ def agenda_visual_por_vendedora(db):
     
     html_table += '</table>'
     
-    # Renderizar HTML
     st.markdown(html_table, unsafe_allow_html=True)
     
     # ============================================================
-    # EDITOR MANUAL DE VISITAS
+    # EDITOR MANUAL DE VISITAS (FORMS STREAMLIT)
     # ============================================================
     
     st.markdown("---")
     st.markdown("### ✏️ Editor Manual de Visitas")
+    st.info("💡 Selecione a data, vendedora e condomínio para adicionar ou editar uma visita.")
     
-    col_ed1, col_ed2, col_ed3, col_ed4 = st.columns(4)
-    
-    with col_ed1:
-        data_edicao = st.date_input(
-            "Data",
-            value=datetime.now().date(),
-            key="data_edicao_manual",
-            min_value=datetime(ano, mes, 1).date(),
-            max_value=datetime(ano, mes, dias_no_mes).date()
-        )
-    
-    with col_ed2:
-        vendedora_edicao = st.selectbox(
-            "Vendedora",
-            options=vendedoras_selecionadas if vendedoras_selecionadas else ["Selecione uma vendedora"],
-            key="vendedora_edicao"
-        )
-    
-    with col_ed3:
-        condominio_edicao = st.text_input(
-            "Condomínio",
-            placeholder="Digite o nome do condomínio",
-            key="condominio_edicao"
-        )
-    
-    with col_ed4:
-        periodo_edicao = st.selectbox(
-            "Período",
-            options=["M", "T", "M/T"],
-            key="periodo_edicao"
-        )
-    
-    col_ed5, col_ed6, col_ed7, col_ed8 = st.columns(4)
-    
-    with col_ed5:
-        status_edicao = st.selectbox(
-            "Status",
-            options=["agendado", "concluido", "cancelado", "chuva", "falta", "feriado"],
-            key="status_edicao",
-            format_func=formatar_status_visita
-        )
-    
-    with col_ed6:
-        observacao_edicao = st.text_input(
-            "Observação",
-            placeholder="Ex: Chuva, falta, etc.",
-            key="obs_edicao"
-        )
-    
-    with col_ed7:
-        if st.button("➕ Adicionar/Editar Visita", use_container_width=True, type="primary"):
-            if not condominio_edicao and status_edicao != "feriado":
+    with st.form("form_edicao_visita"):
+        col_ed1, col_ed2, col_ed3, col_ed4 = st.columns(4)
+        
+        with col_ed1:
+            data_edicao = st.date_input(
+                "Data",
+                value=datetime.now().date(),
+                key="data_edicao_manual_form",
+                min_value=datetime(ano, mes, 1).date(),
+                max_value=datetime(ano, mes, dias_no_mes).date()
+            )
+        
+        with col_ed2:
+            vendedora_edicao = st.selectbox(
+                "Vendedora",
+                options=vendedoras_selecionadas if vendedoras_selecionadas else ["Selecione uma vendedora"],
+                key="vendedora_edicao_form"
+            )
+        
+        with col_ed3:
+            condominio_edicao = st.text_input(
+                "Condomínio",
+                placeholder="Digite o nome do condomínio",
+                key="condominio_edicao_form"
+            )
+        
+        with col_ed4:
+            periodo_edicao = st.selectbox(
+                "Período",
+                options=["M", "T", "M/T"],
+                key="periodo_edicao_form"
+            )
+        
+        col_ed5, col_ed6, col_ed7, col_ed8 = st.columns(4)
+        
+        with col_ed5:
+            status_edicao = st.selectbox(
+                "Status",
+                options=["agendado", "concluido", "cancelado", "chuva", "falta", "feriado"],
+                key="status_edicao_form",
+                format_func=formatar_status_visita
+            )
+        
+        with col_ed6:
+            observacao_edicao = st.text_input(
+                "Observação",
+                placeholder="Ex: Chuva, falta, etc.",
+                key="obs_edicao_form"
+            )
+        
+        with col_ed7:
+            submitted = st.form_submit_button("✅ Adicionar/Editar Visita", use_container_width=True, type="primary")
+        
+        with col_ed8:
+            remover_submitted = st.form_submit_button("🗑️ Remover Visitas do Dia", use_container_width=True)
+        
+        if submitted:
+            data_str = data_edicao.strftime("%Y-%m-%d")
+            
+            if status_edicao == "feriado":
+                feriado_existente = db.visitas_vendedoras.find_one({
+                    "data": data_str,
+                    "status": "feriado"
+                })
+                
+                if not feriado_existente:
+                    nova_visita = {
+                        "condominio_id": None,
+                        "condominio_nome": "FERIADO",
+                        "vendedora": "Sistema",
+                        "data": data_str,
+                        "status": "feriado",
+                        "periodo": "M/T",
+                        "observacoes": observacao_edicao or "Feriado",
+                        "criado_por": st.session_state.get("nome_usuario", "Manual"),
+                        "data_criacao": datetime.now(),
+                        "manual": True,
+                        "zona": "Sistema",
+                        "adequacao": "sistema"
+                    }
+                    db.visitas_vendedoras.insert_one(nova_visita)
+                    st.success(f"✅ Feriado marcado para {data_edicao.strftime('%d/%m/%Y')}")
+                else:
+                    st.info(f"ℹ️ Feriado já marcado para {data_edicao.strftime('%d/%m/%Y')}")
+                
+                st.rerun()
+                return
+            
+            if not condominio_edicao:
                 st.error("⚠️ Digite o nome do condomínio!")
             else:
-                data_str = data_edicao.strftime("%Y-%m-%d")
-                
-                # Se for feriado, marcar o dia inteiro
-                if status_edicao == "feriado":
-                    # Verificar se já existe feriado neste dia
-                    feriado_existente = db.visitas_vendedoras.find_one({
-                        "data": data_str,
-                        "status": "feriado"
-                    })
-                    
-                    if not feriado_existente:
-                        nova_visita = {
-                            "condominio_id": None,
-                            "condominio_nome": "FERIADO",
-                            "vendedora": "Sistema",
-                            "data": data_str,
-                            "status": "feriado",
-                            "periodo": "M/T",
-                            "observacoes": observacao_edicao or "Feriado",
-                            "criado_por": st.session_state.get("nome_usuario", "Manual"),
-                            "data_criacao": datetime.now(),
-                            "manual": True,
-                            "zona": "Sistema",
-                            "adequacao": "sistema"
-                        }
-                        db.visitas_vendedoras.insert_one(nova_visita)
-                        st.success(f"✅ Feriado marcado para {data_edicao.strftime('%d/%m/%Y')}")
-                    else:
-                        st.info(f"ℹ️ Feriado já marcado para {data_edicao.strftime('%d/%m/%Y')}")
-                    
-                    st.rerun()
-                    return
-                
-                # Verificar se já existe visita para este dia/vendedora/condomínio
                 existente = db.visitas_vendedoras.find_one({
                     "data": data_str,
                     "vendedora": vendedora_edicao,
@@ -1187,7 +1162,6 @@ def agenda_visual_por_vendedora(db):
                 })
                 
                 if existente:
-                    # Atualizar
                     db.visitas_vendedoras.update_one(
                         {"_id": existente["_id"]},
                         {"$set": {
@@ -1200,7 +1174,6 @@ def agenda_visual_por_vendedora(db):
                     )
                     st.success(f"✅ Visita atualizada: {condominio_edicao}")
                 else:
-                    # Verificar se já tem visita neste dia/vendedora (limite de 2)
                     visitas_dia = db.visitas_vendedoras.count_documents({
                         "data": data_str,
                         "vendedora": vendedora_edicao,
@@ -1210,7 +1183,6 @@ def agenda_visual_por_vendedora(db):
                     if visitas_dia >= 2:
                         st.warning(f"⚠️ {vendedora_edicao} já tem {visitas_dia} visitas neste dia. Limite é 2.")
                     else:
-                        # Criar nova
                         nova_visita = {
                             "condominio_id": None,
                             "condominio_nome": condominio_edicao,
@@ -1229,12 +1201,10 @@ def agenda_visual_por_vendedora(db):
                         st.success(f"✅ Visita adicionada: {condominio_edicao}")
                 
                 st.rerun()
-    
-    with col_ed8:
-        if st.button("🗑️ Remover Visitas do Dia", use_container_width=True):
+        
+        if remover_submitted:
             data_str = data_edicao.strftime("%Y-%m-%d")
             
-            # Buscar visitas para remover
             visitas_remover = list(db.visitas_vendedoras.find({
                 "data": data_str,
                 "vendedora": vendedora_edicao,
@@ -1242,13 +1212,10 @@ def agenda_visual_por_vendedora(db):
             }))
             
             if visitas_remover:
-                st.warning(f"⚠️ Remover visitas de {vendedora_edicao} em {data_edicao.strftime('%d/%m/%Y')}?")
-                
                 for vis in visitas_remover:
-                    if st.button(f"🗑️ Remover {vis['condominio_nome']}", key=f"remover_{vis['_id']}"):
-                        db.visitas_vendedoras.delete_one({"_id": vis["_id"]})
-                        st.success(f"✅ Visita removida: {vis['condominio_nome']}")
-                        st.rerun()
+                    db.visitas_vendedoras.delete_one({"_id": vis["_id"]})
+                st.success(f"✅ Removidas {len(visitas_remover)} visitas de {vendedora_edicao} em {data_edicao.strftime('%d/%m/%Y')}")
+                st.rerun()
             else:
                 st.warning("Nenhuma visita encontrada para este dia/vendedora.")
 
@@ -1262,7 +1229,6 @@ def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
     """
     dias_no_mes = calendar.monthrange(ano, mes)[1]
     
-    # Buscar todas as visitas do mês
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
     data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
     
@@ -1289,13 +1255,11 @@ def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
     if dados:
         df_detalhado = pd.DataFrame(dados)
         
-        # Criar DataFrame pivot (formato visual)
-        # Preparar dados para pivot
+        # Pivot para formato visual
         pivot_data = []
         for visita in visitas:
             if visita["vendedora"] in vendedoras_selecionadas:
                 data_obj = datetime.strptime(visita["data"], "%Y-%m-%d").date()
-                # Formatar com período e status
                 periodo = visita.get("periodo", "M/T")
                 status = visita.get("status", "agendado")
                 status_emoji = {
@@ -1314,21 +1278,18 @@ def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
                     "Visita": texto
                 })
         
-        if pivot_data:
-            df_pivot = pd.DataFrame(pivot_data)
-            df_pivot = df_pivot.pivot_table(
-                index=["Data", "Dia"],
-                columns="Vendedora",
-                values="Visita",
-                aggfunc=lambda x: ' / '.join(x)
-            ).reset_index()
-        else:
-            df_pivot = pd.DataFrame()
-        
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_detalhado.to_excel(writer, index=False, sheet_name='Agenda Detalhada')
-            if not df_pivot.empty:
+            
+            if pivot_data:
+                df_pivot = pd.DataFrame(pivot_data)
+                df_pivot = df_pivot.pivot_table(
+                    index=["Data", "Dia"],
+                    columns="Vendedora",
+                    values="Visita",
+                    aggfunc=lambda x: ' / '.join(x)
+                ).reset_index()
                 df_pivot.to_excel(writer, index=False, sheet_name='Agenda Visual')
             
             # Ajustar largura das colunas
