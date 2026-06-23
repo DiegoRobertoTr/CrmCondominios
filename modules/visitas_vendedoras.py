@@ -7,6 +7,7 @@ Módulo de Gerenciamento de Visitas de Vendedoras
 - Especialização por região (Zona Sul, Norte, Oeste, etc.)
 - Visualizações por perfil (admin, vendedora, atendente)
 - Múltiplos relatórios e exportações
+- AGENDA VISUAL POR VENDEDORA COM EDIÇÃO MANUAL
 """
 
 import streamlit as st
@@ -165,6 +166,18 @@ def verificar_espaco_mongo(db):
     except:
         return 0
 
+def formatar_status_visita(status: str) -> str:
+    """Formata o status da visita para exibição"""
+    status_map = {
+        "agendado": "🟢 Agendado",
+        "concluido": "✅ Concluído",
+        "cancelado": "🔴 Cancelado",
+        "chuva": "🌧️ Chuva",
+        "falta": "⛔ Falta",
+        "feriado": "🔴 Feriado"
+    }
+    return status_map.get(status, status)
+
 # ============================================================================
 # INICIALIZAÇÃO DAS COLEÇÕES
 # ============================================================================
@@ -173,7 +186,7 @@ def init_colecoes_visitas(clientes_collection):
     """Inicializa as coleções necessárias para o módulo"""
     db = clientes_collection.database
     
-    # Coleção para histórico de campanhas (NOVO - não substitui a original)
+    # Coleção para histórico de campanhas
     if 'campanhas_historico' not in db.list_collection_names():
         db.create_collection('campanhas_historico')
         db.campanhas_historico.create_index("data_criacao")
@@ -656,7 +669,8 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
                     "dia_semana": DIAS_SEMANA[dia_semana],
                     "prioridade": nec["prioridade"],
                     "adequacao": vp["nivel"],
-                    "campanha_id": nec.get("campanha_id")
+                    "campanha_id": nec.get("campanha_id"),
+                    "periodo": "M/T"  # Padrão: manhã e tarde
                 })
                 
                 # Atualizar contadores
@@ -670,7 +684,681 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# GESTÃO DE VENDEDORAS (ATUALIZADA)
+# AGENDA VISUAL POR VENDEDORA
+# ============================================================================
+
+def agenda_visual_por_vendedora(db):
+    """
+    Exibe agenda em formato visual (tabela) com edição manual
+    Similar ao print enviado
+    """
+    st.markdown("### 📅 Agenda Visual por Vendedora")
+    
+    # Seleção do período
+    col_per1, col_per2, col_per3 = st.columns([1, 1, 1])
+    
+    with col_per1:
+        mes_ano = st.date_input(
+            "Mês/Ano",
+            value=datetime.now().date().replace(day=1),
+            key="mes_agenda_visual"
+        )
+        # Extrair mês e ano
+        mes = mes_ano.month
+        ano = mes_ano.year
+        dias_no_mes = calendar.monthrange(ano, mes)[1]
+    
+    with col_per2:
+        # Selecionar vendedoras para exibir
+        vendedoras_ativas = list(db.vendedoras.find({"ativo": True}))
+        vendedoras_opcoes = [v["nome"] for v in vendedoras_ativas]
+        
+        if not vendedoras_opcoes:
+            st.warning("⚠️ Nenhuma vendedora ativa cadastrada.")
+            return
+        
+        vendedoras_selecionadas = st.multiselect(
+            "Vendedoras",
+            options=vendedoras_opcoes,
+            default=vendedoras_opcoes[:3] if len(vendedoras_opcoes) >= 3 else vendedoras_opcoes,
+            key="vendedoras_agenda_visual"
+        )
+    
+    with col_per3:
+        # Filtro de status
+        mostrar_status = st.multiselect(
+            "Mostrar Status",
+            options=["agendado", "concluido", "cancelado", "chuva", "falta", "feriado"],
+            default=["agendado", "concluido"],
+            key="status_agenda_visual",
+            format_func=formatar_status_visita
+        )
+    
+    if not vendedoras_selecionadas:
+        st.warning("Selecione pelo menos uma vendedora para visualizar.")
+        return
+    
+    # Botões de ação
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+    
+    with col_btn1:
+        if st.button("📥 Carregar Agenda", use_container_width=True):
+            st.rerun()
+    
+    with col_btn2:
+        if st.button("🔃 Resetar para Sugestões", use_container_width=True):
+            st.warning("⚠️ Isso irá substituir a agenda manual pelas sugestões automáticas.")
+            if st.button("✅ Confirmar Reset", key="confirm_reset"):
+                # Gerar novas sugestões
+                data_inicio = datetime(ano, mes, 1).date()
+                data_fim = datetime(ano, mes, dias_no_mes).date()
+                
+                # Buscar campanha ativa
+                campanha_ativa = db.campanha_visitas.find_one({"ativo": True})
+                campanha_id = campanha_ativa.get("campanha_id") if campanha_ativa else None
+                
+                sugestoes = agendamento_inteligente(db, data_inicio, data_fim, campanha_id)
+                
+                if sugestoes:
+                    # Remover visitas manuais do período
+                    db.visitas_vendedoras.delete_many({
+                        "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
+                        "manual": True
+                    })
+                    
+                    # Inserir novas sugestões
+                    for sug in sugestoes:
+                        # Verificar se já existe visita para este dia/vendedora/condomínio
+                        existente = db.visitas_vendedoras.find_one({
+                            "data": sug["data"],
+                            "vendedora": sug["vendedora"],
+                            "condominio_id": ObjectId(sug["condominio_id"])
+                        })
+                        
+                        if not existente:
+                            nova_visita = {
+                                "condominio_id": ObjectId(sug["condominio_id"]),
+                                "condominio_nome": sug["condominio_nome"],
+                                "vendedora": sug["vendedora"],
+                                "data": sug["data"],
+                                "status": "agendado",
+                                "periodo": "M/T",
+                                "criado_por": "Sistema (Reset)",
+                                "data_criacao": datetime.now(),
+                                "zona": sug["condominio_zona"],
+                                "adequacao": sug["adequacao"],
+                                "campanha_id": sug.get("campanha_id"),
+                                "manual": False
+                            }
+                            db.visitas_vendedoras.insert_one(nova_visita)
+                    
+                    st.success(f"✅ Agenda resetada com sucesso! {len(sugestoes)} visitas geradas.")
+                    st.rerun()
+                else:
+                    st.warning("Nenhuma sugestão gerada. Verifique a campanha ativa.")
+    
+    with col_btn3:
+        if st.button("📊 Exportar Agenda Visual", use_container_width=True):
+            exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas)
+    
+    with col_btn4:
+        if st.button("💾 Salvar Alterações", use_container_width=True, type="primary"):
+            st.success("✅ Alterações salvas com sucesso!")
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # ============================================================
+    # CONSTRUIR A TABELA VISUAL
+    # ============================================================
+    
+    # Buscar visitas do mês
+    data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
+    data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
+    
+    # Buscar todas as visitas do período
+    visitas_db = list(db.visitas_vendedoras.find({
+        "data": {"$gte": data_inicio_str, "$lte": data_fim_str}
+    }))
+    
+    # Criar estrutura de dados: {data: {vendedora: [visitas]}}
+    agenda_data = {}
+    for dia in range(1, dias_no_mes + 1):
+        data_obj = datetime(ano, mes, dia).date()
+        data_str = data_obj.strftime("%Y-%m-%d")
+        dia_semana = data_obj.weekday()
+        
+        agenda_data[data_str] = {
+            "data": data_obj,
+            "dia_semana": DIAS_SEMANA[dia_semana],
+            "vendedoras": {v: [] for v in vendedoras_selecionadas},
+            "feriado": False,
+            "obs": ""
+        }
+    
+    # Preencher com dados do banco
+    for visita in visitas_db:
+        data_str = visita["data"]
+        vendedora = visita["vendedora"]
+        
+        if data_str in agenda_data and vendedora in agenda_data[data_str]["vendedoras"]:
+            # Verificar se é feriado
+            if visita.get("status") == "feriado":
+                agenda_data[data_str]["feriado"] = True
+                continue
+            
+            # Verificar se deve mostrar baseado no status
+            if mostrar_status and visita.get("status") not in mostrar_status:
+                continue
+            
+            # Adicionar visita
+            agenda_data[data_str]["vendedoras"][vendedora].append({
+                "id": str(visita["_id"]),
+                "condominio": visita["condominio_nome"],
+                "status": visita.get("status", "agendado"),
+                "periodo": visita.get("periodo", "M/T"),
+                "observacao": visita.get("observacoes", ""),
+                "manual": visita.get("manual", False)
+            })
+    
+    # ============================================================
+    # EXIBIR TABELA COM HTML
+    # ============================================================
+    
+    # Título do mês
+    st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
+    
+    # Legenda
+    col_leg1, col_leg2, col_leg3, col_leg4, col_leg5, col_leg6 = st.columns(6)
+    with col_leg1:
+        st.markdown("🟢 **Agendado**")
+    with col_leg2:
+        st.markdown("✅ **Concluído**")
+    with col_leg3:
+        st.markdown("🔴 **Cancelado**")
+    with col_leg4:
+        st.markdown("🌧️ **Chuva**")
+    with col_leg5:
+        st.markdown("⛔ **Falta**")
+    with col_leg6:
+        st.markdown("📌 **Feriado**")
+    
+    st.markdown("---")
+    
+    # Criar tabela com HTML/CSS customizado
+    html_table = """
+    <style>
+        .agenda-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .agenda-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px;
+            text-align: center;
+            border: 1px solid #ddd;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .agenda-table td {
+            padding: 6px;
+            border: 1px solid #ddd;
+            text-align: center;
+            vertical-align: top;
+            min-height: 50px;
+        }
+        .agenda-table .dia-util {
+            background-color: #f9f9f9;
+        }
+        .agenda-table .sabado {
+            background-color: #e8f4fd;
+        }
+        .agenda-table .domingo {
+            background-color: #ffe6e6;
+        }
+        .agenda-table .feriado {
+            background-color: #ffcccc;
+        }
+        .status-agendado { color: #28a745; font-weight: bold; }
+        .status-concluido { color: #17a2b8; font-weight: bold; }
+        .status-cancelado { color: #dc3545; font-weight: bold; }
+        .status-chuva { color: #6c757d; font-style: italic; }
+        .status-falta { color: #dc3545; font-style: italic; }
+        .status-feriado { color: #ff6b6b; font-weight: bold; }
+        .visita-manual { border-left: 3px solid #ff6b6b; padding-left: 5px; }
+        .visita-auto { border-left: 3px solid #28a745; padding-left: 5px; }
+        .periodo-m { background-color: #e3f2fd; border-radius: 3px; padding: 1px 5px; font-size: 11px; }
+        .periodo-t { background-color: #fff3e0; border-radius: 3px; padding: 1px 5px; font-size: 11px; }
+        .periodo-mt { background-color: #f3e5f5; border-radius: 3px; padding: 1px 5px; font-size: 11px; }
+        .visita-item {
+            margin-bottom: 4px;
+            padding: 3px;
+            border-radius: 4px;
+            background-color: #f5f5f5;
+        }
+        .visita-item:hover {
+            background-color: #e8e8e8;
+        }
+        .edit-btn {
+            background: none;
+            border: none;
+            color: #667eea;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        .edit-btn:hover {
+            background-color: #667eea;
+            color: white;
+        }
+        .delete-btn {
+            background: none;
+            border: none;
+            color: #dc3545;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        .delete-btn:hover {
+            background-color: #dc3545;
+            color: white;
+        }
+        .data-cell {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .data-cell small {
+            font-weight: normal;
+            font-size: 11px;
+            color: #666;
+        }
+        .vazio {
+            color: #999;
+            font-size: 12px;
+            padding: 5px;
+        }
+    </style>
+    """
+    
+    # Iniciar tabela
+    html_table += '<table class="agenda-table">'
+    
+    # Cabeçalho
+    html_table += '<tr><th style="min-width: 80px;">Data</th>'
+    for vendedora in vendedoras_selecionadas:
+        html_table += f'<th>{vendedora}</th>'
+    html_table += '</tr>'
+    
+    # Linhas
+    for data_str in sorted(agenda_data.keys()):
+        data_info = agenda_data[data_str]
+        data_obj = data_info["data"]
+        dia_semana = data_obj.weekday()
+        
+        # Estilo da linha
+        if dia_semana == 6:  # Domingo
+            row_class = "domingo"
+        elif dia_semana == 5:  # Sábado
+            row_class = "sabado"
+        else:
+            row_class = "dia-util"
+        
+        if data_info.get("feriado"):
+            row_class = "feriado"
+        
+        html_table += f'<tr class="{row_class}">'
+        
+        # Coluna da data
+        data_formatada = data_obj.strftime("%d/%m")
+        html_table += f'<td class="data-cell">{data_formatada}<br><small>{data_info["dia_semana"][:3]}</small></td>'
+        
+        # Colunas das vendedoras
+        for vendedora in vendedoras_selecionadas:
+            visitas = data_info["vendedoras"].get(vendedora, [])
+            
+            if data_info.get("feriado"):
+                html_table += '<td class="status-feriado">🔴 FERIADO</td>'
+                continue
+            
+            if not visitas:
+                # Botão para adicionar visita
+                html_table += f'''
+                <td>
+                    <div class="vazio">
+                        <button class="edit-btn" onclick="document.getElementById('adicionar_visita').style.display='block'">➕</button>
+                    </div>
+                </td>
+                '''
+                continue
+            
+            # Construir conteúdo da célula
+            cell_content = ""
+            for visita in visitas:
+                status_icons = {
+                    "agendado": "🟢",
+                    "concluido": "✅",
+                    "cancelado": "🔴",
+                    "chuva": "🌧️",
+                    "falta": "⛔",
+                    "feriado": "📌"
+                }
+                status_icon = status_icons.get(visita["status"], "🟢")
+                status_class = f"status-{visita['status']}"
+                
+                # Período
+                periodo = visita.get("periodo", "M/T")
+                periodo_class = "periodo-mt"
+                if periodo == "M":
+                    periodo_class = "periodo-m"
+                elif periodo == "T":
+                    periodo_class = "periodo-t"
+                elif periodo == "M/T":
+                    periodo_class = "periodo-mt"
+                
+                # Classe manual/auto
+                manual_class = "visita-manual" if visita.get("manual") else "visita-auto"
+                
+                cell_content += f'''
+                <div class="visita-item {manual_class}">
+                    <span class="{periodo_class}">{periodo}</span>
+                    <strong>{visita['condominio']}</strong>
+                    <span class="{status_class}">{status_icon}</span>
+                    <br>
+                    <span style="font-size: 10px; color: #666;">
+                        <button class="edit-btn" onclick="alert('Editar visita: {visita["condominio"]}')">✏️</button>
+                        <button class="delete-btn" onclick="alert('Remover visita: {visita["condominio"]}')">🗑️</button>
+                    </span>
+                </div>
+                '''
+            
+            html_table += f'<td>{cell_content}</td>'
+        
+        html_table += '</tr>'
+    
+    html_table += '</table>'
+    
+    # Renderizar HTML
+    st.markdown(html_table, unsafe_allow_html=True)
+    
+    # ============================================================
+    # EDITOR MANUAL DE VISITAS
+    # ============================================================
+    
+    st.markdown("---")
+    st.markdown("### ✏️ Editor Manual de Visitas")
+    
+    col_ed1, col_ed2, col_ed3, col_ed4 = st.columns(4)
+    
+    with col_ed1:
+        data_edicao = st.date_input(
+            "Data",
+            value=datetime.now().date(),
+            key="data_edicao_manual",
+            min_value=datetime(ano, mes, 1).date(),
+            max_value=datetime(ano, mes, dias_no_mes).date()
+        )
+    
+    with col_ed2:
+        vendedora_edicao = st.selectbox(
+            "Vendedora",
+            options=vendedoras_selecionadas if vendedoras_selecionadas else ["Selecione uma vendedora"],
+            key="vendedora_edicao"
+        )
+    
+    with col_ed3:
+        condominio_edicao = st.text_input(
+            "Condomínio",
+            placeholder="Digite o nome do condomínio",
+            key="condominio_edicao"
+        )
+    
+    with col_ed4:
+        periodo_edicao = st.selectbox(
+            "Período",
+            options=["M", "T", "M/T"],
+            key="periodo_edicao"
+        )
+    
+    col_ed5, col_ed6, col_ed7, col_ed8 = st.columns(4)
+    
+    with col_ed5:
+        status_edicao = st.selectbox(
+            "Status",
+            options=["agendado", "concluido", "cancelado", "chuva", "falta", "feriado"],
+            key="status_edicao",
+            format_func=formatar_status_visita
+        )
+    
+    with col_ed6:
+        observacao_edicao = st.text_input(
+            "Observação",
+            placeholder="Ex: Chuva, falta, etc.",
+            key="obs_edicao"
+        )
+    
+    with col_ed7:
+        if st.button("➕ Adicionar/Editar Visita", use_container_width=True, type="primary"):
+            if not condominio_edicao and status_edicao != "feriado":
+                st.error("⚠️ Digite o nome do condomínio!")
+            else:
+                data_str = data_edicao.strftime("%Y-%m-%d")
+                
+                # Se for feriado, marcar o dia inteiro
+                if status_edicao == "feriado":
+                    # Verificar se já existe feriado neste dia
+                    feriado_existente = db.visitas_vendedoras.find_one({
+                        "data": data_str,
+                        "status": "feriado"
+                    })
+                    
+                    if not feriado_existente:
+                        nova_visita = {
+                            "condominio_id": None,
+                            "condominio_nome": "FERIADO",
+                            "vendedora": "Sistema",
+                            "data": data_str,
+                            "status": "feriado",
+                            "periodo": "M/T",
+                            "observacoes": observacao_edicao or "Feriado",
+                            "criado_por": st.session_state.get("nome_usuario", "Manual"),
+                            "data_criacao": datetime.now(),
+                            "manual": True,
+                            "zona": "Sistema",
+                            "adequacao": "sistema"
+                        }
+                        db.visitas_vendedoras.insert_one(nova_visita)
+                        st.success(f"✅ Feriado marcado para {data_edicao.strftime('%d/%m/%Y')}")
+                    else:
+                        st.info(f"ℹ️ Feriado já marcado para {data_edicao.strftime('%d/%m/%Y')}")
+                    
+                    st.rerun()
+                    return
+                
+                # Verificar se já existe visita para este dia/vendedora/condomínio
+                existente = db.visitas_vendedoras.find_one({
+                    "data": data_str,
+                    "vendedora": vendedora_edicao,
+                    "condominio_nome": condominio_edicao
+                })
+                
+                if existente:
+                    # Atualizar
+                    db.visitas_vendedoras.update_one(
+                        {"_id": existente["_id"]},
+                        {"$set": {
+                            "status": status_edicao,
+                            "periodo": periodo_edicao,
+                            "observacoes": observacao_edicao,
+                            "manual": True,
+                            "ultima_edicao": datetime.now()
+                        }}
+                    )
+                    st.success(f"✅ Visita atualizada: {condominio_edicao}")
+                else:
+                    # Verificar se já tem visita neste dia/vendedora (limite de 2)
+                    visitas_dia = db.visitas_vendedoras.count_documents({
+                        "data": data_str,
+                        "vendedora": vendedora_edicao,
+                        "status": {"$ne": "cancelado"}
+                    })
+                    
+                    if visitas_dia >= 2:
+                        st.warning(f"⚠️ {vendedora_edicao} já tem {visitas_dia} visitas neste dia. Limite é 2.")
+                    else:
+                        # Criar nova
+                        nova_visita = {
+                            "condominio_id": None,
+                            "condominio_nome": condominio_edicao,
+                            "vendedora": vendedora_edicao,
+                            "data": data_str,
+                            "status": status_edicao,
+                            "periodo": periodo_edicao,
+                            "observacoes": observacao_edicao,
+                            "criado_por": st.session_state.get("nome_usuario", "Manual"),
+                            "data_criacao": datetime.now(),
+                            "manual": True,
+                            "zona": "Manual",
+                            "adequacao": "manual"
+                        }
+                        db.visitas_vendedoras.insert_one(nova_visita)
+                        st.success(f"✅ Visita adicionada: {condominio_edicao}")
+                
+                st.rerun()
+    
+    with col_ed8:
+        if st.button("🗑️ Remover Visitas do Dia", use_container_width=True):
+            data_str = data_edicao.strftime("%Y-%m-%d")
+            
+            # Buscar visitas para remover
+            visitas_remover = list(db.visitas_vendedoras.find({
+                "data": data_str,
+                "vendedora": vendedora_edicao,
+                "status": {"$ne": "feriado"}
+            }))
+            
+            if visitas_remover:
+                st.warning(f"⚠️ Remover visitas de {vendedora_edicao} em {data_edicao.strftime('%d/%m/%Y')}?")
+                
+                for vis in visitas_remover:
+                    if st.button(f"🗑️ Remover {vis['condominio_nome']}", key=f"remover_{vis['_id']}"):
+                        db.visitas_vendedoras.delete_one({"_id": vis["_id"]})
+                        st.success(f"✅ Visita removida: {vis['condominio_nome']}")
+                        st.rerun()
+            else:
+                st.warning("Nenhuma visita encontrada para este dia/vendedora.")
+
+# ============================================================================
+# FUNÇÃO PARA EXPORTAR AGENDA VISUAL
+# ============================================================================
+
+def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
+    """
+    Exporta a agenda visual para Excel
+    """
+    dias_no_mes = calendar.monthrange(ano, mes)[1]
+    
+    # Buscar todas as visitas do mês
+    data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
+    data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
+    
+    visitas = list(db.visitas_vendedoras.find({
+        "data": {"$gte": data_inicio_str, "$lte": data_fim_str}
+    }).sort("data", 1))
+    
+    # Criar DataFrame detalhado
+    dados = []
+    for visita in visitas:
+        if visita["vendedora"] in vendedoras_selecionadas or visita["vendedora"] == "Sistema":
+            data_obj = datetime.strptime(visita["data"], "%Y-%m-%d").date()
+            dados.append({
+                "Data": data_obj.strftime("%d/%m/%Y"),
+                "Dia da Semana": DIAS_SEMANA[data_obj.weekday()],
+                "Vendedora": visita["vendedora"],
+                "Condomínio": visita["condominio_nome"],
+                "Período": visita.get("periodo", "M/T"),
+                "Status": formatar_status_visita(visita.get("status", "agendado")),
+                "Observação": visita.get("observacoes", ""),
+                "Manual": "Sim" if visita.get("manual") else "Não"
+            })
+    
+    if dados:
+        df_detalhado = pd.DataFrame(dados)
+        
+        # Criar DataFrame pivot (formato visual)
+        # Preparar dados para pivot
+        pivot_data = []
+        for visita in visitas:
+            if visita["vendedora"] in vendedoras_selecionadas:
+                data_obj = datetime.strptime(visita["data"], "%Y-%m-%d").date()
+                # Formatar com período e status
+                periodo = visita.get("periodo", "M/T")
+                status = visita.get("status", "agendado")
+                status_emoji = {
+                    "agendado": "🟢",
+                    "concluido": "✅",
+                    "cancelado": "🔴",
+                    "chuva": "🌧️",
+                    "falta": "⛔"
+                }.get(status, "")
+                
+                texto = f"{periodo} {visita['condominio_nome']} {status_emoji}"
+                pivot_data.append({
+                    "Data": data_obj.strftime("%d/%m"),
+                    "Dia": DIAS_SEMANA[data_obj.weekday()][:3],
+                    "Vendedora": visita["vendedora"],
+                    "Visita": texto
+                })
+        
+        if pivot_data:
+            df_pivot = pd.DataFrame(pivot_data)
+            df_pivot = df_pivot.pivot_table(
+                index=["Data", "Dia"],
+                columns="Vendedora",
+                values="Visita",
+                aggfunc=lambda x: ' / '.join(x)
+            ).reset_index()
+        else:
+            df_pivot = pd.DataFrame()
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_detalhado.to_excel(writer, index=False, sheet_name='Agenda Detalhada')
+            if not df_pivot.empty:
+                df_pivot.to_excel(writer, index=False, sheet_name='Agenda Visual')
+            
+            # Ajustar largura das colunas
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        output.seek(0)
+        
+        st.download_button(
+            label="📊 Baixar Agenda Visual",
+            data=output.getvalue(),
+            file_name=f"agenda_visual_{calendar.month_name[mes]}_{ano}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("Nenhum dado para exportar.")
+
+# ============================================================================
+# GESTÃO DE VENDEDORAS
 # ============================================================================
 
 def gerenciar_vendedoras(db):
@@ -941,18 +1629,371 @@ def gerenciar_vendedoras(db):
                     st.write(f"**Total de visitas:** {db.visitas_vendedoras.count_documents({'vendedora': vend['nome']})}")
 
 # ============================================================================
-# VISÃO DO ADMIN (ATUALIZADA COM HISTÓRICO)
+# RELATÓRIOS COMPLETOS
+# ============================================================================
+
+def relatorios_completos(db):
+    """Interface completa de relatórios"""
+    st.markdown("### 📊 Relatórios de Visitas")
+    
+    tipo_relatorio = st.selectbox(
+        "Tipo de Relatório",
+        ["Resumo da Campanha Atual", "Visitas por Vendedora", "Visitas por Condomínio", 
+         "Distribuição por Zona", "Exportar Agenda", "Comparativo de Campanhas"]
+    )
+    
+    if tipo_relatorio == "Resumo da Campanha Atual":
+        campanha_ativa = list(db.campanha_visitas.find({"ativo": True}))
+        
+        if campanha_ativa:
+            # Buscar informações da campanha no histórico
+            campanha_id = campanha_ativa[0].get("campanha_id") if campanha_ativa else None
+            campanha_historico = None
+            if campanha_id:
+                campanha_historico = db.campanhas_historico.find_one({"campanha_id": campanha_id})
+            
+            col_r1, col_r2, col_r3 = st.columns(3)
+            
+            with col_r1:
+                st.metric("Condomínios na Campanha", len(campanha_ativa))
+                if campanha_historico:
+                    st.caption(f"Versão: #{campanha_historico.get('versao', 'N/A')}")
+            
+            with col_r2:
+                total_aptos = sum(c.get("aptos", 0) for c in campanha_ativa)
+                st.metric("Total de Apartamentos", f"{total_aptos:,}")
+            
+            with col_r3:
+                visitas_concluidas = db.visitas_vendedoras.count_documents({"status": "concluido"})
+                st.metric("Visitas Concluídas (Total)", visitas_concluidas)
+            
+            # Progresso por condomínio
+            st.markdown("#### 📈 Progresso por Condomínio")
+            
+            dados_progresso = []
+            for cond in campanha_ativa:
+                total_visitas = db.visitas_vendedoras.count_documents({
+                    "condominio_id": cond["condominio_id"]
+                })
+                visitas_concluidas_cond = db.visitas_vendedoras.count_documents({
+                    "condominio_id": cond["condominio_id"],
+                    "status": "concluido"
+                })
+                
+                dados_progresso.append({
+                    "Condomínio": cond["condominio_nome"][:35],
+                    "Zona": cond.get("zona", "N/D"),
+                    "Total Visitas": total_visitas,
+                    "Concluídas": visitas_concluidas_cond,
+                    "Progresso": f"{(visitas_concluidas_cond/total_visitas*100):.0f}%" if total_visitas > 0 else "0%"
+                })
+            
+            df_progresso = pd.DataFrame(dados_progresso)
+            st.dataframe(df_progresso, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhuma campanha ativa.")
+    
+    elif tipo_relatorio == "Visitas por Vendedora":
+        # Incluir vendedoras inativas nos relatórios
+        vendedoras_opcoes = [v["nome"] for v in db.vendedoras.find({})]
+        if vendedoras_opcoes:
+            vendedora_sel = st.selectbox("Vendedora", options=vendedoras_opcoes)
+            
+            if vendedora_sel:
+                visitas_vend = list(db.visitas_vendedoras.find({
+                    "vendedora": vendedora_sel,
+                    "status": {"$ne": "cancelado"}
+                }).sort("data", -1))
+                
+                if visitas_vend:
+                    dados = []
+                    for vis in visitas_vend:
+                        dados.append({
+                            "Data": datetime.strptime(vis["data"], "%Y-%m-%d").strftime("%d/%m/%Y"),
+                            "Condomínio": vis["condominio_nome"],
+                            "Zona": vis.get("zona", "N/D"),
+                            "Status": formatar_status_visita(vis["status"])
+                        })
+                    
+                    df = pd.DataFrame(dados)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    
+                    total = len(visitas_vend)
+                    concluidos = len([v for v in visitas_vend if v["status"] == "concluido"])
+                    
+                    col_e1, col_e2, col_e3 = st.columns(3)
+                    with col_e1:
+                        st.metric("Total de Visitas", total)
+                    with col_e2:
+                        st.metric("Concluídas", concluidos)
+                    with col_e3:
+                        st.metric("Taxa de Conclusão", f"{(concluidos/total*100):.1f}%" if total > 0 else "0%")
+                else:
+                    st.info("Nenhuma visita encontrada.")
+        else:
+            st.warning("Nenhuma vendedora cadastrada.")
+    
+    elif tipo_relatorio == "Distribuição por Zona":
+        campanha = list(db.campanha_visitas.find({"ativo": True}))
+        
+        if campanha:
+            # Distribuição dos condomínios por zona
+            zona_counts = defaultdict(int)
+            for cond in campanha:
+                zona = cond.get("zona", "Não definida")
+                zona_counts[zona] += 1
+            
+            st.markdown("#### 📍 Distribuição dos Condomínios por Zona")
+            
+            for zona, count in sorted(zona_counts.items()):
+                st.progress(count / len(campanha), text=f"{zona}: {count} condomínios ({count/len(campanha)*100:.1f}%)")
+            
+            # Distribuição das visitas por zona
+            st.markdown("#### 📊 Distribuição das Visitas por Zona")
+            
+            visitas = list(db.visitas_vendedoras.find({"status": {"$ne": "cancelado"}}))
+            visitas_por_zona = defaultdict(int)
+            
+            for visita in visitas:
+                zona = visita.get("zona", "Não definida")
+                visitas_por_zona[zona] += 1
+            
+            if visitas:
+                for zona, count in sorted(visitas_por_zona.items()):
+                    st.progress(count / len(visitas), text=f"{zona}: {count} visitas ({count/len(visitas)*100:.1f}%)")
+            else:
+                st.info("Nenhuma visita registrada ainda.")
+        else:
+            st.info("Nenhuma campanha ativa.")
+    
+    elif tipo_relatorio == "Comparativo de Campanhas":
+        st.markdown("#### 📊 Comparativo entre Campanhas")
+        
+        # Buscar todas as campanhas
+        campanhas = list(db.campanhas_historico.find().sort("versao", -1))
+        
+        if len(campanhas) < 2:
+            st.info("Precisa de pelo menos 2 campanhas para comparar.")
+        else:
+            # Selecionar campanhas para comparar
+            opcoes = [f"#{c['versao']} - {c.get('nome', 'Sem nome')} ({c['data_criacao'].strftime('%d/%m/%Y')})" for c in campanhas]
+            
+            col_comp1, col_comp2 = st.columns(2)
+            with col_comp1:
+                camp1_idx = st.selectbox("Campanha 1", options=range(len(opcoes)), format_func=lambda x: opcoes[x], key="comp1")
+            with col_comp2:
+                camp2_idx = st.selectbox("Campanha 2", options=range(len(opcoes)), format_func=lambda x: opcoes[x], key="comp2")
+            
+            if camp1_idx != camp2_idx:
+                camp1 = campanhas[camp1_idx]
+                camp2 = campanhas[camp2_idx]
+                
+                # Métricas comparativas
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                
+                with col_m1:
+                    st.metric(
+                        "Condomínios",
+                        f"{camp1['total_condominios']} → {camp2['total_condominios']}",
+                        delta=camp2['total_condominios'] - camp1['total_condominios']
+                    )
+                
+                with col_m2:
+                    # Contar visitas de cada campanha
+                    vis1 = db.visitas_vendedoras.count_documents({"campanha_id": camp1.get("campanha_id")})
+                    vis2 = db.visitas_vendedoras.count_documents({"campanha_id": camp2.get("campanha_id")})
+                    st.metric(
+                        "Total Visitas",
+                        f"{vis1} → {vis2}",
+                        delta=vis2 - vis1
+                    )
+                
+                with col_m3:
+                    # Visitas concluídas
+                    conc1 = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp1.get("campanha_id"),
+                        "status": "concluido"
+                    })
+                    conc2 = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp2.get("campanha_id"),
+                        "status": "concluido"
+                    })
+                    taxa1 = (conc1 / vis1 * 100) if vis1 > 0 else 0
+                    taxa2 = (conc2 / vis2 * 100) if vis2 > 0 else 0
+                    st.metric(
+                        "Taxa de Conclusão",
+                        f"{taxa1:.1f}% → {taxa2:.1f}%",
+                        delta=f"{taxa2 - taxa1:.1f}%"
+                    )
+                
+                with col_m4:
+                    # Dias de campanha
+                    dias1 = (camp1['data_fim'] - camp1['data_inicio']).days
+                    dias2 = (camp2['data_fim'] - camp2['data_inicio']).days
+                    st.metric(
+                        "Duração",
+                        f"{dias1} → {dias2} dias",
+                        delta=dias2 - dias1
+                    )
+                
+                # Detalhes das campanhas
+                st.markdown("---")
+                col_det1, col_det2 = st.columns(2)
+                
+                with col_det1:
+                    st.markdown(f"**📋 Campanha #{camp1['versao']}**")
+                    st.write(f"Nome: {camp1.get('nome', 'Sem nome')}")
+                    st.write(f"Período: {camp1['data_inicio'].strftime('%d/%m/%Y')} a {camp1['data_fim'].strftime('%d/%m/%Y')}")
+                    st.write(f"Condomínios: {camp1['total_condominios']}")
+                    st.write(f"Visitas: {vis1} agendadas, {conc1} concluídas")
+                
+                with col_det2:
+                    st.markdown(f"**📋 Campanha #{camp2['versao']}**")
+                    st.write(f"Nome: {camp2.get('nome', 'Sem nome')}")
+                    st.write(f"Período: {camp2['data_inicio'].strftime('%d/%m/%Y')} a {camp2['data_fim'].strftime('%d/%m/%Y')}")
+                    st.write(f"Condomínios: {camp2['total_condominios']}")
+                    st.write(f"Visitas: {vis2} agendadas, {conc2} concluídas")
+    
+    elif tipo_relatorio == "Exportar Agenda":
+        data_export_inicio = st.date_input("Data Início", value=datetime.now().date())
+        data_export_fim = st.date_input("Data Fim", value=datetime.now().date() + timedelta(days=30))
+        
+        # Opção de incluir histórico
+        incluir_historico = st.checkbox("Incluir todas as campanhas (histórico)")
+        
+        if st.button("📥 Exportar para Excel", key="btn_exportar"):
+            query = {
+                "data": {"$gte": data_export_inicio.strftime("%Y-%m-%d"), "$lte": data_export_fim.strftime("%Y-%m-%d")}
+            }
+            
+            if not incluir_historico:
+                query["status"] = {"$ne": "cancelado"}
+            
+            visitas_export = list(db.visitas_vendedoras.find(query).sort("data", 1))
+            
+            if visitas_export:
+                dados_export = []
+                for vis in visitas_export:
+                    data_obj = datetime.strptime(vis["data"], "%Y-%m-%d")
+                    
+                    # Buscar campanha
+                    campanha_nome = "N/A"
+                    if vis.get("campanha_id"):
+                        campanha = db.campanhas_historico.find_one({"campanha_id": vis["campanha_id"]})
+                        if campanha:
+                            campanha_nome = f"#{campanha['versao']} - {campanha.get('nome', '')}"
+                    
+                    dados_export.append({
+                        "Data": data_obj.strftime("%d/%m/%Y"),
+                        "Dia da Semana": DIAS_SEMANA[data_obj.weekday()],
+                        "Condomínio": vis["condominio_nome"],
+                        "Zona": vis.get("zona", "N/D"),
+                        "Vendedora": vis["vendedora"],
+                        "Status": formatar_status_visita(vis.get("status", "agendado")),
+                        "Campanha": campanha_nome,
+                        "Observações": vis.get("observacoes", "")
+                    })
+                
+                df_export = pd.DataFrame(dados_export)
+                
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='Agenda Visitas')
+                    
+                    worksheet = writer.sheets['Agenda Visitas']
+                    for column in worksheet.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        adjusted_width = min(max_length + 2, 50)
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+                
+                output.seek(0)
+                
+                st.download_button(
+                    label="📊 Baixar Excel",
+                    data=output.getvalue(),
+                    file_name=f"visitas_vendedoras_{data_export_inicio.strftime('%Y%m%d')}_{data_export_fim.strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("Nenhuma visita no período selecionado.")
+
+# ============================================================================
+# HISTÓRICO DE CAMPANHAS
+# ============================================================================
+
+def historico_campanhas(db):
+    """Exibe o histórico completo de campanhas"""
+    st.markdown("### 📚 Histórico Completo de Campanhas")
+    
+    # Estatísticas gerais
+    total_campanhas = db.campanhas_historico.count_documents({})
+    total_visitas = db.visitas_vendedoras.count_documents({})
+    
+    col_h1, col_h2, col_h3 = st.columns(3)
+    with col_h1:
+        st.metric("Total de Campanhas", total_campanhas)
+    with col_h2:
+        st.metric("Total de Visitas", total_visitas)
+    with col_h3:
+        tamanho_mb = verificar_espaco_mongo(db)
+        st.metric("Espaço MongoDB", f"{tamanho_mb:.2f} MB")
+    
+    # Lista de campanhas
+    campanhas = list(db.campanhas_historico.find().sort("versao", -1))
+    
+    if campanhas:
+        for camp in campanhas:
+            with st.expander(f"📋 Campanha #{camp['versao']} - {camp.get('nome', 'Sem nome')}", expanded=False):
+                col_c1, col_c2, col_c3 = st.columns(3)
+                
+                with col_c1:
+                    st.write(f"**Período:** {camp['data_inicio'].strftime('%d/%m/%Y')} a {camp['data_fim'].strftime('%d/%m/%Y')}")
+                    st.write(f"**Status:** {'✅ Ativa' if camp.get('status') == 'ativa' else '📌 Concluída'}")
+                
+                with col_c2:
+                    st.write(f"**Condomínios:** {camp['total_condominios']}")
+                    st.write(f"**Criado por:** {camp.get('criado_por', 'Sistema')}")
+                
+                with col_c3:
+                    # Contar visitas desta campanha
+                    visitas_camp = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp.get("campanha_id")
+                    })
+                    concluidas_camp = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp.get("campanha_id"),
+                        "status": "concluido"
+                    })
+                    st.metric("Visitas", visitas_camp)
+                    st.metric("Concluídas", concluidas_camp)
+                
+                # Lista de condomínios
+                with st.expander("📋 Ver condomínios desta campanha"):
+                    for cond in camp.get('condominios', []):
+                        st.write(f"- {cond.get('condominio_nome')} ({cond.get('zona')}) - Prioridade: {cond.get('prioridade')}")
+    else:
+        st.info("Nenhuma campanha no histórico. Crie sua primeira campanha!")
+
+# ============================================================================
+# VISÃO DO ADMIN (ATUALIZADA COM HISTÓRICO E AGENDA VISUAL)
 # ============================================================================
 
 def tela_admin_visitas(db, perfil_usuario, nome_usuario):
-    """Interface completa para admin/diretoria/supervisores com histórico"""
+    """Interface completa para admin/diretoria/supervisores com histórico e agenda visual"""
     
     st.markdown("## 📅 Gerenciamento de Visitas de Vendedoras")
     
     # Abas principais
-    tab_campanha, tab_agenda, tab_vendedoras, tab_relatorios, tab_historico = st.tabs([
+    tab_campanha, tab_agenda, tab_agenda_visual, tab_vendedoras, tab_relatorios, tab_historico = st.tabs([
         "🎯 Campanha", 
         "📆 Agenda", 
+        "📊 Agenda Visual",
         "👩‍💼 Vendedoras", 
         "📊 Relatórios",
         "📚 Histórico"
@@ -976,8 +2017,9 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
         with col_f2:
             filtro_status = st.selectbox(
                 "Status",
-                options=["Todos", "agendado", "concluido", "cancelado"],
-                key="filtro_status_agenda"
+                options=["Todos", "agendado", "concluido", "cancelado", "chuva", "falta"],
+                key="filtro_status_agenda",
+                format_func=lambda x: formatar_status_visita(x) if x != "Todos" else "Todos"
             )
         
         with col_f3:
@@ -1026,21 +2068,33 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                                     st.write(f"**Adequação:** {sug['vendedora_motivo']}")
                                     
                                     if st.button(f"✅ Confirmar", key=f"confirm_{sug['condominio_id']}_{sug['data']}_{sug['vendedora']}"):
-                                        nova_visita = {
-                                            "condominio_id": ObjectId(sug["condominio_id"]),
-                                            "condominio_nome": sug["condominio_nome"],
-                                            "vendedora": sug["vendedora"],
+                                        # Verificar se já existe
+                                        existente = db.visitas_vendedoras.find_one({
                                             "data": sug["data"],
-                                            "status": "agendado",
-                                            "criado_por": nome_usuario,
-                                            "data_criacao": datetime.now(),
-                                            "zona": sug["condominio_zona"],
-                                            "adequacao": sug["adequacao"],
-                                            "campanha_id": sug.get("campanha_id")
-                                        }
-                                        db.visitas_vendedoras.insert_one(nova_visita)
-                                        st.success("✅ Visita agendada!")
-                                        st.rerun()
+                                            "vendedora": sug["vendedora"],
+                                            "condominio_id": ObjectId(sug["condominio_id"])
+                                        })
+                                        
+                                        if not existente:
+                                            nova_visita = {
+                                                "condominio_id": ObjectId(sug["condominio_id"]),
+                                                "condominio_nome": sug["condominio_nome"],
+                                                "vendedora": sug["vendedora"],
+                                                "data": sug["data"],
+                                                "status": "agendado",
+                                                "criado_por": nome_usuario,
+                                                "data_criacao": datetime.now(),
+                                                "zona": sug["condominio_zona"],
+                                                "adequacao": sug["adequacao"],
+                                                "campanha_id": sug.get("campanha_id"),
+                                                "periodo": "M/T",
+                                                "manual": False
+                                            }
+                                            db.visitas_vendedoras.insert_one(nova_visita)
+                                            st.success("✅ Visita agendada!")
+                                            st.rerun()
+                                        else:
+                                            st.warning("⚠️ Visita já existe para este dia/vendedora/condomínio.")
                         else:
                             st.info("Nenhuma sugestão gerada.")
         
@@ -1068,13 +2122,20 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
             
             for visita in visitas:
                 data_obj = datetime.strptime(visita["data"], "%Y-%m-%d").date()
-                status_icon = "✅" if visita["status"] == "concluido" else "⏳" if visita["status"] == "agendado" else "❌"
+                status_icon = {
+                    "agendado": "🟢",
+                    "concluido": "✅",
+                    "cancelado": "🔴",
+                    "chuva": "🌧️",
+                    "falta": "⛔",
+                    "feriado": "📌"
+                }.get(visita["status"], "⏳")
                 
                 with st.expander(f"{status_icon} {data_obj.strftime('%d/%m/%Y')} - {visita['condominio_nome']} - {visita['vendedora']}", expanded=False):
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.write(f"**Status:** {visita['status']}")
+                        st.write(f"**Status:** {formatar_status_visita(visita['status'])}")
                         if visita.get("zona"):
                             st.write(f"**Zona:** {visita['zona']}")
                         if visita.get("observacoes"):
@@ -1083,6 +2144,8 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                             campanha = db.campanhas_historico.find_one({"campanha_id": visita["campanha_id"]})
                             if campanha:
                                 st.write(f"**Campanha:** #{campanha['versao']} - {campanha.get('nome', '')}")
+                        if visita.get("manual"):
+                            st.write("**📝 Edição manual**")
                     
                     with col2:
                         if visita["status"] == "agendado":
@@ -1116,347 +2179,17 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
         else:
             st.info("Nenhuma visita agendada no período.")
     
+    with tab_agenda_visual:
+        agenda_visual_por_vendedora(db)
+    
     with tab_vendedoras:
         gerenciar_vendedoras(db)
     
     with tab_relatorios:
-        st.markdown("### 📊 Relatórios de Visitas")
-        
-        tipo_relatorio = st.selectbox(
-            "Tipo de Relatório",
-            ["Resumo da Campanha Atual", "Visitas por Vendedora", "Visitas por Condomínio", 
-             "Distribuição por Zona", "Exportar Agenda", "Comparativo de Campanhas"]
-        )
-        
-        if tipo_relatorio == "Resumo da Campanha Atual":
-            campanha_ativa = list(db.campanha_visitas.find({"ativo": True}))
-            
-            if campanha_ativa:
-                # Buscar informações da campanha no histórico
-                campanha_id = campanha_ativa[0].get("campanha_id") if campanha_ativa else None
-                campanha_historico = None
-                if campanha_id:
-                    campanha_historico = db.campanhas_historico.find_one({"campanha_id": campanha_id})
-                
-                col_r1, col_r2, col_r3 = st.columns(3)
-                
-                with col_r1:
-                    st.metric("Condomínios na Campanha", len(campanha_ativa))
-                    if campanha_historico:
-                        st.caption(f"Versão: #{campanha_historico.get('versao', 'N/A')}")
-                
-                with col_r2:
-                    total_aptos = sum(c.get("aptos", 0) for c in campanha_ativa)
-                    st.metric("Total de Apartamentos", f"{total_aptos:,}")
-                
-                with col_r3:
-                    visitas_concluidas = db.visitas_vendedoras.count_documents({"status": "concluido"})
-                    st.metric("Visitas Concluídas (Total)", visitas_concluidas)
-                
-                # Progresso por condomínio
-                st.markdown("#### 📈 Progresso por Condomínio")
-                
-                dados_progresso = []
-                for cond in campanha_ativa:
-                    total_visitas = db.visitas_vendedoras.count_documents({
-                        "condominio_id": cond["condominio_id"]
-                    })
-                    visitas_concluidas_cond = db.visitas_vendedoras.count_documents({
-                        "condominio_id": cond["condominio_id"],
-                        "status": "concluido"
-                    })
-                    
-                    dados_progresso.append({
-                        "Condomínio": cond["condominio_nome"][:35],
-                        "Zona": cond.get("zona", "N/D"),
-                        "Total Visitas": total_visitas,
-                        "Concluídas": visitas_concluidas_cond,
-                        "Progresso": f"{(visitas_concluidas_cond/total_visitas*100):.0f}%" if total_visitas > 0 else "0%"
-                    })
-                
-                df_progresso = pd.DataFrame(dados_progresso)
-                st.dataframe(df_progresso, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhuma campanha ativa.")
-        
-        elif tipo_relatorio == "Visitas por Vendedora":
-            # Incluir vendedoras inativas nos relatórios
-            vendedoras_opcoes = [v["nome"] for v in db.vendedoras.find({})]
-            vendedora_sel = st.selectbox("Vendedora", options=vendedoras_opcoes)
-            
-            if vendedora_sel:
-                visitas_vend = list(db.visitas_vendedoras.find({
-                    "vendedora": vendedora_sel,
-                    "status": {"$ne": "cancelado"}
-                }).sort("data", -1))
-                
-                if visitas_vend:
-                    dados = []
-                    for vis in visitas_vend:
-                        dados.append({
-                            "Data": datetime.strptime(vis["data"], "%Y-%m-%d").strftime("%d/%m/%Y"),
-                            "Condomínio": vis["condominio_nome"],
-                            "Zona": vis.get("zona", "N/D"),
-                            "Status": "✅ Concluído" if vis["status"] == "concluido" else "⏳ Agendado"
-                        })
-                    
-                    df = pd.DataFrame(dados)
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                    
-                    total = len(visitas_vend)
-                    concluidos = len([v for v in visitas_vend if v["status"] == "concluido"])
-                    
-                    col_e1, col_e2, col_e3 = st.columns(3)
-                    with col_e1:
-                        st.metric("Total de Visitas", total)
-                    with col_e2:
-                        st.metric("Concluídas", concluidos)
-                    with col_e3:
-                        st.metric("Taxa de Conclusão", f"{(concluidos/total*100):.1f}%" if total > 0 else "0%")
-                else:
-                    st.info("Nenhuma visita encontrada.")
-        
-        elif tipo_relatorio == "Distribuição por Zona":
-            campanha = list(db.campanha_visitas.find({"ativo": True}))
-            
-            if campanha:
-                # Distribuição dos condomínios por zona
-                zona_counts = defaultdict(int)
-                for cond in campanha:
-                    zona = cond.get("zona", "Não definida")
-                    zona_counts[zona] += 1
-                
-                st.markdown("#### 📍 Distribuição dos Condomínios por Zona")
-                
-                for zona, count in sorted(zona_counts.items()):
-                    st.progress(count / len(campanha), text=f"{zona}: {count} condomínios ({count/len(campanha)*100:.1f}%)")
-                
-                # Distribuição das visitas por zona
-                st.markdown("#### 📊 Distribuição das Visitas por Zona")
-                
-                visitas = list(db.visitas_vendedoras.find({"status": {"$ne": "cancelado"}}))
-                visitas_por_zona = defaultdict(int)
-                
-                for visita in visitas:
-                    zona = visita.get("zona", "Não definida")
-                    visitas_por_zona[zona] += 1
-                
-                if visitas:
-                    for zona, count in sorted(visitas_por_zona.items()):
-                        st.progress(count / len(visitas), text=f"{zona}: {count} visitas ({count/len(visitas)*100:.1f}%)")
-                else:
-                    st.info("Nenhuma visita registrada ainda.")
-            else:
-                st.info("Nenhuma campanha ativa.")
-        
-        elif tipo_relatorio == "Comparativo de Campanhas":
-            st.markdown("#### 📊 Comparativo entre Campanhas")
-            
-            # Buscar todas as campanhas
-            campanhas = list(db.campanhas_historico.find().sort("versao", -1))
-            
-            if len(campanhas) < 2:
-                st.info("Precisa de pelo menos 2 campanhas para comparar.")
-            else:
-                # Selecionar campanhas para comparar
-                opcoes = [f"#{c['versao']} - {c.get('nome', 'Sem nome')} ({c['data_criacao'].strftime('%d/%m/%Y')})" for c in campanhas]
-                
-                col_comp1, col_comp2 = st.columns(2)
-                with col_comp1:
-                    camp1_idx = st.selectbox("Campanha 1", options=range(len(opcoes)), format_func=lambda x: opcoes[x], key="comp1")
-                with col_comp2:
-                    camp2_idx = st.selectbox("Campanha 2", options=range(len(opcoes)), format_func=lambda x: opcoes[x], key="comp2")
-                
-                if camp1_idx != camp2_idx:
-                    camp1 = campanhas[camp1_idx]
-                    camp2 = campanhas[camp2_idx]
-                    
-                    # Métricas comparativas
-                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                    
-                    with col_m1:
-                        st.metric(
-                            "Condomínios",
-                            f"{camp1['total_condominios']} → {camp2['total_condominios']}",
-                            delta=camp2['total_condominios'] - camp1['total_condominios']
-                        )
-                    
-                    with col_m2:
-                        # Contar visitas de cada campanha
-                        vis1 = db.visitas_vendedoras.count_documents({"campanha_id": camp1.get("campanha_id")})
-                        vis2 = db.visitas_vendedoras.count_documents({"campanha_id": camp2.get("campanha_id")})
-                        st.metric(
-                            "Total Visitas",
-                            f"{vis1} → {vis2}",
-                            delta=vis2 - vis1
-                        )
-                    
-                    with col_m3:
-                        # Visitas concluídas
-                        conc1 = db.visitas_vendedoras.count_documents({
-                            "campanha_id": camp1.get("campanha_id"),
-                            "status": "concluido"
-                        })
-                        conc2 = db.visitas_vendedoras.count_documents({
-                            "campanha_id": camp2.get("campanha_id"),
-                            "status": "concluido"
-                        })
-                        taxa1 = (conc1 / vis1 * 100) if vis1 > 0 else 0
-                        taxa2 = (conc2 / vis2 * 100) if vis2 > 0 else 0
-                        st.metric(
-                            "Taxa de Conclusão",
-                            f"{taxa1:.1f}% → {taxa2:.1f}%",
-                            delta=f"{taxa2 - taxa1:.1f}%"
-                        )
-                    
-                    with col_m4:
-                        # Dias de campanha
-                        dias1 = (camp1['data_fim'] - camp1['data_inicio']).days
-                        dias2 = (camp2['data_fim'] - camp2['data_inicio']).days
-                        st.metric(
-                            "Duração",
-                            f"{dias1} → {dias2} dias",
-                            delta=dias2 - dias1
-                        )
-                    
-                    # Detalhes das campanhas
-                    st.markdown("---")
-                    col_det1, col_det2 = st.columns(2)
-                    
-                    with col_det1:
-                        st.markdown(f"**📋 Campanha #{camp1['versao']}**")
-                        st.write(f"Nome: {camp1.get('nome', 'Sem nome')}")
-                        st.write(f"Período: {camp1['data_inicio'].strftime('%d/%m/%Y')} a {camp1['data_fim'].strftime('%d/%m/%Y')}")
-                        st.write(f"Condomínios: {camp1['total_condominios']}")
-                        st.write(f"Visitas: {vis1} agendadas, {conc1} concluídas")
-                    
-                    with col_det2:
-                        st.markdown(f"**📋 Campanha #{camp2['versao']}**")
-                        st.write(f"Nome: {camp2.get('nome', 'Sem nome')}")
-                        st.write(f"Período: {camp2['data_inicio'].strftime('%d/%m/%Y')} a {camp2['data_fim'].strftime('%d/%m/%Y')}")
-                        st.write(f"Condomínios: {camp2['total_condominios']}")
-                        st.write(f"Visitas: {vis2} agendadas, {conc2} concluídas")
-        
-        elif tipo_relatorio == "Exportar Agenda":
-            data_export_inicio = st.date_input("Data Início", value=datetime.now().date())
-            data_export_fim = st.date_input("Data Fim", value=datetime.now().date() + timedelta(days=30))
-            
-            # Opção de incluir histórico
-            incluir_historico = st.checkbox("Incluir todas as campanhas (histórico)")
-            
-            if st.button("📥 Exportar para Excel", key="btn_exportar"):
-                query = {
-                    "data": {"$gte": data_export_inicio.strftime("%Y-%m-%d"), "$lte": data_export_fim.strftime("%Y-%m-%d")}
-                }
-                
-                if not incluir_historico:
-                    query["status"] = {"$ne": "cancelado"}
-                
-                visitas_export = list(db.visitas_vendedoras.find(query).sort("data", 1))
-                
-                if visitas_export:
-                    dados_export = []
-                    for vis in visitas_export:
-                        data_obj = datetime.strptime(vis["data"], "%Y-%m-%d")
-                        
-                        # Buscar campanha
-                        campanha_nome = "N/A"
-                        if vis.get("campanha_id"):
-                            campanha = db.campanhas_historico.find_one({"campanha_id": vis["campanha_id"]})
-                            if campanha:
-                                campanha_nome = f"#{campanha['versao']} - {campanha.get('nome', '')}"
-                        
-                        dados_export.append({
-                            "Data": data_obj.strftime("%d/%m/%Y"),
-                            "Dia da Semana": DIAS_SEMANA[data_obj.weekday()],
-                            "Condomínio": vis["condominio_nome"],
-                            "Zona": vis.get("zona", "N/D"),
-                            "Vendedora": vis["vendedora"],
-                            "Status": vis["status"],
-                            "Campanha": campanha_nome,
-                            "Observações": vis.get("observacoes", "")
-                        })
-                    
-                    df_export = pd.DataFrame(dados_export)
-                    
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        df_export.to_excel(writer, index=False, sheet_name='Agenda Visitas')
-                        
-                        worksheet = writer.sheets['Agenda Visitas']
-                        for column in worksheet.columns:
-                            max_length = 0
-                            column_letter = column[0].column_letter
-                            for cell in column:
-                                try:
-                                    if len(str(cell.value)) > max_length:
-                                        max_length = len(str(cell.value))
-                                except:
-                                    pass
-                            adjusted_width = min(max_length + 2, 50)
-                            worksheet.column_dimensions[column_letter].width = adjusted_width
-                    
-                    output.seek(0)
-                    
-                    st.download_button(
-                        label="📊 Baixar Excel",
-                        data=output.getvalue(),
-                        file_name=f"visitas_vendedoras_{data_export_inicio.strftime('%Y%m%d')}_{data_export_fim.strftime('%Y%m%d')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                else:
-                    st.warning("Nenhuma visita no período selecionado.")
+        relatorios_completos(db)
     
     with tab_historico:
-        st.markdown("### 📚 Histórico Completo de Campanhas")
-        
-        # Estatísticas gerais
-        total_campanhas = db.campanhas_historico.count_documents({})
-        total_visitas = db.visitas_vendedoras.count_documents({})
-        
-        col_h1, col_h2, col_h3 = st.columns(3)
-        with col_h1:
-            st.metric("Total de Campanhas", total_campanhas)
-        with col_h2:
-            st.metric("Total de Visitas", total_visitas)
-        with col_h3:
-            tamanho_mb = verificar_espaco_mongo(db)
-            st.metric("Espaço MongoDB", f"{tamanho_mb:.2f} MB")
-        
-        # Lista de campanhas
-        campanhas = list(db.campanhas_historico.find().sort("versao", -1))
-        
-        if campanhas:
-            for camp in campanhas:
-                with st.expander(f"📋 Campanha #{camp['versao']} - {camp.get('nome', 'Sem nome')}", expanded=False):
-                    col_c1, col_c2, col_c3 = st.columns(3)
-                    
-                    with col_c1:
-                        st.write(f"**Período:** {camp['data_inicio'].strftime('%d/%m/%Y')} a {camp['data_fim'].strftime('%d/%m/%Y')}")
-                        st.write(f"**Status:** {'✅ Ativa' if camp.get('status') == 'ativa' else '📌 Concluída'}")
-                    
-                    with col_c2:
-                        st.write(f"**Condomínios:** {camp['total_condominios']}")
-                        st.write(f"**Criado por:** {camp.get('criado_por', 'Sistema')}")
-                    
-                    with col_c3:
-                        # Contar visitas desta campanha
-                        visitas_camp = db.visitas_vendedoras.count_documents({
-                            "campanha_id": camp.get("campanha_id")
-                        })
-                        concluidas_camp = db.visitas_vendedoras.count_documents({
-                            "campanha_id": camp.get("campanha_id"),
-                            "status": "concluido"
-                        })
-                        st.metric("Visitas", visitas_camp)
-                        st.metric("Concluídas", concluidas_camp)
-                    
-                    # Lista de condomínios
-                    with st.expander("📋 Ver condomínios desta campanha"):
-                        for cond in camp.get('condominios', []):
-                            st.write(f"- {cond.get('condominio_nome')} ({cond.get('zona')}) - Prioridade: {cond.get('prioridade')}")
-        else:
-            st.info("Nenhuma campanha no histórico. Crie sua primeira campanha!")
+        historico_campanhas(db)
 
 # ============================================================================
 # FUNÇÃO PRINCIPAL
@@ -1478,7 +2211,7 @@ def render_visitas_vendedoras(clientes_collection):
     <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1rem; border-radius: 10px; margin-bottom: 2rem;'>
         <h2 style='color: white; margin: 0;'>👩‍💼 Gestão de Visitas de Vendedoras</h2>
         <p style='color: white; margin: 0.5rem 0 0 0; opacity: 0.9;'>
-            Agendamento inteligente com especialização por região e histórico completo
+            Agendamento inteligente com especialização por região, histórico completo e agenda visual
         </p>
     </div>
     """, unsafe_allow_html=True)
