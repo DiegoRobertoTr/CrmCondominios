@@ -8,6 +8,7 @@ Módulo de Gerenciamento de Visitas de Vendedoras
 - Visualizações por perfil (admin, vendedora, atendente)
 - Múltiplos relatórios e exportações
 - AGENDA VISUAL POR VENDEDORA COM EDIÇÃO MANUAL
+- SELECTBOX DE CONDOMÍNIOS VINCULADO AO CADASTRO
 """
 
 import streamlit as st
@@ -684,13 +685,13 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA - CORRIGIDA (USANDO COMPONENTES STREAMLIT)
+# AGENDA VISUAL POR VENDEDORA - COM SELECTBOX DE CONDOMÍNIOS
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
     """
     Exibe agenda em formato visual (tabela) com edição manual
-    Usando componentes Streamlit em vez de HTML puro
+    Usando componentes Streamlit com selectbox de condomínios
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -931,7 +932,7 @@ def agenda_visual_por_vendedora(db):
                     st.markdown(f"""
                     <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
                         <span style="font-size: 16px; color: #999;">➕</span>
-                        <br><small style="font-size: 9px; color: #999;">Use o formulário</small>
+                        <br><small style="font-size: 9px; color: #999;">Selecione abaixo</small>
                     </div>
                     """, unsafe_allow_html=True)
                     continue
@@ -975,12 +976,16 @@ def agenda_visual_por_vendedora(db):
         st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
     
     # ============================================================
-    # EDITOR MANUAL DE VISITAS (FORMS STREAMLIT)
+    # EDITOR MANUAL DE VISITAS (FORMS STREAMLIT) - COM SELECTBOX
     # ============================================================
     
     st.markdown("---")
     st.markdown("### ✏️ Editor Manual de Visitas")
     st.info("💡 Selecione a data, vendedora e condomínio para adicionar ou editar uma visita.")
+    
+    # Buscar lista de condomínios do cadastro principal
+    condominios_cadastro = get_all_condominios()
+    condominios_nomes = sorted([c["nome"] for c in condominios_cadastro])
     
     with st.form("form_edicao_visita"):
         col_ed1, col_ed2, col_ed3, col_ed4 = st.columns(4)
@@ -1002,11 +1007,30 @@ def agenda_visual_por_vendedora(db):
             )
         
         with col_ed3:
-            condominio_edicao = st.text_input(
-                "Condomínio",
-                placeholder="Digite o nome do condomínio",
-                key="condominio_edicao_form"
-            )
+            # Usando selectbox com busca para selecionar condomínio
+            if condominios_nomes:
+                condominio_edicao = st.selectbox(
+                    "Condomínio (selecione da lista)",
+                    options=[""] + condominios_nomes,
+                    key="condominio_edicao_form",
+                    help="Selecione o condomínio da lista cadastrada"
+                )
+                
+                # Opção para digitar manualmente se não estiver na lista
+                condominio_manual = st.text_input(
+                    "Ou digite manualmente (se não estiver na lista)",
+                    placeholder="Digite o nome do condomínio",
+                    key="condominio_manual_form",
+                    help="Use esta opção se o condomínio não estiver na lista acima"
+                )
+            else:
+                st.warning("⚠️ Nenhum condomínio cadastrado. Digite manualmente.")
+                condominio_edicao = ""
+                condominio_manual = st.text_input(
+                    "Condomínio",
+                    placeholder="Digite o nome do condomínio",
+                    key="condominio_manual_form"
+                )
         
         with col_ed4:
             periodo_edicao = st.selectbox(
@@ -1041,6 +1065,9 @@ def agenda_visual_por_vendedora(db):
         if submitted:
             data_str = data_edicao.strftime("%Y-%m-%d")
             
+            # Determinar o nome do condomínio (prioridade: selectbox > manual)
+            nome_condominio = condominio_edicao if condominio_edicao else condominio_manual
+            
             if status_edicao == "feriado":
                 feriado_existente = db.visitas_vendedoras.find_one({
                     "data": data_str,
@@ -1070,27 +1097,56 @@ def agenda_visual_por_vendedora(db):
                 st.rerun()
                 return
             
-            if not condominio_edicao:
-                st.error("⚠️ Digite o nome do condomínio!")
+            if not nome_condominio:
+                st.error("⚠️ Selecione ou digite o nome do condomínio!")
             else:
+                # Buscar o ID do condomínio se existir no cadastro
+                condominio_id = None
+                condominio_encontrado = None
+                
+                # Tentar encontrar pelo nome exato
+                for c in condominios_cadastro:
+                    if c["nome"].upper() == nome_condominio.upper():
+                        condominio_id = c["_id"]
+                        condominio_encontrado = c
+                        break
+                
+                # Se não encontrou, tentar busca aproximada
+                if not condominio_encontrado:
+                    for c in condominios_cadastro:
+                        if nome_condominio.upper() in c["nome"].upper():
+                            condominio_id = c["_id"]
+                            condominio_encontrado = c
+                            break
+                
+                # Verificar se já existe visita para este dia/vendedora/condomínio
                 existente = db.visitas_vendedoras.find_one({
                     "data": data_str,
                     "vendedora": vendedora_edicao,
-                    "condominio_nome": condominio_edicao
+                    "condominio_nome": nome_condominio
                 })
                 
                 if existente:
+                    # Atualizar
+                    update_data = {
+                        "status": status_edicao,
+                        "periodo": periodo_edicao,
+                        "observacoes": observacao_edicao,
+                        "manual": True,
+                        "ultima_edicao": datetime.now()
+                    }
+                    
+                    # Se encontrou o condomínio no cadastro, atualizar o ID
+                    if condominio_id:
+                        update_data["condominio_id"] = condominio_id
+                        if condominio_encontrado:
+                            update_data["zona"] = condominio_encontrado.get("zona", "Manual")
+                    
                     db.visitas_vendedoras.update_one(
                         {"_id": existente["_id"]},
-                        {"$set": {
-                            "status": status_edicao,
-                            "periodo": periodo_edicao,
-                            "observacoes": observacao_edicao,
-                            "manual": True,
-                            "ultima_edicao": datetime.now()
-                        }}
+                        {"$set": update_data}
                     )
-                    st.success(f"✅ Visita atualizada: {condominio_edicao}")
+                    st.success(f"✅ Visita atualizada: {nome_condominio}")
                 else:
                     visitas_dia = db.visitas_vendedoras.count_documents({
                         "data": data_str,
@@ -1102,8 +1158,8 @@ def agenda_visual_por_vendedora(db):
                         st.warning(f"⚠️ {vendedora_edicao} já tem {visitas_dia} visitas neste dia. Limite é 2.")
                     else:
                         nova_visita = {
-                            "condominio_id": None,
-                            "condominio_nome": condominio_edicao,
+                            "condominio_id": condominio_id,
+                            "condominio_nome": nome_condominio,
                             "vendedora": vendedora_edicao,
                             "data": data_str,
                             "status": status_edicao,
@@ -1112,11 +1168,11 @@ def agenda_visual_por_vendedora(db):
                             "criado_por": st.session_state.get("nome_usuario", "Manual"),
                             "data_criacao": datetime.now(),
                             "manual": True,
-                            "zona": "Manual",
+                            "zona": condominio_encontrado.get("zona", "Manual") if condominio_encontrado else "Manual",
                             "adequacao": "manual"
                         }
                         db.visitas_vendedoras.insert_one(nova_visita)
-                        st.success(f"✅ Visita adicionada: {condominio_edicao}")
+                        st.success(f"✅ Visita adicionada: {nome_condominio}")
                 
                 st.rerun()
         
