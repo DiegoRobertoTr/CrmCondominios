@@ -101,7 +101,6 @@ def encontrar_match_condominio(nome_planilha, zona, collection):
     nome_normalizado = normalizar_nome_condominio(nome_planilha)
     
     # Estratégia 1: Busca pelo ID do IXC (se disponível)
-    # Extrair ID do IXC se estiver no nome
     id_match = re.search(r'ID:(\d+)', nome_planilha)
     if id_match:
         id_ixc = id_match.group(1)
@@ -122,7 +121,6 @@ def encontrar_match_condominio(nome_planilha, zona, collection):
         
         # Também tentar match contendo o nome
         if nome_normalizado in nome_crm or nome_crm in nome_normalizado:
-            # Verificar se a zona coincide
             if zona and cond.get('zona') == zona:
                 cond['_score'] = 85
                 return cond
@@ -131,7 +129,6 @@ def encontrar_match_condominio(nome_planilha, zona, collection):
     # Estratégia 3: Fuzzy matching
     nomes_crm = [normalizar_nome_condominio(c.get('nome', '')) for c in todos_condominios]
     if nomes_crm:
-        # Usar fuzzy matching
         matches = process.extract(
             nome_normalizado,
             nomes_crm,
@@ -139,13 +136,11 @@ def encontrar_match_condominio(nome_planilha, zona, collection):
             limit=5
         )
         
-        # Filtrar matches com score > 70
         for match in matches:
             if match[1] >= 70:
                 idx = nomes_crm.index(match[0])
                 cond = todos_condominios[idx]
                 
-                # Verificar se a zona coincide
                 if zona and cond.get('zona') == zona:
                     cond['_score'] = match[1] + 10
                 else:
@@ -156,7 +151,6 @@ def encontrar_match_condominio(nome_planilha, zona, collection):
     # Estratégia 4: Buscar por palavras-chave mais importantes
     palavras_chave = nome_normalizado.split()
     if len(palavras_chave) > 1:
-        # Tentar match com as duas primeiras palavras
         chave_principal = " ".join(palavras_chave[:2])
         for cond in todos_condominios:
             nome_crm = normalizar_nome_condominio(cond.get('nome', ''))
@@ -173,49 +167,41 @@ def detectar_colunas_informacoes(df):
     mapa = {}
     colunas = df.columns.tolist()
     
-    # Mapear ZONA
     for nome in ['ZONA', 'Zona', 'zona', 'Região', 'Regiao']:
         if nome in colunas:
             mapa['zona'] = nome
             break
     
-    # Mapear CONDOMÍNIO
     for nome in ['CONDOMÍNIO', 'Condomínio', 'CONDOMINIO', 'Condominio', 'condominio', 'Nome']:
         if nome in colunas:
             mapa['condominio'] = nome
             break
     
-    # Mapear PONTOS INTERNET
     for nome in ['PONTOS INTERNET', 'Pontos Internet', 'PONTOS_INTERNET', 'pontos_internet']:
         if nome in colunas:
             mapa['pontos_internet'] = nome
             break
     
-    # Mapear PLACAS (FOTOS)
     for nome in ['PLACAS (FOTOS)', 'PLACAS FOTOS', 'Placas Fotos', 'PLACAS', 'Placas']:
         if nome in colunas:
             mapa['placas_fotos'] = nome
             break
     
-    # Mapear DOAÇÃO
     for nome in ['DOAÇÃO', 'Doação', 'DOACAO', 'Doacao', 'doacao']:
         if nome in colunas:
             mapa['doacao'] = nome
             break
     
-    # Mapear PARCEIRO
     for nome in ['PARCEIRO', 'Parceiro', 'parceiro']:
         if nome in colunas:
             mapa['parceiro'] = nome
             break
     
-    # Mapear SÍNDICO
     for nome in ['SÍNDICO', 'Sindico', 'SINDICO', 'sindico']:
         if nome in colunas:
             mapa['sindico'] = nome
             break
     
-    # Mapear CONTATOS (múltiplas colunas)
     contatos_colunas = []
     for nome in colunas:
         if 'CONTATO' in nome.upper() or 'Contato' in nome:
@@ -223,7 +209,6 @@ def detectar_colunas_informacoes(df):
     if contatos_colunas:
         mapa['contatos'] = contatos_colunas
     
-    # Mapear OBSERVAÇÕES
     for nome in ['OBSERVAÇÕES', 'Observações', 'OBSERVACOES', 'Observacoes']:
         if nome in colunas:
             mapa['observacoes'] = nome
@@ -245,12 +230,9 @@ def parse_pontos_internet(texto):
         return {"quantidade": 0, "locais": [], "observacao": ""}
     
     texto = str(texto).strip()
-    
-    # Tentar extrair informações estruturadas
     locais = []
     quantidade_total = 0
     
-    # Padrão: "02 (Adm e portaria)" ou "02 (Adm e portaria) + 02 (salão)"
     padrao = r'(\d+)\s*\(([^)]+)\)'
     matches = re.findall(padrao, texto)
     
@@ -258,22 +240,17 @@ def parse_pontos_internet(texto):
         for qtd, locais_str in matches:
             qtd = int(qtd)
             quantidade_total += qtd
-            
-            # Separar locais por "e" ou ","
             locais_sep = re.split(r'[e,;]+\s*', locais_str)
             for local in locais_sep:
                 local = local.strip()
                 if local and local not in locais:
                     locais.append(local)
     
-    # Se não encontrou no formato estruturado, tentar extrair quantidade
     if not matches:
-        # Tentar encontrar números
         numeros = re.findall(r'(\d+)', texto)
         if numeros:
             quantidade_total = sum(int(n) for n in numeros)
         
-        # Tentar extrair locais
         locais_palavras = ['adm', 'portaria', 'salão', 'academia', 'churrasqueira', 
                           'coworking', 'lavanderia', 'rooftop', 'carregador']
         for local in locais_palavras:
@@ -298,15 +275,12 @@ def parse_placas_fotos(texto):
     texto = str(texto).strip()
     itens = []
     
-    # Padrão para itens com quantidade e tipo
-    # Ex: "01 cavalete", "03 Placas", "1 Windbanner"
     padrao = r'(\d+)\s*([a-zA-ZÀ-ÿç\s]+)'
     matches = re.findall(padrao, texto)
     
     if matches:
         for qtd, tipo in matches:
             tipo = tipo.strip()
-            # Verificar se é um tipo válido
             tipo_normalizado = None
             for tipo_valido in TIPOS_PLACA:
                 if tipo_valido.lower() in tipo.lower():
@@ -314,9 +288,7 @@ def parse_placas_fotos(texto):
                     break
             
             if tipo_normalizado:
-                # Tentar extrair local
                 local = ""
-                # Padrão: "Placas (Portaria, Adm e Salão)"
                 padrao_local = r'\(([^)]+)\)'
                 local_match = re.search(padrao_local, texto)
                 if local_match:
@@ -329,7 +301,6 @@ def parse_placas_fotos(texto):
                     "observacao": ""
                 })
     
-    # Se não encontrou itens estruturados, adicionar como observação
     if not itens:
         itens.append({
             "tipo": "Outro",
@@ -355,15 +326,12 @@ def parse_doacoes(texto):
     texto = str(texto).strip()
     itens = []
     
-    # Padrão: "01 Notebook Dell: 2.399,00 (Pix)"
     padrao = r'(\d+)\s*([^:]+):\s*([\d.,]+)\s*\(([^)]+)\)'
     matches = re.findall(padrao, texto)
     
     if matches:
         for qtd, item, valor_str, forma in matches:
-            # Limpar valor
             valor = float(valor_str.replace('.', '').replace(',', '.'))
-            
             itens.append({
                 "item": item.strip(),
                 "quantidade": int(qtd),
@@ -372,9 +340,7 @@ def parse_doacoes(texto):
                 "observacao": ""
             })
     
-    # Se não encontrou, tentar padrão mais simples
     if not itens:
-        # Tentar extrair item e valor
         padrao_simples = r'([^:]+):\s*([\d.,]+)'
         matches_simples = re.findall(padrao_simples, texto)
         if matches_simples:
@@ -421,20 +387,17 @@ def importar_informacoes_completas(df, mapa_colunas, collection):
         resultado["total"] += 1
         
         try:
-            # Extrair dados da planilha
             nome_planilha = str(row[mapa_colunas.get('condominio', 'CONDOMÍNIO')]).strip()
             zona = str(row[mapa_colunas.get('zona', 'ZONA')]).strip() if mapa_colunas.get('zona') else ""
             
             if not nome_planilha:
                 continue
             
-            # Encontrar match no CRM
             cond_match = encontrar_match_condominio(nome_planilha, zona, collection)
             
             if cond_match:
                 resultado["matches"] += 1
                 
-                # Extrair informações
                 pontos_texto = str(row.get(mapa_colunas.get('pontos_internet', ''), '')).strip() if mapa_colunas.get('pontos_internet') else ""
                 placas_texto = str(row.get(mapa_colunas.get('placas_fotos', ''), '')).strip() if mapa_colunas.get('placas_fotos') else ""
                 doacao_texto = str(row.get(mapa_colunas.get('doacao', ''), '')).strip() if mapa_colunas.get('doacao') else ""
@@ -442,12 +405,10 @@ def importar_informacoes_completas(df, mapa_colunas, collection):
                 sindico_texto = str(row.get(mapa_colunas.get('sindico', ''), '')).strip() if mapa_colunas.get('sindico') else ""
                 observacoes_texto = str(row.get(mapa_colunas.get('observacoes', ''), '')).strip() if mapa_colunas.get('observacoes') else ""
                 
-                # Parsear informações
                 pontos_parse = parse_pontos_internet(pontos_texto) if pontos_texto else {"quantidade": 0, "locais": [], "observacao": ""}
                 placas_parse = parse_placas_fotos(placas_texto) if placas_texto else {"itens": [], "observacao": ""}
                 doacoes_parse = parse_doacoes(doacao_texto) if doacao_texto else {"itens": [], "observacao": "", "total_doacoes": 0}
                 
-                # Preparar contatos
                 contatos = []
                 if mapa_colunas.get('contatos'):
                     for col_contato in mapa_colunas['contatos']:
@@ -459,7 +420,6 @@ def importar_informacoes_completas(df, mapa_colunas, collection):
                                 "observacao": ""
                             })
                 
-                # Preparar dados para atualização
                 info_detalhada = {
                     "pontos_internet": pontos_parse,
                     "placas_fotos": placas_parse,
@@ -472,9 +432,7 @@ def importar_informacoes_completas(df, mapa_colunas, collection):
                     "data_importacao": datetime.now()
                 }
                 
-                # Atualizar ou criar
                 if cond_match.get('_id'):
-                    # Atualizar existente
                     collection.update_one(
                         {"_id": cond_match['_id']},
                         {"$set": {"informacoes_detalhadas": info_detalhada, "ultima_atualizacao_informacoes": datetime.now()}}
@@ -488,7 +446,6 @@ def importar_informacoes_completas(df, mapa_colunas, collection):
                         "detalhes": f"Atualizado com informações da planilha"
                     })
                 else:
-                    # Criar novo (não deve acontecer com match)
                     novo_cond = {
                         "nome": nome_planilha.upper(),
                         "zona": zona,
@@ -534,7 +491,6 @@ def render_informacoes_condominios():
     """Renderiza a aba de informações detalhadas dos condomínios"""
     st.title("📊 Informações Detalhadas dos Condomínios")
     
-    # Abas internas
     tab1, tab2, tab3 = st.tabs([
         "📋 Dashboard",
         "📥 Importar Planilha",
@@ -554,7 +510,6 @@ def render_dashboard():
     """Dashboard com visão geral das informações"""
     collection = get_condominios_collection()
     
-    # Estatísticas rápidas
     total_condominios = collection.count_documents({})
     com_informacoes = collection.count_documents({"informacoes_detalhadas": {"$exists": True}})
     sem_informacoes = total_condominios - com_informacoes
@@ -568,7 +523,6 @@ def render_dashboard():
         st.metric("⚠️ Sem Informações", sem_informacoes, 
                  delta="⚠️ Pendente" if sem_informacoes > 0 else None)
     with col4:
-        # Distribuição por zona
         zonas = list(collection.aggregate([
             {"$group": {"_id": "$zona", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}}
@@ -576,7 +530,6 @@ def render_dashboard():
         if zonas:
             st.metric("🏙️ Principal Zona", zonas[0]["_id"])
     
-    # Filtros
     st.subheader("🔍 Filtros")
     col1, col2 = st.columns(2)
     with col1:
@@ -587,7 +540,6 @@ def render_dashboard():
             ["Todos", "Com Informações", "Sem Informações"]
         )
     
-    # Buscar condomínios
     query = {}
     if zona_filter != "Todas":
         query["zona"] = zona_filter
@@ -601,45 +553,37 @@ def render_dashboard():
     
     st.subheader(f"📋 {len(condominios)} Condomínios")
     
-    # Grid de cards (3 por linha)
     cols = st.columns(3)
     for idx, cond in enumerate(condominios):
         with cols[idx % 3]:
             with st.container(border=True):
-                # Nome e zona
                 st.markdown(f"### 🏢 {cond.get('nome', 'N/A')[:35]}")
                 st.caption(f"📍 {cond.get('zona', 'N/A')} | IXC: {cond.get('id_ixc', 'N/A')}")
                 
-                # Informações resumidas
                 info = cond.get("informacoes_detalhadas", {})
                 if info:
-                    # Pontos de internet
                     pontos = info.get("pontos_internet", {})
                     if pontos and pontos.get("quantidade", 0) > 0:
                         qtd = pontos.get("quantidade", 0)
                         locais = pontos.get("locais", [])
                         st.write(f"📶 **{qtd}** pontos" + (f" ({', '.join(locais[:3])})" if locais else ""))
                     
-                    # Placas
                     placas = info.get("placas_fotos", {})
                     itens_placas = placas.get("itens", [])
                     if itens_placas:
                         st.write(f"🪧 **{len(itens_placas)}** itens de placa")
                     
-                    # Doações
                     doacoes = info.get("doacoes", {})
                     total_doacoes = doacoes.get("total_doacoes", 0)
                     if total_doacoes > 0:
                         st.write(f"🎁 **R$ {total_doacoes:,.2f}** em doações")
                     
-                    # Data de atualização
                     data_atualizacao = cond.get("ultima_atualizacao_informacoes")
                     if data_atualizacao:
                         st.caption(f"🔄 Atualizado: {data_atualizacao.strftime('%d/%m/%Y')}")
                 else:
                     st.warning("⚠️ Sem informações detalhadas")
                 
-                # Botão Editar (fora do form)
                 if st.button("✏️ Editar", key=f"edit_{cond['_id']}"):
                     st.session_state['cond_info_edit'] = str(cond['_id'])
                     st.rerun()
@@ -660,7 +604,6 @@ def render_importacao_informacoes():
     encontrar o condomínio correto no CRM.
     """)
     
-    # Upload da planilha
     arquivo = st.file_uploader(
         "📂 Selecione a planilha com as informações detalhadas",
         type=["csv", "xlsx", "xls"],
@@ -669,22 +612,17 @@ def render_importacao_informacoes():
     
     if arquivo:
         try:
-            # Ler arquivo
             if arquivo.name.endswith('.csv'):
                 df = pd.read_csv(arquivo)
             else:
                 df = pd.read_excel(arquivo)
             
             st.success(f"✅ Arquivo lido! {len(df)} registros encontrados")
-            
-            # Normalizar nomes das colunas
             df.columns = df.columns.str.strip()
             
-            # Prévia dos dados
             with st.expander("📋 Prévia dos dados", expanded=True):
                 st.dataframe(df.head(10), use_container_width=True)
             
-            # Detectar colunas automaticamente
             mapa_colunas = detectar_colunas_informacoes(df)
             
             with st.expander("🔍 Mapeamento de colunas detectado"):
@@ -694,26 +632,22 @@ def render_importacao_informacoes():
                     else:
                         st.write(f"- **{campo}** → '{coluna}'")
             
-            # Verificar colunas obrigatórias
             if 'condominio' not in mapa_colunas:
                 st.error("❌ Coluna 'CONDOMÍNIO' não encontrada na planilha!")
                 st.write("Colunas disponíveis:", list(df.columns))
                 return
             
-            # Mostrar matching preview
             st.divider()
             st.subheader("🔗 Preview do Matching")
             
             collection = get_condominios_collection()
             matching_preview = []
             
-            # Pegar amostra para preview (primeiros 20)
             amostra = df.head(20)
             for idx, row in amostra.iterrows():
                 nome_planilha = str(row[mapa_colunas.get('condominio', 'CONDOMÍNIO')]).strip()
                 zona = str(row[mapa_colunas.get('zona', 'ZONA')]).strip() if mapa_colunas.get('zona') else ""
                 
-                # Encontrar match
                 match = encontrar_match_condominio(nome_planilha, zona, collection)
                 
                 if match:
@@ -740,11 +674,9 @@ def render_importacao_informacoes():
                     "Nível": confianca
                 })
             
-            # Tabela de preview
             df_preview = pd.DataFrame(matching_preview)
             st.dataframe(df_preview, use_container_width=True)
             
-            # Estatísticas do matching
             total = len(matching_preview)
             encontrados = sum(1 for m in matching_preview if m["Status"] == "✅ Match")
             
@@ -757,7 +689,6 @@ def render_importacao_informacoes():
                 taxa = (encontrados / total * 100) if total > 0 else 0
                 st.metric("Taxa de acerto", f"{taxa:.1f}%")
             
-            # Botão de importação
             st.divider()
             st.warning("⚠️ Ao importar, as informações existentes serão **ATUALIZADAS** ou **CRIADAS** para cada condomínio.")
             
@@ -768,7 +699,6 @@ def render_importacao_informacoes():
                     if resultado.get("erro"):
                         st.error(f"❌ {resultado['erro']}")
                     else:
-                        # Estatísticas
                         col1, col2, col3, col4, col5 = st.columns(5)
                         with col1:
                             st.metric("📊 Total", resultado['total'])
@@ -781,7 +711,6 @@ def render_importacao_informacoes():
                         with col5:
                             st.metric("❌ Sem match", resultado['sem_match'])
                         
-                        # Mostrar detalhes
                         if resultado.get('detalhes'):
                             with st.expander("📋 Detalhes da Importação", expanded=True):
                                 for item in resultado['detalhes'][:30]:
@@ -816,10 +745,8 @@ def render_editor_informacoes():
         st.info("Nenhum condomínio cadastrado.")
         return
     
-    # Selector do condomínio
     cond_options = [f"{c['nome']} - {c.get('zona', 'Zona não definida')}" for c in condominios]
     
-    # Verificar se tem um condomínio selecionado na sessão
     default_index = 0
     if 'cond_info_edit' in st.session_state:
         for idx, cond in enumerate(condominios):
@@ -834,7 +761,6 @@ def render_editor_informacoes():
     )
     
     if cond_selecionado:
-        # Encontrar o condomínio
         cond_atual = next(
             (c for c in condominios if f"{c['nome']} - {c.get('zona', 'Zona não definida')}" == cond_selecionado),
             None
@@ -846,34 +772,73 @@ def render_editor_informacoes():
 def render_formulario_informacoes(cond, collection):
     """Renderiza o formulário de edição de informações"""
     
-    # Recuperar informações existentes
     info = cond.get("informacoes_detalhadas", {})
     
-    # Exibir nome do condomínio
     st.markdown(f"### 🏢 {cond.get('nome')}")
     st.caption(f"📍 {cond.get('zona', 'Zona não definida')} | ID IXC: {cond.get('id_ixc', 'N/A')}")
     
-    # Botão para limpar informações (FORA do form)
+    # Botão de limpar informações (FORA do form)
     col1, col2 = st.columns([4, 1])
     with col2:
         if st.button("🗑️ Limpar Informações", key=f"clear_info_{cond['_id']}"):
-            if st.warning("Tem certeza que deseja limpar todas as informações detalhadas?"):
-                collection.update_one(
-                    {"_id": cond['_id']},
-                    {"$unset": {"informacoes_detalhadas": ""}}
-                )
-                st.success("Informações removidas!")
-                st.rerun()
+            collection.update_one(
+                {"_id": cond['_id']},
+                {"$unset": {"informacoes_detalhadas": ""}}
+            )
+            st.success("Informações removidas!")
+            st.rerun()
     
+    # Botões de adicionar (FORA do form)
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("➕ Adicionar Placa", key=f"add_placa_{cond['_id']}"):
+            if f'itens_placas_{cond["_id"]}' not in st.session_state:
+                st.session_state[f'itens_placas_{cond["_id"]}'] = []
+            st.session_state[f'itens_placas_{cond["_id"]}'].append({
+                "tipo": "Cavalete",
+                "quantidade": 1,
+                "local": "",
+                "observacao": ""
+            })
+            st.rerun()
+    
+    with col2:
+        if st.button("➕ Adicionar Doação", key=f"add_doacao_{cond['_id']}"):
+            if f'itens_doacoes_{cond["_id"]}' not in st.session_state:
+                st.session_state[f'itens_doacoes_{cond["_id"]}'] = []
+            st.session_state[f'itens_doacoes_{cond["_id"]}'].append({
+                "item": "",
+                "quantidade": 1,
+                "valor": 0.00,
+                "forma_pagamento": "Pix",
+                "observacao": ""
+            })
+            st.rerun()
+    
+    with col3:
+        if st.button("➕ Adicionar Contato", key=f"add_contato_{cond['_id']}"):
+            if f'contatos_{cond["_id"]}' not in st.session_state:
+                st.session_state[f'contatos_{cond["_id"]}'] = []
+            st.session_state[f'contatos_{cond["_id"]}'].append({
+                "nome": "",
+                "telefone": "",
+                "funcao": "Outro",
+                "observacao": ""
+            })
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # ========== FORMULÁRIO ==========
     with st.form(f"form_info_{cond['_id']}"):
-        # ========== PONTOS DE INTERNET ==========
+        # PONTOS DE INTERNET
         st.subheader("📶 Pontos de Internet")
         
         pontos_info = info.get("pontos_internet", {})
         quantidade_pontos = pontos_info.get("quantidade", 0)
         locais_existentes = pontos_info.get("locais", [])
         
-        # Quantidade
         qtd_pontos = st.number_input(
             "Quantidade de pontos",
             min_value=0,
@@ -882,7 +847,6 @@ def render_formulario_informacoes(cond, collection):
             key=f"qtd_pontos_{cond['_id']}"
         )
         
-        # Checkboxes para locais
         st.markdown("**Locais com pontos de internet:**")
         col1, col2, col3 = st.columns(3)
         locais_selecionados = []
@@ -896,7 +860,6 @@ def render_formulario_informacoes(cond, collection):
                 ):
                     locais_selecionados.append(local)
         
-        # Observações dos pontos
         obs_pontos = st.text_area(
             "Observações sobre os Pontos de Internet",
             value=pontos_info.get("observacao", ""),
@@ -906,101 +869,66 @@ def render_formulario_informacoes(cond, collection):
         
         st.divider()
         
-        # ========== PLACAS E FOTOS ==========
+        # PLACAS E FOTOS
         st.subheader("🪧 Placas e Fotos")
         
         placas_info = info.get("placas_fotos", {})
-        itens_existentes = placas_info.get("itens", [])
+        itens_atuais = st.session_state.get(f'itens_placas_{cond["_id"]}', placas_info.get("itens", []))
         
-        # IMPORTANTE: Botões de adicionar/remover FORA do form não funcionam em forms
-        # Vamos usar um truque: armazenar no session_state para controle
+        st.caption(f"📌 {len(itens_atuais)} itens de placa cadastrados")
         
-        # Inicializar session_state para controle de itens
-        if f'itens_placas_{cond["_id"]}' not in st.session_state:
-            st.session_state[f'itens_placas_{cond["_id"]}'] = itens_existentes.copy()
-        
-        # Botão para adicionar novo item (FORA do form, usando session_state)
-        if st.button("➕ Adicionar Item de Placa", key=f"add_placa_{cond['_id']}"):
-            st.session_state[f'itens_placas_{cond["_id"]}'].append({
-                "tipo": "Cavalete",
-                "quantidade": 1,
-                "local": "",
-                "observacao": ""
-            })
-            st.rerun()
-        
-        # Renderizar cada item usando session_state
-        itens_atuais = st.session_state[f'itens_placas_{cond["_id"]}']
         for idx, item in enumerate(itens_atuais):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 2, 1])
                 with col1:
                     tipo_atual = item.get("tipo", "Cavalete")
-                    tipo = st.selectbox(
+                    item["tipo"] = st.selectbox(
                         f"Tipo {idx+1}",
                         options=TIPOS_PLACA,
                         index=TIPOS_PLACA.index(tipo_atual) if tipo_atual in TIPOS_PLACA else 0,
                         key=f"tipo_placa_{cond['_id']}_{idx}"
                     )
-                    item["tipo"] = tipo
                 
                 with col2:
-                    quantidade = st.number_input(
+                    item["quantidade"] = st.number_input(
                         "Qtd",
                         min_value=0,
                         max_value=10,
                         value=int(item.get("quantidade", 1)),
                         key=f"qtd_placa_{cond['_id']}_{idx}"
                     )
-                    item["quantidade"] = quantidade
                 
                 with col3:
-                    local = st.text_input(
+                    item["local"] = st.text_input(
                         "Local",
                         value=item.get("local", ""),
-                        placeholder="Ex: Portaria, Entrada, etc.",
+                        placeholder="Ex: Portaria",
                         key=f"local_placa_{cond['_id']}_{idx}"
                     )
-                    item["local"] = local
                 
                 with col4:
                     if st.button("🗑️", key=f"del_placa_{cond['_id']}_{idx}"):
-                        st.session_state[f'itens_placas_{cond["_id"]}'].pop(idx)
+                        itens_atuais.pop(idx)
+                        st.session_state[f'itens_placas_{cond["_id"]}'] = itens_atuais
                         st.rerun()
         
-        # Observações das placas
         obs_placas = st.text_area(
             "Observações sobre Placas/Fotos",
             value=placas_info.get("observacao", ""),
-            placeholder="Ex: 01 cavalete + 03 Placas (Portaria, Adm e Salão)",
+            placeholder="Ex: 01 cavalete + 03 Placas",
             key=f"obs_placas_{cond['_id']}"
         )
         
         st.divider()
         
-        # ========== DOAÇÕES ==========
+        # DOAÇÕES
         st.subheader("🎁 Doações")
         
         doacoes_info = info.get("doacoes", {})
-        itens_doacoes = doacoes_info.get("itens", [])
+        itens_doacoes_atuais = st.session_state.get(f'itens_doacoes_{cond["_id"]}', doacoes_info.get("itens", []))
         
-        # Inicializar session_state para doações
-        if f'itens_doacoes_{cond["_id"]}' not in st.session_state:
-            st.session_state[f'itens_doacoes_{cond["_id"]}'] = itens_doacoes.copy()
+        st.caption(f"📌 {len(itens_doacoes_atuais)} doações cadastradas")
         
-        # Botão para adicionar doação (FORA do form)
-        if st.button("➕ Adicionar Doação", key=f"add_doacao_{cond['_id']}"):
-            st.session_state[f'itens_doacoes_{cond["_id"]}'].append({
-                "item": "",
-                "quantidade": 1,
-                "valor": 0.00,
-                "forma_pagamento": "Pix",
-                "observacao": ""
-            })
-            st.rerun()
-        
-        # Renderizar cada doação
-        itens_doacoes_atuais = st.session_state[f'itens_doacoes_{cond["_id"]}']
         for idx, doacao in enumerate(itens_doacoes_atuais):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -1031,7 +959,8 @@ def render_formulario_informacoes(cond, collection):
                 
                 with col4:
                     if st.button("🗑️", key=f"del_doacao_{cond['_id']}_{idx}"):
-                        st.session_state[f'itens_doacoes_{cond["_id"]}'].pop(idx)
+                        itens_doacoes_atuais.pop(idx)
+                        st.session_state[f'itens_doacoes_{cond["_id"]}'] = itens_doacoes_atuais
                         st.rerun()
                 
                 col5, col6 = st.columns([2, 1])
@@ -1051,7 +980,6 @@ def render_formulario_informacoes(cond, collection):
                         key=f"obs_doacao_{cond['_id']}_{idx}"
                     )
         
-        # Observações gerais das doações
         obs_doacoes = st.text_area(
             "Observações sobre Doações",
             value=doacoes_info.get("observacao", ""),
@@ -1061,27 +989,13 @@ def render_formulario_informacoes(cond, collection):
         
         st.divider()
         
-        # ========== CONTATOS ==========
+        # CONTATOS
         st.subheader("👥 Contatos")
         
-        contatos = info.get("contatos", [])
+        contatos_atuais = st.session_state.get(f'contatos_{cond["_id"]}', info.get("contatos", []))
         
-        # Inicializar session_state para contatos
-        if f'contatos_{cond["_id"]}' not in st.session_state:
-            st.session_state[f'contatos_{cond["_id"]}'] = contatos.copy()
+        st.caption(f"📌 {len(contatos_atuais)} contatos cadastrados")
         
-        # Botão para adicionar contato (FORA do form)
-        if st.button("➕ Adicionar Contato", key=f"add_contato_{cond['_id']}"):
-            st.session_state[f'contatos_{cond["_id"]}'].append({
-                "nome": "",
-                "telefone": "",
-                "funcao": "Outro",
-                "observacao": ""
-            })
-            st.rerun()
-        
-        # Renderizar cada contato
-        contatos_atuais = st.session_state[f'contatos_{cond["_id"]}']
         for idx, contato in enumerate(contatos_atuais):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -1111,10 +1025,11 @@ def render_formulario_informacoes(cond, collection):
                 
                 with col4:
                     if st.button("🗑️", key=f"del_contato_{cond['_id']}_{idx}"):
-                        st.session_state[f'contatos_{cond["_id"]}'].pop(idx)
+                        contatos_atuais.pop(idx)
+                        st.session_state[f'contatos_{cond["_id"]}'] = contatos_atuais
                         st.rerun()
         
-        # ========== OBSERVAÇÕES GERAIS ==========
+        # OBSERVAÇÕES GERAIS
         st.subheader("📝 Observações Gerais")
         
         observacoes_gerais = st.text_area(
@@ -1125,7 +1040,7 @@ def render_formulario_informacoes(cond, collection):
             height=100
         )
         
-        # ========== PARCEIROS ==========
+        # PARCEIROS
         st.subheader("🤝 Parceiros")
         
         parceiros = info.get("parceiros", [])
@@ -1136,11 +1051,9 @@ def render_formulario_informacoes(cond, collection):
             key=f"parceiros_{cond['_id']}"
         )
         
-        # ========== BOTÃO SALVAR ==========
         st.divider()
         
         if st.form_submit_button("💾 Salvar Informações", type="primary"):
-            # Montar dados
             nova_info = {
                 "pontos_internet": {
                     "quantidade": qtd_pontos,
@@ -1148,21 +1061,20 @@ def render_formulario_informacoes(cond, collection):
                     "observacao": obs_pontos
                 },
                 "placas_fotos": {
-                    "itens": st.session_state[f'itens_placas_{cond["_id"]}'],
+                    "itens": itens_atuais,
                     "observacao": obs_placas
                 },
                 "doacoes": {
-                    "itens": st.session_state[f'itens_doacoes_{cond["_id"]}'],
+                    "itens": itens_doacoes_atuais,
                     "observacao": obs_doacoes,
-                    "total_doacoes": sum(item.get("valor", 0) * item.get("quantidade", 1) for item in st.session_state[f'itens_doacoes_{cond["_id"]}'])
+                    "total_doacoes": sum(item.get("valor", 0) * item.get("quantidade", 1) for item in itens_doacoes_atuais)
                 },
-                "contatos": st.session_state[f'contatos_{cond["_id"]}'],
+                "contatos": contatos_atuais,
                 "observacoes": observacoes_gerais,
                 "parceiros": [p.strip() for p in parceiros_text.split(",") if p.strip()] if parceiros_text else [],
                 "data_ultima_edicao": datetime.now()
             }
             
-            # Atualizar no banco
             collection.update_one(
                 {"_id": cond['_id']},
                 {"$set": {
