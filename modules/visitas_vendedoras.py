@@ -9,6 +9,7 @@ Módulo de Gerenciamento de Visitas de Vendedoras
 - Múltiplos relatórios e exportações
 - AGENDA VISUAL POR VENDEDORA COM EDIÇÃO MANUAL
 - SELECTBOX DE CONDOMÍNIOS VINCULADO AO CADASTRO
+- OTIMIZADO: Busca rápida com cache e índices
 """
 
 import streamlit as st
@@ -81,6 +82,11 @@ DISPONIBILIDADE_PADRAO = {
         "regiao_preferencial": "Todas as regiões"
     }
 }
+
+# Cache para condomínios
+_CONDOMINIOS_CACHE = None
+_CONDOMINIOS_DICT_CACHE = None
+_CONDOMINIOS_LAST_UPDATE = None
 
 # ============================================================================
 # FUNÇÕES AUXILIARES
@@ -178,6 +184,31 @@ def formatar_status_visita(status: str) -> str:
         "feriado": "🔴 Feriado"
     }
     return status_map.get(status, status)
+
+# ============================================================================
+# FUNÇÕES COM CACHE PARA CONDOMÍNIOS
+# ============================================================================
+
+@st.cache_data(ttl=300)
+def get_condominios_nomes_cached():
+    """Retorna lista de nomes de condomínios com cache"""
+    condominios = get_all_condominios()
+    return sorted([c["nome"] for c in condominios])
+
+@st.cache_data(ttl=300)
+def get_condominios_dict_cached():
+    """Retorna dicionário de condomínios com cache para busca rápida"""
+    condominios = get_all_condominios()
+    return {c["nome"].upper(): c for c in condominios}
+
+@st.cache_data(ttl=300)
+def get_condominio_by_id_cached(condominio_id):
+    """Busca condomínio por ID com cache"""
+    condominios = get_all_condominios()
+    for c in condominios:
+        if str(c["_id"]) == str(condominio_id):
+            return c
+    return None
 
 # ============================================================================
 # INICIALIZAÇÃO DAS COLEÇÕES
@@ -685,13 +716,14 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA - COM SELECTBOX DE CONDOMÍNIOS
+# AGENDA VISUAL POR VENDEDORA - OTIMIZADA
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
     """
     Exibe agenda em formato visual (tabela) com edição manual
     Usando componentes Streamlit com selectbox de condomínios
+    OTIMIZADO: Cache, buscas rápidas e renderização otimizada
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -747,48 +779,49 @@ def agenda_visual_por_vendedora(db):
         if st.button("🔃 Resetar para Sugestões", use_container_width=True):
             st.warning("⚠️ Isso irá substituir a agenda manual pelas sugestões automáticas.")
             if st.button("✅ Confirmar Reset", key="confirm_reset"):
-                data_inicio = datetime(ano, mes, 1).date()
-                data_fim = datetime(ano, mes, dias_no_mes).date()
-                
-                campanha_ativa = db.campanha_visitas.find_one({"ativo": True})
-                campanha_id = campanha_ativa.get("campanha_id") if campanha_ativa else None
-                
-                sugestoes = agendamento_inteligente(db, data_inicio, data_fim, campanha_id)
-                
-                if sugestoes:
-                    db.visitas_vendedoras.delete_many({
-                        "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
-                        "manual": True
-                    })
+                with st.spinner("Resetando agenda..."):
+                    data_inicio = datetime(ano, mes, 1).date()
+                    data_fim = datetime(ano, mes, dias_no_mes).date()
                     
-                    for sug in sugestoes:
-                        existente = db.visitas_vendedoras.find_one({
-                            "data": sug["data"],
-                            "vendedora": sug["vendedora"],
-                            "condominio_id": ObjectId(sug["condominio_id"])
+                    campanha_ativa = db.campanha_visitas.find_one({"ativo": True})
+                    campanha_id = campanha_ativa.get("campanha_id") if campanha_ativa else None
+                    
+                    sugestoes = agendamento_inteligente(db, data_inicio, data_fim, campanha_id)
+                    
+                    if sugestoes:
+                        db.visitas_vendedoras.delete_many({
+                            "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
+                            "manual": True
                         })
                         
-                        if not existente:
-                            nova_visita = {
-                                "condominio_id": ObjectId(sug["condominio_id"]),
-                                "condominio_nome": sug["condominio_nome"],
-                                "vendedora": sug["vendedora"],
+                        for sug in sugestoes:
+                            existente = db.visitas_vendedoras.find_one({
                                 "data": sug["data"],
-                                "status": "agendado",
-                                "periodo": "M/T",
-                                "criado_por": "Sistema (Reset)",
-                                "data_criacao": datetime.now(),
-                                "zona": sug["condominio_zona"],
-                                "adequacao": sug["adequacao"],
-                                "campanha_id": sug.get("campanha_id"),
-                                "manual": False
-                            }
-                            db.visitas_vendedoras.insert_one(nova_visita)
-                    
-                    st.success(f"✅ Agenda resetada com sucesso! {len(sugestoes)} visitas geradas.")
-                    st.rerun()
-                else:
-                    st.warning("Nenhuma sugestão gerada. Verifique a campanha ativa.")
+                                "vendedora": sug["vendedora"],
+                                "condominio_id": ObjectId(sug["condominio_id"])
+                            })
+                            
+                            if not existente:
+                                nova_visita = {
+                                    "condominio_id": ObjectId(sug["condominio_id"]),
+                                    "condominio_nome": sug["condominio_nome"],
+                                    "vendedora": sug["vendedora"],
+                                    "data": sug["data"],
+                                    "status": "agendado",
+                                    "periodo": "M/T",
+                                    "criado_por": "Sistema (Reset)",
+                                    "data_criacao": datetime.now(),
+                                    "zona": sug["condominio_zona"],
+                                    "adequacao": sug["adequacao"],
+                                    "campanha_id": sug.get("campanha_id"),
+                                    "manual": False
+                                }
+                                db.visitas_vendedoras.insert_one(nova_visita)
+                        
+                        st.success(f"✅ Agenda resetada com sucesso! {len(sugestoes)} visitas geradas.")
+                        st.rerun()
+                    else:
+                        st.warning("Nenhuma sugestão gerada. Verifique a campanha ativa.")
     
     with col_btn3:
         if st.button("📊 Exportar Agenda Visual", use_container_width=True):
@@ -802,15 +835,26 @@ def agenda_visual_por_vendedora(db):
     st.markdown("---")
     
     # ============================================================
-    # BUSCAR DADOS
+    # BUSCAR DADOS - OTIMIZADO
     # ============================================================
     
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
     data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
     
-    visitas_db = list(db.visitas_vendedoras.find({
-        "data": {"$gte": data_inicio_str, "$lte": data_fim_str}
-    }))
+    # Buscar apenas as visitas necessárias com filtro por vendedoras
+    with st.spinner("Carregando agenda..."):
+        visitas_db = list(db.visitas_vendedoras.find({
+            "data": {"$gte": data_inicio_str, "$lte": data_fim_str},
+            "vendedora": {"$in": vendedoras_selecionadas}
+        }))
+    
+    # Criar um índice rápido por data e vendedora
+    visitas_index = {}
+    for visita in visitas_db:
+        key = (visita["data"], visita["vendedora"])
+        if key not in visitas_index:
+            visitas_index[key] = []
+        visitas_index[key].append(visita)
     
     # Criar estrutura de dados
     agenda_data = {}
@@ -827,30 +871,30 @@ def agenda_visual_por_vendedora(db):
             "obs": ""
         }
     
-    # Preencher com dados do banco
-    for visita in visitas_db:
-        data_str = visita["data"]
-        vendedora = visita["vendedora"]
-        
-        if data_str in agenda_data and vendedora in agenda_data[data_str]["vendedoras"]:
-            if visita.get("status") == "feriado":
-                agenda_data[data_str]["feriado"] = True
-                continue
-            
-            if mostrar_status and visita.get("status") not in mostrar_status:
-                continue
-            
-            agenda_data[data_str]["vendedoras"][vendedora].append({
-                "id": str(visita["_id"]),
-                "condominio": visita["condominio_nome"],
-                "status": visita.get("status", "agendado"),
-                "periodo": visita.get("periodo", "M/T"),
-                "observacao": visita.get("observacoes", ""),
-                "manual": visita.get("manual", False)
-            })
+    # Preencher com dados do banco usando o índice
+    for data_str in agenda_data:
+        for vendedora in vendedoras_selecionadas:
+            key = (data_str, vendedora)
+            if key in visitas_index:
+                for visita in visitas_index[key]:
+                    if visita.get("status") == "feriado":
+                        agenda_data[data_str]["feriado"] = True
+                        continue
+                    
+                    if mostrar_status and visita.get("status") not in mostrar_status:
+                        continue
+                    
+                    agenda_data[data_str]["vendedoras"][vendedora].append({
+                        "id": str(visita["_id"]),
+                        "condominio": visita["condominio_nome"],
+                        "status": visita.get("status", "agendado"),
+                        "periodo": visita.get("periodo", "M/T"),
+                        "observacao": visita.get("observacoes", ""),
+                        "manual": visita.get("manual", False)
+                    })
     
     # ============================================================
-    # EXIBIR TABELA COM STREAMLIT (USANDO CONTAINERS)
+    # EXIBIR TABELA COM STREAMLIT
     # ============================================================
     
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
@@ -884,108 +928,119 @@ def agenda_visual_por_vendedora(db):
     
     st.markdown("---")
     
-    # Criar linhas da tabela
-    for data_str in sorted(agenda_data.keys()):
-        data_info = agenda_data[data_str]
-        data_obj = data_info["data"]
-        dia_semana = data_obj.weekday()
-        
-        # Definir cor de fundo
-        if dia_semana == 6:  # Domingo
-            bg_color = "#ffe6e6"
-        elif dia_semana == 5:  # Sábado
-            bg_color = "#e8f4fd"
-        else:
-            bg_color = "#f9f9f9"
-        
-        if data_info.get("feriado"):
-            bg_color = "#ffcccc"
-        
-        # Criar colunas para esta linha
-        cols_linha = st.columns([1] + [1] * len(vendedoras_selecionadas))
-        
-        # Coluna da data
-        with cols_linha[0]:
-            data_formatada = data_obj.strftime("%d/%m")
-            dia_semana_abrev = data_info["dia_semana"][:3]
-            st.markdown(f"""
-            <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                <strong>{data_formatada}</strong><br>
-                <small>{dia_semana_abrev}</small>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Colunas das vendedoras
-        for i, vendedora in enumerate(vendedoras_selecionadas):
-            with cols_linha[i + 1]:
-                visitas = data_info["vendedoras"].get(vendedora, [])
-                
-                if data_info.get("feriado"):
-                    st.markdown(f"""
-                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                        <span style="color: #ff6b6b; font-weight: bold;">🔴 FERIADO</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    continue
-                
-                if not visitas:
-                    st.markdown(f"""
-                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                        <span style="font-size: 16px; color: #999;">➕</span>
-                        <br><small style="font-size: 9px; color: #999;">Selecione abaixo</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    continue
-                
-                # Construir conteúdo da célula com visitas
-                cell_content = ""
-                for visita in visitas:
-                    status_icons = {
-                        "agendado": "🟢",
-                        "concluido": "✅",
-                        "cancelado": "🔴",
-                        "chuva": "🌧️",
-                        "falta": "⛔"
-                    }
-                    status_icon = status_icons.get(visita["status"], "🟢")
-                    
-                    periodo = visita.get("periodo", "M/T")
-                    periodo_label = periodo
-                    
-                    manual_label = "📝" if visita.get("manual") else "🤖"
-                    
-                    cell_content += f"""
-                    <div style="margin-bottom: 4px; padding: 3px; border-radius: 4px; background-color: #f5f5f5; border-left: 3px solid {'#ff6b6b' if visita.get('manual') else '#28a745'};">
-                        <span style="background-color: {'#e3f2fd' if periodo == 'M' else '#fff3e0' if periodo == 'T' else '#f3e5f5'}; border-radius: 3px; padding: 1px 5px; font-size: 11px;">
-                            {periodo_label}
-                        </span>
-                        <strong>{visita['condominio']}</strong>
-                        <span>{status_icon}</span>
-                        <br>
-                        <span style="font-size: 10px; color: #666;">{manual_label}</span>
-                    </div>
-                    """
-                
+    # ============================================================
+    # CONTÊINER PARA A TABELA
+    # ============================================================
+    
+    table_container = st.container()
+    
+    with table_container:
+        # Criar linhas da tabela
+        for data_str in sorted(agenda_data.keys()):
+            data_info = agenda_data[data_str]
+            data_obj = data_info["data"]
+            dia_semana = data_obj.weekday()
+            
+            # Definir cor de fundo
+            if dia_semana == 6:  # Domingo
+                bg_color = "#ffe6e6"
+            elif dia_semana == 5:  # Sábado
+                bg_color = "#e8f4fd"
+            else:
+                bg_color = "#f9f9f9"
+            
+            if data_info.get("feriado"):
+                bg_color = "#ffcccc"
+            
+            # Criar colunas para esta linha
+            cols_linha = st.columns([1] + [1] * len(vendedoras_selecionadas))
+            
+            # Coluna da data
+            with cols_linha[0]:
+                data_formatada = data_obj.strftime("%d/%m")
+                dia_semana_abrev = data_info["dia_semana"][:3]
                 st.markdown(f"""
-                <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: left; min-height: 60px;">
-                    {cell_content}
+                <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
+                    <strong>{data_formatada}</strong><br>
+                    <small>{dia_semana_abrev}</small>
                 </div>
                 """, unsafe_allow_html=True)
-        
-        # Separador entre linhas
-        st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
+            
+            # Colunas das vendedoras
+            for i, vendedora in enumerate(vendedoras_selecionadas):
+                with cols_linha[i + 1]:
+                    visitas = data_info["vendedoras"].get(vendedora, [])
+                    
+                    if data_info.get("feriado"):
+                        st.markdown(f"""
+                        <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
+                            <span style="color: #ff6b6b; font-weight: bold;">🔴 FERIADO</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        continue
+                    
+                    if not visitas:
+                        st.markdown(f"""
+                        <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
+                            <span style="font-size: 16px; color: #999;">➕</span>
+                            <br><small style="font-size: 9px; color: #999;">Selecione abaixo</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        continue
+                    
+                    # Construir o HTML corretamente como string única
+                    cell_html_parts = []
+                    for visita in visitas:
+                        status_icons = {
+                            "agendado": "🟢",
+                            "concluido": "✅",
+                            "cancelado": "🔴",
+                            "chuva": "🌧️",
+                            "falta": "⛔"
+                        }
+                        status_icon = status_icons.get(visita["status"], "🟢")
+                        
+                        periodo = visita.get("periodo", "M/T")
+                        periodo_label = periodo
+                        manual_label = "📝" if visita.get("manual") else "🤖"
+                        
+                        # Determinar cor do período
+                        periodo_color = '#e3f2fd' if periodo == 'M' else '#fff3e0' if periodo == 'T' else '#f3e5f5'
+                        border_color = '#ff6b6b' if visita.get('manual') else '#28a745'
+                        
+                        cell_html_parts.append(f"""
+                        <div style="margin-bottom: 4px; padding: 3px; border-radius: 4px; background-color: #f5f5f5; border-left: 3px solid {border_color};">
+                            <span style="background-color: {periodo_color}; border-radius: 3px; padding: 1px 5px; font-size: 11px;">
+                                {periodo_label}
+                            </span>
+                            <strong>{visita['condominio']}</strong>
+                            <span>{status_icon}</span>
+                            <br>
+                            <span style="font-size: 10px; color: #666;">{manual_label}</span>
+                        </div>
+                        """)
+                    
+                    # Renderizar todo o HTML de uma vez
+                    st.markdown(f"""
+                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: left; min-height: 60px;">
+                        {''.join(cell_html_parts)}
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Separador entre linhas
+            st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
     
     # ============================================================
-    # EDITOR MANUAL DE VISITAS (FORMS STREAMLIT) - COM SELECTBOX
+    # EDITOR MANUAL DE VISITAS (OTIMIZADO)
     # ============================================================
     
     st.markdown("---")
     st.markdown("### ✏️ Editor Manual de Visitas")
     st.info("💡 Selecione a data, vendedora e condomínio para adicionar ou editar uma visita.")
     
-    # Buscar lista de condomínios do cadastro principal
-    condominios_cadastro = get_all_condominios()
-    condominios_nomes = sorted([c["nome"] for c in condominios_cadastro])
+    # Usar cache para lista de condomínios
+    condominios_nomes = get_condominios_nomes_cached()
+    condominios_dict = get_condominios_dict_cached()
     
     with st.form("form_edicao_visita"):
         col_ed1, col_ed2, col_ed3, col_ed4 = st.columns(4)
@@ -1007,7 +1062,6 @@ def agenda_visual_por_vendedora(db):
             )
         
         with col_ed3:
-            # Usando selectbox com busca para selecionar condomínio
             if condominios_nomes:
                 condominio_edicao = st.selectbox(
                     "Condomínio (selecione da lista)",
@@ -1016,7 +1070,6 @@ def agenda_visual_por_vendedora(db):
                     help="Selecione o condomínio da lista cadastrada"
                 )
                 
-                # Opção para digitar manualmente se não estiver na lista
                 condominio_manual = st.text_input(
                     "Ou digite manualmente (se não estiver na lista)",
                     placeholder="Digite o nome do condomínio",
@@ -1065,7 +1118,7 @@ def agenda_visual_por_vendedora(db):
         if submitted:
             data_str = data_edicao.strftime("%Y-%m-%d")
             
-            # Determinar o nome do condomínio (prioridade: selectbox > manual)
+            # Determinar o nome do condomínio
             nome_condominio = condominio_edicao if condominio_edicao else condominio_manual
             
             if status_edicao == "feriado":
@@ -1100,24 +1153,9 @@ def agenda_visual_por_vendedora(db):
             if not nome_condominio:
                 st.error("⚠️ Selecione ou digite o nome do condomínio!")
             else:
-                # Buscar o ID do condomínio se existir no cadastro
-                condominio_id = None
-                condominio_encontrado = None
-                
-                # Tentar encontrar pelo nome exato
-                for c in condominios_cadastro:
-                    if c["nome"].upper() == nome_condominio.upper():
-                        condominio_id = c["_id"]
-                        condominio_encontrado = c
-                        break
-                
-                # Se não encontrou, tentar busca aproximada
-                if not condominio_encontrado:
-                    for c in condominios_cadastro:
-                        if nome_condominio.upper() in c["nome"].upper():
-                            condominio_id = c["_id"]
-                            condominio_encontrado = c
-                            break
+                # Busca rápida usando o dicionário com cache
+                condominio_encontrado = condominios_dict.get(nome_condominio.upper())
+                condominio_id = condominio_encontrado["_id"] if condominio_encontrado else None
                 
                 # Verificar se já existe visita para este dia/vendedora/condomínio
                 existente = db.visitas_vendedoras.find_one({
@@ -1136,7 +1174,6 @@ def agenda_visual_por_vendedora(db):
                         "ultima_edicao": datetime.now()
                     }
                     
-                    # Se encontrou o condomínio no cadastro, atualizar o ID
                     if condominio_id:
                         update_data["condominio_id"] = condominio_id
                         if condominio_encontrado:
@@ -1174,6 +1211,8 @@ def agenda_visual_por_vendedora(db):
                         db.visitas_vendedoras.insert_one(nova_visita)
                         st.success(f"✅ Visita adicionada: {nome_condominio}")
                 
+                # Limpar cache para forçar recarregamento
+                st.cache_data.clear()
                 st.rerun()
         
         if remover_submitted:
@@ -1189,6 +1228,7 @@ def agenda_visual_por_vendedora(db):
                 for vis in visitas_remover:
                     db.visitas_vendedoras.delete_one({"_id": vis["_id"]})
                 st.success(f"✅ Removidas {len(visitas_remover)} visitas de {vendedora_edicao} em {data_edicao.strftime('%d/%m/%Y')}")
+                st.cache_data.clear()
                 st.rerun()
             else:
                 st.warning("Nenhuma visita encontrada para este dia/vendedora.")
