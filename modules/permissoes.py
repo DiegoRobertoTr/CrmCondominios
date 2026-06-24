@@ -3,6 +3,7 @@
 Configuração central de permissões por perfil
 ✅ Inclui módulo de Pendências e Marketing Condomínios para perfis internos
 ✅ Inclui módulo de Visitas Vendedoras
+✅ Inclui módulo de Informações Condomínios
 """
 
 PERMISSOES_POR_PERFIL = {
@@ -14,10 +15,12 @@ PERMISSOES_POR_PERFIL = {
         "Admin Funcionários", "Acompanhamento Técnicos", "Relatórios",
         "HotSpots WiFi", "Satisfação", "Monitoramento de E-mails",
         "Teste de Integração", "Endereços Bloqueados",
-        "Condomínios", "Relatórios Condomínios", "Prospecção Condomínios",
+        "Condomínios",  # Cadastro base e importação IXC
+        "Informações Condomínios",  # ✅ NOVO: Dashboard, importação e edição de informações detalhadas
+        "Relatórios Condomínios", "Prospecção Condomínios",
         "Marketing Condomínios",
         "Leads & Eventos",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     "recepcao": [
@@ -25,7 +28,7 @@ PERMISSOES_POR_PERFIL = {
         "Roteiro de Vendas",
         "HotSpots WiFi", "Satisfação", "Endereços Bloqueados",
         "Leads & Eventos",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     "atendente_n1": [
@@ -33,7 +36,7 @@ PERMISSOES_POR_PERFIL = {
         "Roteiro de Vendas",
         "HotSpots WiFi", "Satisfação", "Endereços Bloqueados",
         "Leads & Eventos",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     "supervisao_n1": [
@@ -41,7 +44,7 @@ PERMISSOES_POR_PERFIL = {
         "Roteiro de Vendas",
         "Marketing Condomínios",
         "Leads & Eventos",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     "supervisao_n2": [
@@ -50,7 +53,7 @@ PERMISSOES_POR_PERFIL = {
         "Admin Embaixadores", "Admin PaP", "Admin Revendas",
         "Marketing Condomínios",
         "Leads & Eventos",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     "supervisao_n3": [
@@ -60,14 +63,14 @@ PERMISSOES_POR_PERFIL = {
         "Relatórios", "Relatórios Condomínios", "Prospecção Condomínios",
         "Marketing Condomínios",
         "Leads & Eventos",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     # --- DIRETORIA ---
     "diretoria": [
         "Relatórios Condomínios", 
         "Prospecção Condomínios",
-        "Visitas Vendedoras"  # NOVO
+        "Visitas Vendedoras"
     ],
     
     # --- Parceiros Externos ---
@@ -141,6 +144,15 @@ def get_perfis_marketing():
     return [
         "admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"
     ]
+
+def get_perfis_informacoes_condominios():
+    """
+    Retorna perfis que podem gerenciar informações detalhadas dos condomínios
+    
+    Returns:
+        list: Lista de perfis com acesso ao módulo
+    """
+    return ["admin"]  # Por enquanto, apenas admin
 
 def get_perfis_visitas_vendedoras():
     """
