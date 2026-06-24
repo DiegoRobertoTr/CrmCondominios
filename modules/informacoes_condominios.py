@@ -639,7 +639,7 @@ def render_dashboard():
                 else:
                     st.warning("⚠️ Sem informações detalhadas")
                 
-                # Botão Editar
+                # Botão Editar (fora do form)
                 if st.button("✏️ Editar", key=f"edit_{cond['_id']}"):
                     st.session_state['cond_info_edit'] = str(cond['_id'])
                     st.rerun()
@@ -853,15 +853,17 @@ def render_formulario_informacoes(cond, collection):
     st.markdown(f"### 🏢 {cond.get('nome')}")
     st.caption(f"📍 {cond.get('zona', 'Zona não definida')} | ID IXC: {cond.get('id_ixc', 'N/A')}")
     
-    # Botão para limpar informações
-    if st.button("🗑️ Limpar Informações", key=f"clear_info_{cond['_id']}"):
-        if st.warning("Tem certeza que deseja limpar todas as informações detalhadas?"):
-            collection.update_one(
-                {"_id": cond['_id']},
-                {"$unset": {"informacoes_detalhadas": ""}}
-            )
-            st.success("Informações removidas!")
-            st.rerun()
+    # Botão para limpar informações (FORA do form)
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("🗑️ Limpar Informações", key=f"clear_info_{cond['_id']}"):
+            if st.warning("Tem certeza que deseja limpar todas as informações detalhadas?"):
+                collection.update_one(
+                    {"_id": cond['_id']},
+                    {"$unset": {"informacoes_detalhadas": ""}}
+                )
+                st.success("Informações removidas!")
+                st.rerun()
     
     with st.form(f"form_info_{cond['_id']}"):
         # ========== PONTOS DE INTERNET ==========
@@ -910,12 +912,26 @@ def render_formulario_informacoes(cond, collection):
         placas_info = info.get("placas_fotos", {})
         itens_existentes = placas_info.get("itens", [])
         
-        # Botão para adicionar novo item
-        if st.button("➕ Adicionar Item de Placa", key=f"add_placa_{cond['_id']}"):
-            itens_existentes.append({"tipo": "Cavalete", "quantidade": 1, "local": "", "observacao": ""})
+        # IMPORTANTE: Botões de adicionar/remover FORA do form não funcionam em forms
+        # Vamos usar um truque: armazenar no session_state para controle
         
-        # Renderizar cada item
-        for idx, item in enumerate(itens_existentes):
+        # Inicializar session_state para controle de itens
+        if f'itens_placas_{cond["_id"]}' not in st.session_state:
+            st.session_state[f'itens_placas_{cond["_id"]}'] = itens_existentes.copy()
+        
+        # Botão para adicionar novo item (FORA do form, usando session_state)
+        if st.button("➕ Adicionar Item de Placa", key=f"add_placa_{cond['_id']}"):
+            st.session_state[f'itens_placas_{cond["_id"]}'].append({
+                "tipo": "Cavalete",
+                "quantidade": 1,
+                "local": "",
+                "observacao": ""
+            })
+            st.rerun()
+        
+        # Renderizar cada item usando session_state
+        itens_atuais = st.session_state[f'itens_placas_{cond["_id"]}']
+        for idx, item in enumerate(itens_atuais):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 2, 1])
                 with col1:
@@ -949,7 +965,7 @@ def render_formulario_informacoes(cond, collection):
                 
                 with col4:
                     if st.button("🗑️", key=f"del_placa_{cond['_id']}_{idx}"):
-                        itens_existentes.pop(idx)
+                        st.session_state[f'itens_placas_{cond["_id"]}'].pop(idx)
                         st.rerun()
         
         # Observações das placas
@@ -968,18 +984,24 @@ def render_formulario_informacoes(cond, collection):
         doacoes_info = info.get("doacoes", {})
         itens_doacoes = doacoes_info.get("itens", [])
         
-        # Botão para adicionar doação
+        # Inicializar session_state para doações
+        if f'itens_doacoes_{cond["_id"]}' not in st.session_state:
+            st.session_state[f'itens_doacoes_{cond["_id"]}'] = itens_doacoes.copy()
+        
+        # Botão para adicionar doação (FORA do form)
         if st.button("➕ Adicionar Doação", key=f"add_doacao_{cond['_id']}"):
-            itens_doacoes.append({
+            st.session_state[f'itens_doacoes_{cond["_id"]}'].append({
                 "item": "",
                 "quantidade": 1,
                 "valor": 0.00,
                 "forma_pagamento": "Pix",
                 "observacao": ""
             })
+            st.rerun()
         
         # Renderizar cada doação
-        for idx, doacao in enumerate(itens_doacoes):
+        itens_doacoes_atuais = st.session_state[f'itens_doacoes_{cond["_id"]}']
+        for idx, doacao in enumerate(itens_doacoes_atuais):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
                 with col1:
@@ -1009,7 +1031,7 @@ def render_formulario_informacoes(cond, collection):
                 
                 with col4:
                     if st.button("🗑️", key=f"del_doacao_{cond['_id']}_{idx}"):
-                        itens_doacoes.pop(idx)
+                        st.session_state[f'itens_doacoes_{cond["_id"]}'].pop(idx)
                         st.rerun()
                 
                 col5, col6 = st.columns([2, 1])
@@ -1044,12 +1066,23 @@ def render_formulario_informacoes(cond, collection):
         
         contatos = info.get("contatos", [])
         
-        # Botão para adicionar contato
+        # Inicializar session_state para contatos
+        if f'contatos_{cond["_id"]}' not in st.session_state:
+            st.session_state[f'contatos_{cond["_id"]}'] = contatos.copy()
+        
+        # Botão para adicionar contato (FORA do form)
         if st.button("➕ Adicionar Contato", key=f"add_contato_{cond['_id']}"):
-            contatos.append({"nome": "", "telefone": "", "funcao": "", "observacao": ""})
+            st.session_state[f'contatos_{cond["_id"]}'].append({
+                "nome": "",
+                "telefone": "",
+                "funcao": "Outro",
+                "observacao": ""
+            })
+            st.rerun()
         
         # Renderizar cada contato
-        for idx, contato in enumerate(contatos):
+        contatos_atuais = st.session_state[f'contatos_{cond["_id"]}']
+        for idx, contato in enumerate(contatos_atuais):
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
                 with col1:
@@ -1078,7 +1111,7 @@ def render_formulario_informacoes(cond, collection):
                 
                 with col4:
                     if st.button("🗑️", key=f"del_contato_{cond['_id']}_{idx}"):
-                        contatos.pop(idx)
+                        st.session_state[f'contatos_{cond["_id"]}'].pop(idx)
                         st.rerun()
         
         # ========== OBSERVAÇÕES GERAIS ==========
@@ -1115,15 +1148,15 @@ def render_formulario_informacoes(cond, collection):
                     "observacao": obs_pontos
                 },
                 "placas_fotos": {
-                    "itens": itens_existentes,
+                    "itens": st.session_state[f'itens_placas_{cond["_id"]}'],
                     "observacao": obs_placas
                 },
                 "doacoes": {
-                    "itens": itens_doacoes,
+                    "itens": st.session_state[f'itens_doacoes_{cond["_id"]}'],
                     "observacao": obs_doacoes,
-                    "total_doacoes": sum(item.get("valor", 0) * item.get("quantidade", 1) for item in itens_doacoes)
+                    "total_doacoes": sum(item.get("valor", 0) * item.get("quantidade", 1) for item in st.session_state[f'itens_doacoes_{cond["_id"]}'])
                 },
-                "contatos": contatos,
+                "contatos": st.session_state[f'contatos_{cond["_id"]}'],
                 "observacoes": observacoes_gerais,
                 "parceiros": [p.strip() for p in parceiros_text.split(",") if p.strip()] if parceiros_text else [],
                 "data_ultima_edicao": datetime.now()
@@ -1137,6 +1170,11 @@ def render_formulario_informacoes(cond, collection):
                     "ultima_atualizacao_informacoes": datetime.now()
                 }}
             )
+            
+            # Limpar session_state
+            for key in [f'itens_placas_{cond["_id"]}', f'itens_doacoes_{cond["_id"]}', f'contatos_{cond["_id"]}']:
+                if key in st.session_state:
+                    del st.session_state[key]
             
             st.success(f"✅ Informações de '{cond['nome']}' atualizadas com sucesso!")
             st.balloons()
