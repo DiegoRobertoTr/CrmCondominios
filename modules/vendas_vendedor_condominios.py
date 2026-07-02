@@ -8,6 +8,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Indicador de evolução/piora semana a semana
 - Desempenho por condomínio (integrado com módulo condominios.py)
 - Filtro de período aplicado em TODAS as análises
+- Seletor de período: Personalizado primeiro, depois pré-selecionados, depois meses (do mais recente para o mais antigo)
 - Exportação em Excel
 - Permissões: admin e diretoria
 """
@@ -335,7 +336,7 @@ def calcular_indicador_evolucao(vendas_semanais):
     
     return evolucao
 
-# ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO (COM FILTRO DE PERÍODO) ====================
+# ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO ====================
 
 def render_desempenho_por_condominio(df, data_inicio, data_fim):
     """Renderiza análise de desempenho por condomínio - COM FILTRO DE PERÍODO"""
@@ -493,31 +494,37 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
 
 # ==================== FUNÇÕES DE UI ====================
 def gerar_opcoes_periodo(df):
-    """Gera opções de período"""
+    """
+    Gera opções de período para o seletor.
+    Ordem:
+    1. Personalizado (primeiro)
+    2. Períodos pré-selecionados (3 meses, 6 meses, etc)
+    3. Meses disponíveis (do mais recente para o mais antigo)
+    """
     if df is None or df.empty:
         return {}
     
-    min_date = df['data_ativacao'].min().date()
-    max_date = df['data_ativacao'].max().date()
-    
     periodo_opcoes = {}
     
-    # Limitar a últimos 12 meses
-    anos_meses = df.groupby(df['data_ativacao'].dt.to_period('M')).size().index[-12:]
-    for periodo in anos_meses:
+    # ========== 1. PERSONALIZADO (primeiro) ==========
+    periodo_opcoes["🎯 Personalizado"] = "personalizado"
+    
+    # ========== 2. PERÍODOS PRÉ-SELECIONADOS ==========
+    periodo_opcoes["📅 Últimos 3 Meses"] = 90
+    periodo_opcoes["📅 Últimos 6 Meses"] = 180
+    periodo_opcoes["📅 Último Ano"] = 365
+    periodo_opcoes["📆 Todo o período"] = None
+    
+    # ========== 3. MESES DISPONÍVEIS (do mais recente para o mais antigo) ==========
+    anos_meses = df.groupby(df['data_ativacao'].dt.to_period('M')).size().index
+    anos_meses_ordenados = sorted(anos_meses, reverse=True)
+    
+    for periodo in anos_meses_ordenados:
         nome_mes = CONFIG['meses_pt'][periodo.month]
         data_inicio = datetime(periodo.year, periodo.month, 1).date()
         ultimo_dia = calendar.monthrange(periodo.year, periodo.month)[1]
         data_fim = datetime(periodo.year, periodo.month, ultimo_dia).date()
         periodo_opcoes[f"📅 {nome_mes} {periodo.year}"] = (data_inicio, data_fim)
-    
-    periodo_opcoes.update({
-        "📅 Últimos 3 Meses": 90,
-        "📅 Últimos 6 Meses": 180,
-        "📅 Último Ano": 365,
-        "📆 Todo o período": None,
-        "🎯 Personalizado": "personalizado"
-    })
     
     return periodo_opcoes
 
@@ -590,7 +597,11 @@ def render_dashboard():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        periodo_selecionado = st.selectbox("Período:", list(periodo_opcoes.keys()), key="periodo")
+        periodo_selecionado = st.selectbox(
+            "Período:",
+            list(periodo_opcoes.keys()),
+            key="periodo"
+        )
     
     with col2:
         if st.button("🔄 Atualizar", use_container_width=True):
