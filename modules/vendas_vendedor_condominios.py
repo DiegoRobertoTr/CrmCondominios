@@ -1,12 +1,13 @@
 # modules/vendas_vendedor_condominios.py
 """
 Módulo de Vendas por Vendedor - CRM Condomínios RJ
-Versão completa com:
-- Upload de planilha com colunas específicas
-- Limpeza automática do MongoDB antes de cada importação
-- Análise mensal e semanal
+VERSÃO COMPLETA E OTIMIZADA COM:
+- Upload com limpeza automática do MongoDB
+- Vendas por vendedor
+- Evolução semanal (com semana do MÊS)
 - Indicador de evolução/piora semana a semana
 - Desempenho por condomínio (integrado com módulo condominios.py)
+- Filtro de período aplicado em TODAS as análises
 - Exportação em Excel
 - Permissões: admin e diretoria
 """
@@ -21,7 +22,7 @@ import warnings
 import logging
 import calendar
 import urllib.parse
-import re
+import time
 from pymongo import MongoClient
 
 warnings.filterwarnings('ignore')
@@ -44,13 +45,16 @@ CONFIG = {
         1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
         5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
         9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
-    }
+    },
+    'cache_ttl': 300,  # 5 minutos de cache
+    'limite_grafico': 50,  # Máximo de barras em gráficos
+    'limite_tabela': 500  # Máximo de linhas em tabelas
 }
 
 # ==================== CONEXÃO MONGODB ====================
-@st.cache_resource
+@st.cache_resource(ttl=CONFIG['cache_ttl'])
 def init_mongo():
-    """Inicializa conexão MongoDB"""
+    """Inicializa conexão MongoDB com cache"""
     try:
         if "MONGO_URI" in st.secrets:
             uri = st.secrets["MONGO_URI"]
@@ -67,21 +71,26 @@ def init_mongo():
             
             uri = f"mongodb+srv://{username}:{urllib.parse.quote_plus(password)}@{cluster}/{database}?retryWrites=true&w=majority"
         
-        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
         client.admin.command('ping')
         
         database_name = st.secrets.get("mongo", {}).get("MONGO_DATABASE", "crm_db")
         db = client[database_name]
         
+        # Índices para performance
         db[CONFIG['colecao_mongo']].create_index([("import_batch", -1)])
+        db[CONFIG['colecao_mongo']].create_index([("data_ativacao", -1)])
+        db[CONFIG['colecao_mongo']].create_index([("vendedor", 1)])
+        db[CONFIG['colecao_mongo']].create_index([("condominio_id", 1)])
         
         return db
     except Exception as e:
         st.error(f"❌ Falha ao conectar ao MongoDB: {str(e)}")
         return None
 
-def get_condominios_collection():
-    """Retorna coleção de condomínios do MongoDB (CRM)"""
+@st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
+def get_condominios_crm_cached():
+    """Retorna condomínios do CRM com CACHE"""
     try:
         username = st.secrets["mongo"]["MONGO_USERNAME"]
         password = st.secrets["mongo"]["MONGO_PASSWORD"]
@@ -95,23 +104,39 @@ def get_condominios_collection():
     p = urllib.parse.quote_plus(password)
     uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority"
     
-    return MongoClient(uri).crm_db.condominios
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000, connectTimeoutMS=3000)
+    collection = client.crm_db.condominios
+    
+    # Buscar apenas campos necessários + limitar para performance
+    condominios = list(collection.find(
+        {},
+        {"_id": 1, "nome": 1, "id_ixc": 1, "cidade": 1, "zona": 1, "bairro": 1}
+    ).limit(5000))
+    
+    client.close()
+    
+    df_cond = pd.DataFrame(condominios)
+    if not df_cond.empty:
+        df_cond['id_ixc'] = pd.to_numeric(df_cond['id_ixc'], errors='coerce').fillna(0).astype(int)
+        df_cond['_id'] = df_cond['_id'].astype(str)
+    
+    return df_cond
 
 # ==================== FUNÇÕES DE BANCO ====================
 def limpar_dados_antigos(db):
-    """Remove todos os dados antigos da coleção antes de nova importação"""
+    """Remove dados antigos - OTIMIZADO com índice"""
     try:
         colecao = db[CONFIG['colecao_mongo']]
         resultado = colecao.delete_many({})
         if resultado.deleted_count > 0:
-            st.info(f"🧹 {resultado.deleted_count} registros antigos removidos do MongoDB")
+            st.info(f"🧹 {resultado.deleted_count:,} registros removidos")
         return True
     except Exception as e:
-        st.error(f"❌ Erro ao limpar dados antigos: {str(e)}")
+        st.error(f"❌ Erro ao limpar dados: {str(e)}")
         return False
 
 def salvar_dados_mongo(db, df):
-    """Salva os dados no MongoDB"""
+    """Salva dados em BATCH para performance"""
     try:
         colecao = db[CONFIG['colecao_mongo']]
         
@@ -125,53 +150,55 @@ def salvar_dados_mongo(db, df):
             record['import_batch'] = batch_id
             record['imported_at'] = datetime.now()
         
+        # Inserção em lotes de 5000
         batch_size = 5000
-        for i in range(0, len(records), batch_size):
+        total = len(records)
+        for i in range(0, total, batch_size):
             colecao.insert_many(records[i:i+batch_size], ordered=False)
         
-        st.success(f"💾 {len(records)} registros salvos no MongoDB (batch: {batch_id})")
+        st.success(f"💾 {total:,} registros salvos")
         return batch_id
     except Exception as e:
-        st.error(f"❌ Erro ao salvar dados: {str(e)}")
+        st.error(f"❌ Erro ao salvar: {str(e)}")
         return None
 
 def carregar_dados_mongo(db):
-    """Carrega os dados mais recentes do MongoDB"""
+    """Carrega dados - OTIMIZADO com projeção"""
     try:
         colecao = db[CONFIG['colecao_mongo']]
         
+        # Busca apenas o batch mais recente
         latest = colecao.find_one(sort=[("import_batch", -1)])
         if not latest:
             return None
         
         batch_id = latest.get('import_batch')
         
-        cursor = colecao.find({"import_batch": batch_id})
+        # Projeção para não carregar campos desnecessários
+        projection = {'_id': 0, 'import_batch': 0, 'imported_at': 0}
+        cursor = colecao.find({"import_batch": batch_id}, projection)
+        
         df = pd.DataFrame(list(cursor))
         
         if df.empty:
             return None
         
-        for col in ['_id', 'import_batch', 'imported_at']:
-            if col in df.columns:
-                df = df.drop(columns=[col])
-        
         return df, batch_id
     except Exception as e:
-        st.error(f"❌ Erro ao carregar dados: {str(e)}")
+        st.error(f"❌ Erro ao carregar: {str(e)}")
         return None
 
 # ==================== FUNÇÕES DE PROCESSAMENTO ====================
-def processar_planilha(uploaded_file):
-    """Processa a planilha importada"""
+@st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
+def processar_planilha_cached(uploaded_file_bytes, filename):
+    """Processa planilha com CACHE"""
     try:
-        df = pd.read_excel(uploaded_file, engine='openpyxl')
+        import io
+        df = pd.read_excel(io.BytesIO(uploaded_file_bytes), engine='openpyxl')
         
         colunas_faltantes = [col for col in CONFIG['colunas_obrigatorias'] if col not in df.columns]
         if colunas_faltantes:
-            st.error(f"❌ Colunas obrigatórias não encontradas: {colunas_faltantes}")
-            st.warning(f"🔍 Colunas disponíveis: {list(df.columns)}")
-            return None
+            return {"erro": f"Colunas faltantes: {colunas_faltantes}"}
         
         df['DATA ATIVAAAO'] = pd.to_datetime(df['DATA ATIVAAAO'], format='%d/%m/%Y', errors='coerce')
         df = df.dropna(subset=['DATA ATIVAAAO'])
@@ -190,47 +217,75 @@ def processar_planilha(uploaded_file):
         df['status'] = df['status'].astype(str).str.strip()
         df['condominio_id'] = pd.to_numeric(df['condominio_id'], errors='coerce').fillna(0).astype(int)
         
-        return df
+        return {"df": df, "total": len(df)}
     except Exception as e:
-        st.error(f"❌ Erro ao processar planilha: {str(e)}")
-        return None
+        return {"erro": str(e)}
 
-def calcular_vendas_por_vendedor(df, data_inicio, data_fim):
-    """Calcula vendas por vendedor no período"""
-    df_filtrado = df[(df['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-                     (df['data_ativacao'] <= pd.Timestamp(data_fim))]
+@st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
+def calcular_vendas_vendedor_cached(df_hash, data_inicio_str, data_fim_str):
+    """Calcula vendas por vendedor com CACHE"""
+    data_inicio = datetime.fromisoformat(data_inicio_str)
+    data_fim = datetime.fromisoformat(data_fim_str)
+    
+    df_filtrado = df_hash[
+        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
+        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
+    ]
     
     if df_filtrado.empty:
         return pd.DataFrame()
     
-    vendas_vendedor = df_filtrado.groupby('vendedor').agg(
-        total_vendas=('cliente', 'count'),
-        clientes=('cliente', lambda x: list(x))
+    return df_filtrado.groupby('vendedor').agg(
+        total_vendas=('cliente', 'count')
     ).reset_index().sort_values('total_vendas', ascending=False)
-    
-    return vendas_vendedor
 
-def calcular_vendas_semanais(df, data_inicio, data_fim):
-    """Calcula vendas semanais por vendedor"""
-    df_filtrado = df[(df['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-                     (df['data_ativacao'] <= pd.Timestamp(data_fim))]
+@st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
+def calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str):
+    """
+    Calcula vendas semanais com SEMANA DO MÊS
+    Ex: Semana 1 = dias 01-07, Semana 2 = dias 08-14, etc
+    """
+    data_inicio = datetime.fromisoformat(data_inicio_str)
+    data_fim = datetime.fromisoformat(data_fim_str)
+    
+    df_filtrado = df_hash[
+        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
+        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
+    ].copy()
     
     if df_filtrado.empty:
         return pd.DataFrame(), pd.DataFrame()
     
-    df_filtrado['semana'] = df_filtrado['data_ativacao'].dt.isocalendar().week
-    df_filtrado['semana_str'] = df_filtrado['data_ativacao'].dt.strftime('Semana %W')
+    # ========== CALCULAR SEMANA DO MÊS ==========
+    def get_semana_mes(data):
+        """Retorna a semana do mês (1-5) baseado no dia"""
+        dia = data.day
+        if dia <= 7:
+            return 1
+        elif dia <= 14:
+            return 2
+        elif dia <= 21:
+            return 3
+        elif dia <= 28:
+            return 4
+        else:
+            return 5
     
-    vendas_semanais = df_filtrado.groupby(['vendedor', 'semana_str', 'semana']).agg(
+    df_filtrado['semana_mes'] = df_filtrado['data_ativacao'].apply(get_semana_mes)
+    df_filtrado['semana_str'] = df_filtrado['semana_mes'].apply(lambda x: f'Semana {x}')
+    
+    # Agrupa por vendedor e semana do mês
+    vendas_semanais = df_filtrado.groupby(['vendedor', 'semana_str', 'semana_mes']).agg(
         total_vendas=('cliente', 'count')
-    ).reset_index().sort_values(['vendedor', 'semana'])
+    ).reset_index().sort_values(['vendedor', 'semana_mes'])
     
+    # Vendas diárias com semana do mês
     df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.day_name()
     df_filtrado['data_str'] = df_filtrado['data_ativacao'].dt.strftime('%d/%m')
     
-    vendas_diarias = df_filtrado.groupby(['vendedor', 'semana_str', 'data_str', 'dia_semana']).agg(
+    vendas_diarias = df_filtrado.groupby(['vendedor', 'semana_str', 'data_str', 'dia_semana', 'semana_mes']).agg(
         total_vendas=('cliente', 'count')
-    ).reset_index().sort_values(['vendedor', 'semana_str', 'data_str'])
+    ).reset_index().sort_values(['vendedor', 'semana_mes', 'data_str'])
     
     return vendas_semanais, vendas_diarias
 
@@ -239,12 +294,16 @@ def calcular_indicador_evolucao(vendas_semanais):
     if vendas_semanais.empty:
         return pd.DataFrame()
     
+    # Pivot com semanas do mês
     pivot = vendas_semanais.pivot_table(
         index='vendedor',
         columns='semana_str',
         values='total_vendas',
         fill_value=0
     )
+    
+    # Ordenar colunas por semana (1, 2, 3, 4, 5)
+    pivot = pivot.reindex(sorted(pivot.columns), axis=1)
     
     evolucao = pivot.copy()
     for i in range(1, len(pivot.columns)):
@@ -276,77 +335,52 @@ def calcular_indicador_evolucao(vendas_semanais):
     
     return evolucao
 
-# ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO ====================
-
-def carregar_condominios_crm():
-    """Carrega todos os condomínios cadastrados no CRM"""
-    try:
-        collection = get_condominios_collection()
-        condominios = list(collection.find({}, {
-            "_id": 1, "nome": 1, "id_ixc": 1, "cidade": 1, 
-            "zona": 1, "bairro": 1, "endereco": 1
-        }))
-        
-        df_cond = pd.DataFrame(condominios)
-        if not df_cond.empty:
-            df_cond['id_ixc'] = pd.to_numeric(df_cond['id_ixc'], errors='coerce').fillna(0).astype(int)
-            df_cond['_id'] = df_cond['_id'].astype(str)
-        return df_cond
-    except Exception as e:
-        st.error(f"❌ Erro ao carregar condomínios do CRM: {str(e)}")
-        return pd.DataFrame()
+# ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO (COM FILTRO DE PERÍODO) ====================
 
 def render_desempenho_por_condominio(df, data_inicio, data_fim):
-    """Renderiza análise de desempenho por condomínio"""
+    """Renderiza análise de desempenho por condomínio - COM FILTRO DE PERÍODO"""
     st.subheader("🏢 Desempenho por Condomínio")
     
-    st.markdown("""
-    <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-    <strong>🎯 Como funciona:</strong><br>
-    Esta análise integra os dados de vendas com os condomínios cadastrados no CRM.
-    <ul>
-        <li>🔍 <strong>Compara</strong> o ID da coluna <code>CONDOMANIO</code> da planilha com os IDs cadastrados</li>
-        <li>🏆 <strong>Ranking</strong> dos melhores vendedores por condomínio</li>
-        <li>📊 <strong>Métricas</strong> de penetração e desempenho por região</li>
-    </ul>
+    st.markdown(f"""
+    <div style="background-color:#e8f4f8; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
+    <strong>📅 Período analisado:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}
     </div>
     """, unsafe_allow_html=True)
     
-    with st.spinner("🔄 Carregando condomínios cadastrados..."):
-        df_cond_crm = carregar_condominios_crm()
+    # Carregar condomínios com cache
+    with st.spinner("🔄 Carregando condomínios..."):
+        df_cond_crm = get_condominios_crm_cached()
     
     if df_cond_crm.empty:
-        st.warning("⚠️ Nenhum condomínio cadastrado no CRM. Acesse o módulo 'Condomínios' para cadastrar.")
-        st.info("💡 Dica: Use a aba 'Importar do IXC' para importar automaticamente os condomínios.")
+        st.warning("⚠️ Nenhum condomínio cadastrado. Acesse o módulo 'Condomínios'.")
         return
-    
-    st.success(f"✅ {len(df_cond_crm)} condomínios cadastrados no CRM")
     
     df_vendas = df.copy()
     
     if 'condominio_id' not in df_vendas.columns:
-        st.error("❌ Coluna 'condominio_id' não encontrada na planilha.")
+        st.error("❌ Coluna 'condominio_id' não encontrada.")
         return
     
     df_vendas['condominio_id'] = pd.to_numeric(df_vendas['condominio_id'], errors='coerce').fillna(0).astype(int)
     
+    # ========== APLICAR FILTRO DE PERÍODO ==========
     df_vendas_periodo = df_vendas[
         (df_vendas['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
         (df_vendas['data_ativacao'] <= pd.Timestamp(data_fim))
     ].copy()
     
     if df_vendas_periodo.empty:
-        st.warning("⚠️ Nenhuma venda encontrada no período selecionado.")
+        st.warning(f"⚠️ Nenhuma venda no período {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}.")
         return
     
-    df_planilha_cond = df_vendas_periodo.groupby('condominio_id').agg(
+    # Agrupar e merge
+    df_planilha_cond = df_vendas_periodo.groupby('condominio_id', as_index=False).agg(
         total_vendas=('cliente', 'count'),
-        vendedores=('vendedor', lambda x: list(set(x))),
-        clientes=('cliente', lambda x: list(x))
-    ).reset_index()
+        vendedores=('vendedor', lambda x: list(set(x))[:10])
+    )
     
     df_merged = df_planilha_cond.merge(
-        df_cond_crm,
+        df_cond_crm[['id_ixc', 'nome', 'zona', 'cidade', 'bairro']],
         left_on='condominio_id',
         right_on='id_ixc',
         how='left'
@@ -355,309 +389,111 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     df_merged['nome_condominio'] = df_merged['nome'].fillna(f"ID {df_merged['condominio_id']} (não cadastrado)")
     df_merged['status_cadastro'] = df_merged['nome'].apply(lambda x: '✅ Cadastrado' if pd.notna(x) else '⚠️ Não Cadastrado')
     
-    total_cond_com_vendas = len(df_merged[df_merged['total_vendas'] > 0])
-    total_cond_sem_vendas = len(df_merged[df_merged['total_vendas'] == 0])
+    # ========== MÉTRICAS DO PERÍODO ==========
     total_vendas_cond = df_merged['total_vendas'].sum()
+    cond_com_vendas = len(df_merged[df_merged['total_vendas'] > 0])
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("🏢 Condomínios com Vendas", total_cond_com_vendas)
+        st.metric("📊 Vendas no Período", f"{total_vendas_cond:,}")
     with col2:
-        st.metric("📊 Total de Vendas", f"{total_vendas_cond:,}")
+        st.metric("🏢 Condomínios com Vendas", cond_com_vendas)
     with col3:
-        st.metric("📌 Condomínios sem Vendas", total_cond_sem_vendas, delta="⚠️ Oportunidade" if total_cond_sem_vendas > 0 else None)
+        st.metric("📈 Média por Condomínio", f"{total_vendas_cond/cond_com_vendas:.1f}" if cond_com_vendas > 0 else "0")
     with col4:
-        media_vendas_cond = total_vendas_cond / total_cond_com_vendas if total_cond_com_vendas > 0 else 0
-        st.metric("📈 Média por Condomínio", f"{media_vendas_cond:.1f}")
+        st.metric("📅 Período", f"{data_inicio.strftime('%d/%m')} a {data_fim.strftime('%d/%m/%y')}")
     
     st.markdown("---")
     
+    # Filtros
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        zonas_disponiveis = ["Todas"] + sorted(df_merged['zona'].dropna().unique().tolist())
-        zona_selecionada = st.selectbox("📍 Filtrar por Zona:", zonas_disponiveis, key="cond_zona_filter")
+        zonas = ["Todas"] + sorted(df_merged['zona'].dropna().unique().tolist())
+        zona_sel = st.selectbox("📍 Zona:", zonas, key="cond_zona_periodo")
     
     with col_f2:
-        status_opcoes = ["Todos", "✅ Cadastrados no CRM", "⚠️ Não Cadastrados"]
-        status_selecionado = st.selectbox("📋 Status:", status_opcoes, key="cond_status_filter")
+        status_opts = ["Todos", "✅ Cadastrados", "⚠️ Não Cadastrados"]
+        status_sel = st.selectbox("📋 Status:", status_opts, key="cond_status_periodo")
     
     df_filtrado = df_merged.copy()
-    
-    if zona_selecionada != "Todas":
-        df_filtrado = df_filtrado[df_filtrado['zona'] == zona_selecionada]
-    
-    if status_selecionado == "✅ Cadastrados no CRM":
+    if zona_sel != "Todas":
+        df_filtrado = df_filtrado[df_filtrado['zona'] == zona_sel]
+    if status_sel == "✅ Cadastrados":
         df_filtrado = df_filtrado[df_filtrado['nome'].notna()]
-    elif status_selecionado == "⚠️ Não Cadastrados":
+    elif status_sel == "⚠️ Não Cadastrados":
         df_filtrado = df_filtrado[df_filtrado['nome'].isna()]
     
     if df_filtrado.empty:
-        st.warning("⚠️ Nenhum condomínio encontrado com os filtros selecionados.")
+        st.warning("⚠️ Nenhum condomínio com os filtros.")
         return
     
-    tab1, tab2, tab3 = st.tabs(["🏆 Ranking por Condomínio", "👤 Melhores Vendedores", "📊 Análise por Região"])
+    # Ranking
+    df_ranking = df_filtrado.sort_values('total_vendas', ascending=False).reset_index(drop=True)
+    df_ranking_display = df_ranking.head(CONFIG['limite_tabela'])
     
-    with tab1:
-        st.subheader("🏆 Ranking de Condomínios por Vendas")
+    # ========== TOP 10 COM VALORES REAIS DO PERÍODO ==========
+    st.markdown(f"### 🏆 Top 10 Condomínios no Período")
+    
+    top_10 = df_ranking.head(10)
+    
+    if not top_10.empty:
+        # Gráfico
+        fig_rank = px.bar(
+            top_10,
+            x='total_vendas',
+            y='nome_condominio',
+            color='total_vendas',
+            color_continuous_scale='Viridis',
+            title=f'Top 10 Condomínios - {data_inicio.strftime("%b/%Y")} a {data_fim.strftime("%b/%Y")}',
+            orientation='h',
+            text='total_vendas'
+        )
+        fig_rank.update_traces(textposition='outside')
+        fig_rank.update_layout(height=400, xaxis_title="Vendas no Período", yaxis_title="")
+        st.plotly_chart(fig_rank, use_container_width=True, config={'displayModeBar': False})
         
-        df_ranking = df_filtrado.sort_values('total_vendas', ascending=False).reset_index(drop=True)
+        # Pódio
+        st.markdown("### 🏅 Pódio do Período")
+        col_p1, col_p2, col_p3 = st.columns(3)
         
-        st.markdown("### 🥇 Top 10 Condomínios")
-        
-        top_10 = df_ranking.head(10)
-        
-        col_rank1, col_rank2 = st.columns([3, 2])
-        
-        with col_rank1:
-            fig_rank = px.bar(
-                top_10,
-                x='total_vendas',
-                y='nome_condominio',
-                color='total_vendas',
-                color_continuous_scale='Viridis',
-                title='🏆 Top 10 Condomínios por Vendas',
-                labels={'total_vendas': 'Total de Vendas', 'nome_condominio': 'Condomínio'},
-                orientation='h',
-                text='total_vendas'
-            )
-            fig_rank.update_traces(textposition='outside')
-            fig_rank.update_layout(height=400, xaxis_title="Vendas", yaxis_title="")
-            st.plotly_chart(fig_rank, use_container_width=True, config={'displayModeBar': False})
-        
-        with col_rank2:
-            st.markdown("### 🏅 Pódio")
-            
-            if len(top_10) >= 1:
+        if len(top_10) >= 1:
+            with col_p1:
                 st.success(f"🥇 **{top_10.iloc[0]['nome_condominio']}**\n\n{top_10.iloc[0]['total_vendas']} vendas")
-            
-            if len(top_10) >= 2:
+        
+        if len(top_10) >= 2:
+            with col_p2:
                 st.info(f"🥈 **{top_10.iloc[1]['nome_condominio']}**\n\n{top_10.iloc[1]['total_vendas']} vendas")
-            
-            if len(top_10) >= 3:
+        
+        if len(top_10) >= 3:
+            with col_p3:
                 st.warning(f"🥉 **{top_10.iloc[2]['nome_condominio']}**\n\n{top_10.iloc[2]['total_vendas']} vendas")
-        
-        st.markdown("---")
-        
-        st.markdown("### 📋 Lista Completa")
-        
-        colunas_exibir = [
-            'nome_condominio', 'total_vendas', 'zona', 'cidade', 'bairro', 
-            'id_ixc', 'status_cadastro'
-        ]
-        colunas_existentes = [c for c in colunas_exibir if c in df_ranking.columns]
-        
-        if 'total_vendas' in df_ranking.columns and total_vendas_cond > 0:
-            df_ranking['percentual'] = (df_ranking['total_vendas'] / total_vendas_cond * 100).round(1)
-            df_ranking['percentual_str'] = df_ranking['percentual'].apply(lambda x: f"{x:.1f}%")
-            if 'percentual_str' not in colunas_existentes:
-                colunas_existentes.append('percentual_str')
-        
-        st.dataframe(
-            df_ranking[colunas_existentes],
-            use_container_width=True,
-            height=400,
-            column_config={
-                'nome_condominio': 'Condomínio',
-                'total_vendas': st.column_config.NumberColumn('Vendas', format='%d'),
-                'zona': 'Zona',
-                'cidade': 'Cidade',
-                'bairro': 'Bairro',
-                'id_ixc': 'ID IXC',
-                'status_cadastro': 'Status',
-                'percentual_str': 'Percentual'
-            }
-        )
-    
-    with tab2:
-        st.subheader("👤 Melhores Vendedores por Condomínio")
-        
-        df_exploded = df_vendas_periodo[['condominio_id', 'vendedor', 'cliente']].copy()
-        df_exploded = df_exploded.merge(
-            df_cond_crm[['id_ixc', 'nome']],
-            left_on='condominio_id',
-            right_on='id_ixc',
-            how='left'
-        )
-        df_exploded['nome_condominio'] = df_exploded['nome'].fillna(f"ID {df_exploded['condominio_id']} (não cadastrado)")
-        
-        df_vendedores_cond = df_exploded.groupby(['nome_condominio', 'vendedor']).agg(
-            total_vendas=('cliente', 'count')
-        ).reset_index().sort_values(['nome_condominio', 'total_vendas'], ascending=[True, False])
-        
-        if df_vendedores_cond.empty:
-            st.info("ℹ️ Nenhum dado disponível para análise de vendedores por condomínio.")
-        else:
-            condominios_lista = sorted(df_vendedores_cond['nome_condominio'].unique())
-            
-            col_sel1, col_sel2 = st.columns([2, 1])
-            
-            with col_sel1:
-                cond_selecionado = st.selectbox(
-                    "Selecione um condomínio para ver os vendedores:",
-                    condominios_lista,
-                    key="cond_vendedor_select"
-                )
-            
-            with col_sel2:
-                top_n = st.number_input(
-                    "Mostrar top N vendedores:",
-                    min_value=1,
-                    max_value=20,
-                    value=5,
-                    step=1,
-                    key="top_n_vendedores"
-                )
-            
-            if cond_selecionado:
-                df_cond_vendedores = df_vendedores_cond[df_vendedores_cond['nome_condominio'] == cond_selecionado]
-                df_cond_vendedores = df_cond_vendedores.head(top_n)
-                
-                if not df_cond_vendedores.empty:
-                    total_vendas_cond_sel = df_cond_vendedores['total_vendas'].sum()
-                    
-                    st.markdown(f"### 📊 Vendedores - {cond_selecionado}")
-                    st.metric("Total de Vendas no Condomínio", f"{total_vendas_cond_sel}")
-                    
-                    fig_vendedores = px.bar(
-                        df_cond_vendedores,
-                        x='vendedor',
-                        y='total_vendas',
-                        color='total_vendas',
-                        color_continuous_scale='Blues',
-                        title=f'🏆 Top {top_n} Vendedores - {cond_selecionado}',
-                        text='total_vendas'
-                    )
-                    fig_vendedores.update_traces(textposition='outside')
-                    fig_vendedores.update_layout(height=350)
-                    st.plotly_chart(fig_vendedores, use_container_width=True, config={'displayModeBar': False})
-                    
-                    st.dataframe(
-                        df_cond_vendedores,
-                        use_container_width=True,
-                        column_config={
-                            'nome_condominio': 'Condomínio',
-                            'vendedor': 'Vendedor',
-                            'total_vendas': st.column_config.NumberColumn('Vendas', format='%d')
-                        }
-                    )
-            
-            st.markdown("---")
-            st.markdown("### 🏆 Melhor Vendedor por Condomínio")
-            
-            df_top_vendedor = df_vendedores_cond.groupby('nome_condominio').first().reset_index()
-            df_top_vendedor = df_top_vendedor.sort_values('total_vendas', ascending=False)
-            
-            st.dataframe(
-                df_top_vendedor,
-                use_container_width=True,
-                height=300,
-                column_config={
-                    'nome_condominio': 'Condomínio',
-                    'vendedor': 'Melhor Vendedor',
-                    'total_vendas': st.column_config.NumberColumn('Vendas', format='%d')
-                }
-            )
-            
-            fig_top_vendedor = px.bar(
-                df_top_vendedor.head(15),
-                x='total_vendas',
-                y='nome_condominio',
-                color='vendedor',
-                title='🏆 Melhor Vendedor por Condomínio (Top 15)',
-                labels={'total_vendas': 'Vendas', 'nome_condominio': 'Condomínio'},
-                orientation='h',
-                text='total_vendas'
-            )
-            fig_top_vendedor.update_traces(textposition='outside')
-            fig_top_vendedor.update_layout(height=400, showlegend=False)
-            st.plotly_chart(fig_top_vendedor, use_container_width=True, config={'displayModeBar': False})
-    
-    with tab3:
-        st.subheader("📊 Análise por Região/Zona")
-        
-        df_zona = df_filtrado.groupby('zona').agg(
-            total_condominios=('nome_condominio', 'count'),
-            total_vendas=('total_vendas', 'sum'),
-            media_vendas=('total_vendas', 'mean')
-        ).reset_index()
-        
-        df_zona = df_zona[df_zona['zona'].notna()]
-        
-        if df_zona.empty:
-            st.info("ℹ️ Nenhum dado de zona disponível.")
-        else:
-            col_z1, col_z2 = st.columns(2)
-            
-            with col_z1:
-                fig_zona = px.bar(
-                    df_zona,
-                    x='zona',
-                    y='total_vendas',
-                    color='total_vendas',
-                    color_continuous_scale='Viridis',
-                    title='📊 Vendas por Zona',
-                    text='total_vendas'
-                )
-                fig_zona.update_traces(textposition='outside')
-                fig_zona.update_layout(height=350)
-                st.plotly_chart(fig_zona, use_container_width=True, config={'displayModeBar': False})
-            
-            with col_z2:
-                fig_media = px.bar(
-                    df_zona,
-                    x='zona',
-                    y='media_vendas',
-                    color='media_vendas',
-                    color_continuous_scale='Oranges',
-                    title='📈 Média de Vendas por Zona',
-                    text='media_vendas'
-                )
-                fig_media.update_traces(texttemplate='%{text:.1f}', textposition='outside')
-                fig_media.update_layout(height=350)
-                st.plotly_chart(fig_media, use_container_width=True, config={'displayModeBar': False})
-            
-            st.dataframe(
-                df_zona,
-                use_container_width=True,
-                column_config={
-                    'zona': 'Zona',
-                    'total_condominios': st.column_config.NumberColumn('Condomínios', format='%d'),
-                    'total_vendas': st.column_config.NumberColumn('Total Vendas', format='%d'),
-                    'media_vendas': st.column_config.NumberColumn('Média por Condomínio', format='%.1f')
-                }
-            )
     
     st.markdown("---")
-    st.subheader("📤 Exportar Dados de Desempenho por Condomínio")
     
-    if st.button("📥 Exportar Desempenho por Condomínio (Excel)", type="primary", key="export_desempenho_cond"):
-        try:
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_ranking.to_excel(writer, sheet_name='Ranking Condomínios', index=False)
-                if 'df_vendedores_cond' in locals() and not df_vendedores_cond.empty:
-                    df_vendedores_cond.to_excel(writer, sheet_name='Vendedores por Condomínio', index=False)
-                if 'df_zona' in locals() and not df_zona.empty:
-                    df_zona.to_excel(writer, sheet_name='Análise por Zona', index=False)
-                if 'df_top_vendedor' in locals() and not df_top_vendedor.empty:
-                    df_top_vendedor.to_excel(writer, sheet_name='Melhores Vendedores', index=False)
-            
-            output.seek(0)
-            
-            st.download_button(
-                label="⬇️ Baixar Excel",
-                data=output,
-                file_name=f"desempenho_condominios_{data_inicio.strftime('%Y%m%d')}_a_{data_fim.strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            st.success("✅ Arquivo gerado com sucesso!")
-        except Exception as e:
-            st.error(f"❌ Erro ao gerar arquivo: {str(e)}")
+    # Tabela completa
+    st.markdown("### 📋 Lista Completa do Período")
+    
+    colunas = ['nome_condominio', 'total_vendas', 'zona', 'cidade', 'status_cadastro']
+    colunas_existentes = [c for c in colunas if c in df_ranking_display.columns]
+    
+    st.dataframe(
+        df_ranking_display[colunas_existentes],
+        use_container_width=True,
+        height=350,
+        column_config={
+            'nome_condominio': 'Condomínio',
+            'total_vendas': st.column_config.NumberColumn('Vendas no Período', format='%d'),
+            'zona': 'Zona',
+            'cidade': 'Cidade',
+            'status_cadastro': 'Status'
+        }
+    )
+    
+    st.caption(f"📌 Mostrando {len(df_ranking_display)} de {len(df_ranking)} condomínios com vendas no período {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
 
 # ==================== FUNÇÕES DE UI ====================
 def gerar_opcoes_periodo(df):
-    """Gera opções de período baseado nos dados disponíveis"""
+    """Gera opções de período"""
     if df is None or df.empty:
         return {}
     
@@ -666,13 +502,14 @@ def gerar_opcoes_periodo(df):
     
     periodo_opcoes = {}
     
-    anos_meses = df.groupby(df['data_ativacao'].dt.to_period('M')).size().index
+    # Limitar a últimos 12 meses
+    anos_meses = df.groupby(df['data_ativacao'].dt.to_period('M')).size().index[-12:]
     for periodo in anos_meses:
         nome_mes = CONFIG['meses_pt'][periodo.month]
         data_inicio = datetime(periodo.year, periodo.month, 1).date()
         ultimo_dia = calendar.monthrange(periodo.year, periodo.month)[1]
         data_fim = datetime(periodo.year, periodo.month, ultimo_dia).date()
-        periodo_opcoes[f"📅 {nome_mes} de {periodo.year}"] = (data_inicio, data_fim)
+        periodo_opcoes[f"📅 {nome_mes} {periodo.year}"] = (data_inicio, data_fim)
     
     periodo_opcoes.update({
         "📅 Últimos 3 Meses": 90,
@@ -684,21 +521,6 @@ def gerar_opcoes_periodo(df):
     
     return periodo_opcoes
 
-def get_periodo(periodo_selecionado, periodo_opcoes, min_date, max_date):
-    """Retorna data_inicio e data_fim baseado na seleção"""
-    if periodo_selecionado == "🎯 Personalizado":
-        return "personalizado", None, None
-    elif "📅 " in periodo_selecionado and " de " in periodo_selecionado:
-        return periodo_opcoes[periodo_selecionado]
-    else:
-        dias = periodo_opcoes[periodo_selecionado]
-        if dias is None:
-            return min_date, max_date
-        else:
-            data_fim = max_date
-            data_inicio = max((datetime.combine(data_fim, datetime.min.time()) - timedelta(days=dias)).date(), min_date)
-            return data_inicio, data_fim
-
 # ==================== DASHBOARD ====================
 def render_dashboard():
     """Renderiza o dashboard completo"""
@@ -708,50 +530,58 @@ def render_dashboard():
     if db is None:
         st.stop()
     
+    # ========== UPLOAD ==========
     st.markdown("---")
     st.subheader("📤 Importar Dados")
     
-    col1, col2 = st.columns([2, 1])
+    uploaded_file = st.file_uploader(
+        "📁 Planilha de vendas (Excel)",
+        type=["xlsx", "xls"],
+        key="vendas_uploader"
+    )
     
-    with col1:
-        uploaded_file = st.file_uploader(
-            "📁 Carregue a planilha de vendas (Excel)",
-            type=["xlsx", "xls"],
-            key="vendas_uploader"
-        )
-    
-    with col2:
-        if uploaded_file is not None:
-            if st.button("🚀 Importar e Processar", type="primary", use_container_width=True):
-                with st.spinner("🔄 Processando planilha..."):
-                    df = processar_planilha(uploaded_file)
-                    if df is not None:
+    if uploaded_file is not None:
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            if st.button("🚀 Importar", type="primary", use_container_width=True):
+                with st.spinner("🔄 Processando..."):
+                    start_time = time.time()
+                    
+                    file_bytes = uploaded_file.getvalue()
+                    resultado = processar_planilha_cached(file_bytes, uploaded_file.name)
+                    
+                    if "erro" in resultado:
+                        st.error(f"❌ {resultado['erro']}")
+                    else:
+                        df = resultado["df"]
                         batch_id = salvar_dados_mongo(db, df)
                         if batch_id:
                             st.session_state.vendas_df = df
                             st.session_state.vendas_batch = batch_id
-                            st.success("✅ Dados importados com sucesso!")
+                            st.success(f"✅ {resultado['total']:,} registros em {time.time() - start_time:.1f}s")
                             st.rerun()
     
+    # ========== CARREGAR DADOS ==========
     if 'vendas_df' not in st.session_state:
-        with st.spinner("🔄 Carregando dados existentes..."):
+        with st.spinner("🔄 Carregando dados..."):
             resultado = carregar_dados_mongo(db)
             if resultado:
                 df, batch_id = resultado
                 st.session_state.vendas_df = df
                 st.session_state.vendas_batch = batch_id
-                st.info(f"📋 Dados carregados (batch: {batch_id})")
+                st.info(f"📋 {len(df):,} registros carregados")
             else:
-                st.info("ℹ️ Nenhum dado encontrado. Faça o upload de uma planilha.")
+                st.info("ℹ️ Nenhum dado. Faça upload.")
     
     df = st.session_state.get('vendas_df')
     
     if df is None or df.empty:
-        st.warning("⚠️ Nenhum dado carregado. Faça o upload de uma planilha.")
+        st.warning("⚠️ Nenhum dado carregado.")
         return
     
+    # ========== PERÍODO ==========
     st.markdown("---")
-    st.subheader("📅 Selecione o Período de Análise")
+    st.subheader("📅 Período de Análise")
     
     min_date = df['data_ativacao'].min().date()
     max_date = df['data_ativacao'].max().date()
@@ -760,64 +590,65 @@ def render_dashboard():
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        periodo_selecionado = st.selectbox(
-            "Período:",
-            list(periodo_opcoes.keys()),
-            key="periodo_select"
-        )
+        periodo_selecionado = st.selectbox("Período:", list(periodo_opcoes.keys()), key="periodo")
     
+    with col2:
+        if st.button("🔄 Atualizar", use_container_width=True):
+            st.rerun()
+    
+    # Calcular período
     if periodo_selecionado == "🎯 Personalizado":
-        col_data1, col_data2 = st.columns(2)
-        with col_data1:
-            data_inicio = st.date_input("Data Início", value=min_date, min_value=min_date, max_value=max_date)
-        with col_data2:
-            data_fim = st.date_input("Data Fim", value=max_date, min_value=min_date, max_value=max_date)
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            data_inicio = st.date_input("Início", min_date, min_value=min_date, max_value=max_date)
+        with col_d2:
+            data_fim = st.date_input("Fim", max_date, min_value=min_date, max_value=max_date)
     else:
-        resultado_periodo = get_periodo(periodo_selecionado, periodo_opcoes, min_date, max_date)
-        if resultado_periodo == "personalizado":
+        dias = periodo_opcoes[periodo_selecionado]
+        if dias is None:
             data_inicio, data_fim = min_date, max_date
+        elif isinstance(dias, tuple):
+            data_inicio, data_fim = dias
         else:
-            data_inicio, data_fim = resultado_periodo
+            data_fim = max_date
+            data_inicio = max((datetime.combine(data_fim, datetime.min.time()) - timedelta(days=dias)).date(), min_date)
     
     if data_inicio > data_fim:
-        st.error("⚠️ Data de início não pode ser maior que data de fim.")
+        st.error("⚠️ Data inválida")
         return
     
-    df_filtrado = df[
-        (df['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-        (df['data_ativacao'] <= pd.Timestamp(data_fim))
-    ].copy()
+    # Hash para cache
+    df_hash = df.copy()
+    data_inicio_str = datetime.combine(data_inicio, datetime.min.time()).isoformat()
+    data_fim_str = datetime.combine(data_fim, datetime.min.time()).isoformat()
+    
+    # ========== FILTRO VENDEDOR ==========
+    vendedores = ["Todos"] + sorted(df['vendedor'].unique().tolist())
+    vendedor_sel = st.sidebar.selectbox("👤 Vendedor", vendedores, key="vendedor_filtro")
+    
+    # ========== DADOS FILTRADOS ==========
+    df_filtrado = df[(df['data_ativacao'] >= pd.Timestamp(data_inicio)) & (df['data_ativacao'] <= pd.Timestamp(data_fim))].copy()
+    
+    if vendedor_sel != "Todos":
+        df_filtrado = df_filtrado[df_filtrado['vendedor'] == vendedor_sel]
     
     if df_filtrado.empty:
-        st.warning("⚠️ Nenhum dado encontrado para o período selecionado.")
+        st.warning("⚠️ Nenhum dado no período.")
         return
     
-    vendedores = ["Todos"] + sorted(df_filtrado['vendedor'].unique().tolist())
-    vendedor_selecionado = st.sidebar.selectbox(
-        "👤 Vendedor",
-        vendedores,
-        key="vendedor_filter"
-    )
-    
-    if vendedor_selecionado != "Todos":
-        df_filtrado = df_filtrado[df_filtrado['vendedor'] == vendedor_selecionado]
-    
+    # ========== MÉTRICAS ==========
     total_vendas = len(df_filtrado)
     total_vendedores = df_filtrado['vendedor'].nunique()
-    media_vendas = total_vendas / total_vendedores if total_vendedores > 0 else 0
-    
-    st.markdown("---")
     
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📊 Total de Vendas", f"{total_vendas:,}")
-    col2.metric("👤 Vendedores Ativos", f"{total_vendedores}")
-    col3.metric("📈 Média por Vendedor", f"{media_vendas:.1f}")
-    col4.metric("📅 Período", f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
+    col1.metric("📊 Vendas", f"{total_vendas:,}")
+    col2.metric("👤 Vendedores", f"{total_vendedores}")
+    col3.metric("📈 Média", f"{total_vendas/total_vendedores:.1f}" if total_vendedores > 0 else "0")
+    col4.metric("📅 Período", f"{data_inicio.strftime('%d/%m')} a {data_fim.strftime('%d/%m/%y')}")
     
     st.markdown("---")
     
-    vendas_vendedor = calcular_vendas_por_vendedor(df, data_inicio, data_fim)
-    
+    # ========== ABAS ==========
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Vendas por Vendedor",
         "📈 Evolução Semanal",
@@ -828,38 +659,43 @@ def render_dashboard():
     with tab1:
         st.subheader("👥 Vendas por Vendedor")
         
+        with st.spinner("🔄 Calculando..."):
+            vendas_vendedor = calcular_vendas_vendedor_cached(df_hash, data_inicio_str, data_fim_str)
+        
         if not vendas_vendedor.empty:
+            top_vendedores = vendas_vendedor.head(CONFIG['limite_grafico'])
+            
             fig = px.bar(
-                vendas_vendedor,
+                top_vendedores,
                 x='vendedor',
                 y='total_vendas',
-                title='📊 Total de Vendas por Vendedor',
+                title=f'📊 Vendas por Vendedor ({len(vendas_vendedor)} vendedores)',
                 color='total_vendas',
                 color_continuous_scale='Viridis',
                 text='total_vendas'
             )
             fig.update_traces(textposition='outside')
-            fig.update_layout(xaxis_title="Vendedor", yaxis_title="Qtd Vendas", height=400)
+            fig.update_layout(height=350, xaxis_title="", yaxis_title="Vendas")
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
             st.dataframe(
                 vendas_vendedor,
                 use_container_width=True,
+                height=250,
                 column_config={
                     'vendedor': 'Vendedor',
-                    'total_vendas': st.column_config.NumberColumn('Total Vendas', format='%d'),
-                    'clientes': 'Clientes'
+                    'total_vendas': st.column_config.NumberColumn('Vendas', format='%d')
                 }
             )
-        else:
-            st.info("ℹ️ Nenhum dado disponível para exibir.")
     
     with tab2:
         st.subheader("📈 Evolução Semanal de Vendas")
         
-        vendas_semanais, vendas_diarias = calcular_vendas_semanais(df, data_inicio, data_fim)
+        with st.spinner("🔄 Calculando evolução..."):
+            vendas_semanais, vendas_diarias = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
         
         if not vendas_semanais.empty:
+            # ========== INDICADOR DE EVOLUÇÃO ==========
             st.markdown("### 🎯 Indicador de Evolução por Vendedor")
             
             evolucao_df = calcular_indicador_evolucao(vendas_semanais)
@@ -912,6 +748,7 @@ def render_dashboard():
                     }
                 )
             
+            # ========== GRÁFICO SEMANAL ==========
             st.markdown("---")
             st.markdown("### 📊 Vendas Semanais por Vendedor")
             
@@ -922,16 +759,20 @@ def render_dashboard():
                 fill_value=0
             )
             
+            # Ordenar semanas (1, 2, 3, 4, 5)
+            pivot_semanal = pivot_semanal.reindex(sorted(pivot_semanal.index), axis=0)
+            
             if not pivot_semanal.empty:
                 fig_linhas = px.line(
                     pivot_semanal,
                     title='📈 Evolução Semanal de Vendas por Vendedor',
-                    labels={'value': 'Vendas', 'semana_str': 'Semana', 'variable': 'Vendedor'},
+                    labels={'value': 'Vendas', 'semana_str': 'Semana do Mês', 'variable': 'Vendedor'},
                     markers=True
                 )
-                fig_linhas.update_layout(height=450, hovermode='x unified')
+                fig_linhas.update_layout(height=400, hovermode='x unified')
                 st.plotly_chart(fig_linhas, use_container_width=True, config={'displayModeBar': False})
             
+            # ========== VENDAS DIÁRIAS ==========
             st.markdown("---")
             st.markdown("### 📅 Vendas Diárias por Semana")
             
@@ -988,52 +829,66 @@ def render_dashboard():
     with tab4:
         st.subheader("📤 Exportar Dados")
         
-        exportar_vendas_vendedor = st.checkbox("📊 Dados de Vendas por Vendedor", value=True)
+        exportar_vendas_vendedor = st.checkbox("📊 Vendas por Vendedor", value=True)
         exportar_evolucao = st.checkbox("📈 Indicador de Evolução", value=True)
         exportar_semanal = st.checkbox("📅 Dados Semanais", value=True)
         exportar_condominios = st.checkbox("🏢 Desempenho por Condomínio", value=True)
         
-        if st.button("📥 Gerar Excel para Download", type="primary"):
-            try:
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    if exportar_vendas_vendedor and not vendas_vendedor.empty:
-                        vendas_vendedor.to_excel(writer, sheet_name='Vendas por Vendedor', index=False)
+        if st.button("📥 Gerar Excel", type="primary"):
+            with st.spinner("🔄 Gerando arquivo..."):
+                try:
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        # Dados filtrados
+                        df_filtrado.to_excel(writer, sheet_name='Dados Filtrados', index=False)
+                        
+                        # Vendas por vendedor
+                        if exportar_vendas_vendedor:
+                            vendas_vendedor = calcular_vendas_vendedor_cached(df_hash, data_inicio_str, data_fim_str)
+                            if not vendas_vendedor.empty:
+                                vendas_vendedor.to_excel(writer, sheet_name='Vendas por Vendedor', index=False)
+                        
+                        # Evolução
+                        if exportar_evolucao:
+                            vendas_semanais, _ = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
+                            if not vendas_semanais.empty:
+                                evolucao_df = calcular_indicador_evolucao(vendas_semanais)
+                                if not evolucao_df.empty:
+                                    evolucao_df.reset_index().to_excel(writer, sheet_name='Evolução Vendedores', index=False)
+                        
+                        # Dados semanais
+                        if exportar_semanal:
+                            vendas_semanais, vendas_diarias = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
+                            if not vendas_semanais.empty:
+                                vendas_semanais.to_excel(writer, sheet_name='Vendas Semanais', index=False)
+                            if not vendas_diarias.empty:
+                                vendas_diarias.to_excel(writer, sheet_name='Vendas Diárias', index=False)
+                        
+                        # Condomínios
+                        if exportar_condominios:
+                            df_cond = get_condominios_crm_cached()
+                            if not df_cond.empty:
+                                df_cond.to_excel(writer, sheet_name='Condomínios CRM', index=False)
                     
-                    if exportar_evolucao and 'evolucao_df' in locals() and not evolucao_df.empty:
-                        evolucao_df.reset_index().to_excel(writer, sheet_name='Evolução Vendedores', index=False)
+                    output.seek(0)
                     
-                    if exportar_semanal and not vendas_semanais.empty:
-                        vendas_semanais.to_excel(writer, sheet_name='Vendas Semanais', index=False)
-                        if not vendas_diarias.empty:
-                            vendas_diarias.to_excel(writer, sheet_name='Vendas Diárias', index=False)
-                    
-                    if exportar_condominios:
-                        df_cond_crm = carregar_condominios_crm()
-                        if not df_cond_crm.empty:
-                            df_cond_crm.to_excel(writer, sheet_name='Condomínios CRM', index=False)
-                    
-                    df_filtrado.to_excel(writer, sheet_name='Dados Filtrados', index=False)
-                
-                output.seek(0)
-                
-                st.download_button(
-                    label="⬇️ Baixar Excel",
-                    data=output,
-                    file_name=f"vendas_vendedor_{data_inicio.strftime('%Y%m%d')}_a_{data_fim.strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-                st.success("✅ Arquivo gerado com sucesso!")
-            except Exception as e:
-                st.error(f"❌ Erro ao gerar arquivo: {str(e)}")
+                    st.download_button(
+                        label="⬇️ Baixar Excel",
+                        data=output,
+                        file_name=f"vendas_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                    st.success("✅ Arquivo gerado!")
+                except Exception as e:
+                    st.error(f"❌ Erro: {str(e)}")
 
 # ==================== FUNÇÃO PRINCIPAL ====================
 def render_vendas_vendedor_condominios():
     """Função principal do módulo"""
     perfil = st.session_state.get('perfil', '')
     if perfil not in ['admin', 'diretoria']:
-        st.error("🚫 Acesso negado. Este módulo é restrito a admin e diretoria.")
+        st.error("🚫 Acesso restrito a admin e diretoria.")
         return
     
     render_dashboard()
