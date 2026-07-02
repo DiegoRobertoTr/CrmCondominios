@@ -4,6 +4,7 @@ Configuração central de permissões por perfil
 ✅ Inclui módulo de Pendências e Marketing Condomínios para perfis internos
 ✅ Inclui módulo de Visitas Vendedoras
 ✅ Inclui módulo de Informações Condomínios
+✅ Inclui módulo de Vendas por Vendedor - Condomínios
 """
 
 PERMISSOES_POR_PERFIL = {
@@ -16,11 +17,12 @@ PERMISSOES_POR_PERFIL = {
         "HotSpots WiFi", "Satisfação", "Monitoramento de E-mails",
         "Teste de Integração", "Endereços Bloqueados",
         "Condomínios",  # Cadastro base e importação IXC
-        "Informações Condomínios",  # ✅ NOVO: Dashboard, importação e edição de informações detalhadas
+        "Informações Condomínios",  # Dashboard, importação e edição de informações detalhadas
         "Relatórios Condomínios", "Prospecção Condomínios",
         "Marketing Condomínios",
         "Leads & Eventos",
-        "Visitas Vendedoras"
+        "Visitas Vendedoras",
+        "Vendas por Vendedor - Condomínios"  # <-- NOVO
     ],
     
     "recepcao": [
@@ -70,7 +72,8 @@ PERMISSOES_POR_PERFIL = {
     "diretoria": [
         "Relatórios Condomínios", 
         "Prospecção Condomínios",
-        "Visitas Vendedoras"
+        "Visitas Vendedoras",
+        "Vendas por Vendedor - Condomínios"  # <-- NOVO
     ],
     
     # --- Parceiros Externos ---
@@ -153,6 +156,15 @@ def get_perfis_informacoes_condominios():
         list: Lista de perfis com acesso ao módulo
     """
     return ["admin"]  # Por enquanto, apenas admin
+
+def get_perfis_vendas_vendedor_condominios():
+    """
+    Retorna perfis que podem acessar o módulo de Vendas por Vendedor - Condomínios
+    
+    Returns:
+        list: Lista de perfis com acesso ao módulo
+    """
+    return ["admin", "diretoria"]
 
 def get_perfis_visitas_vendedoras():
     """
