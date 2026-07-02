@@ -2,8 +2,10 @@
 # ✅ Atualizado com módulo de Pendências e Marketing Condomínios
 # ✅ Atualizado com módulo de Visitas Vendedoras
 # ✅ Adicionado módulo Informações Condomínios
+# ✅ Adicionado módulo Vendas por Vendedor - Condomínios
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias
+from modules import vendas_vendedor_condominios  # <-- NOVO
 from pymongo import MongoClient
 import urllib.parse
 from datetime import datetime
@@ -284,12 +286,13 @@ except ImportError:
         "admin": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
             "Admin Embaixadores", "Admin Técnicos", "Admin PaP", "Admin Revendas",
-            "Admin Funcionários", "Condomínios", "Informações Condomínios",  # ← NOVO
+            "Admin Funcionários", "Condomínios", "Informações Condomínios",
             "Relatórios Condomínios", "Prospecção Condomínios",
             "Acompanhamento Técnicos", "Relatórios",
             "Roteiro de Vendas", "Endereços Bloqueados",
             "Marketing Condomínios", "Leads & Eventos",
-            "Visitas Vendedoras"
+            "Visitas Vendedoras",
+            "Vendas por Vendedor - Condomínios"  # <-- NOVO
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
@@ -324,7 +327,8 @@ except ImportError:
         ],
         "diretoria": [
             "Relatórios Condomínios", "Prospecção Condomínios",
-            "Visitas Vendedoras"
+            "Visitas Vendedoras",
+            "Vendas por Vendedor - Condomínios"  # <-- NOVO
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
@@ -334,7 +338,7 @@ if perfil == "admin":
     extras_admin = [
         "Admin Funcionários", "Condomínios", "Informações Condomínios", 
         "Relatórios Condomínios", "Prospecção Condomínios", "Marketing Condomínios",
-        "Visitas Vendedoras"
+        "Visitas Vendedoras", "Vendas por Vendedor - Condomínios"  # <-- NOVO
     ]
     for mod in extras_admin:
         if mod not in opcoes_modulos:
@@ -410,6 +414,11 @@ try:
     elif modulo == "Prospecção Condomínios" and perfil in ["admin", "supervisao_n3", "diretoria"]:
         from modules.prospeccao_condominios import render_prospeccao_condominios
         render_prospeccao_condominios()
+        
+    # ✅ NOVO MÓDULO - Vendas por Vendedor - Condomínios
+    elif modulo == "Vendas por Vendedor - Condomínios" and perfil in ["admin", "diretoria"]:
+        from modules.vendas_vendedor_condominios import render_vendas_vendedor_condominios
+        render_vendas_vendedor_condominios()
         
     elif modulo == "Painel Embaixador" and perfil == "embaixador":
         from modules import embaixador
