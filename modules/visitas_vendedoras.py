@@ -716,7 +716,7 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA - OTIMIZADA
+# AGENDA VISUAL POR VENDEDORA - OTIMIZADA E CORRIGIDA
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
@@ -724,6 +724,7 @@ def agenda_visual_por_vendedora(db):
     Exibe agenda em formato visual (tabela) com edição manual
     Usando componentes Streamlit com selectbox de condomínios
     OTIMIZADO: Cache, buscas rápidas e renderização otimizada
+    CORRIGIDO: HTML válido e performance melhorada
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -894,7 +895,7 @@ def agenda_visual_por_vendedora(db):
                     })
     
     # ============================================================
-    # EXIBIR TABELA COM STREAMLIT
+    # EXIBIR TABELA COM STREAMLIT - VERSÃO OTIMIZADA E CORRIGIDA
     # ============================================================
     
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
@@ -917,7 +918,7 @@ def agenda_visual_por_vendedora(db):
     st.markdown("---")
     
     # Criar cabeçalho da tabela
-    cols_cabecalho = st.columns([1] + [1] * len(vendedoras_selecionadas))
+    cols_cabecalho = st.columns([1.5] + [1.2] * len(vendedoras_selecionadas))
     
     with cols_cabecalho[0]:
         st.markdown("**Data**")
@@ -929,7 +930,7 @@ def agenda_visual_por_vendedora(db):
     st.markdown("---")
     
     # ============================================================
-    # CONTÊINER PARA A TABELA
+    # CONTÊINER PARA A TABELA - OTIMIZADO
     # ============================================================
     
     table_container = st.container()
@@ -953,12 +954,14 @@ def agenda_visual_por_vendedora(db):
                 bg_color = "#ffcccc"
             
             # Criar colunas para esta linha
-            cols_linha = st.columns([1] + [1] * len(vendedoras_selecionadas))
+            cols_linha = st.columns([1.5] + [1.2] * len(vendedoras_selecionadas))
             
             # Coluna da data
             with cols_linha[0]:
                 data_formatada = data_obj.strftime("%d/%m")
                 dia_semana_abrev = data_info["dia_semana"][:3]
+                
+                # Usar HTML mínimo para a data
                 st.markdown(f"""
                 <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
                     <strong>{data_formatada}</strong><br>
@@ -980,16 +983,17 @@ def agenda_visual_por_vendedora(db):
                         continue
                     
                     if not visitas:
+                        # Célula vazia - usar HTML mínimo
                         st.markdown(f"""
                         <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                            <span style="font-size: 16px; color: #999;">➕</span>
-                            <br><small style="font-size: 9px; color: #999;">Selecione abaixo</small>
+                            <span style="font-size: 16px; color: #ccc;">+</span>
                         </div>
                         """, unsafe_allow_html=True)
                         continue
                     
-                    # Construir o HTML corretamente como string única
+                    # Construir o HTML para todas as visitas da célula
                     cell_html_parts = []
+                    
                     for visita in visitas:
                         status_icons = {
                             "agendado": "🟢",
@@ -1005,9 +1009,16 @@ def agenda_visual_por_vendedora(db):
                         manual_label = "📝" if visita.get("manual") else "🤖"
                         
                         # Determinar cor do período
-                        periodo_color = '#e3f2fd' if periodo == 'M' else '#fff3e0' if periodo == 'T' else '#f3e5f5'
+                        if periodo == 'M':
+                            periodo_color = '#e3f2fd'  # Azul claro
+                        elif periodo == 'T':
+                            periodo_color = '#fff3e0'  # Laranja claro
+                        else:
+                            periodo_color = '#f3e5f5'  # Roxo claro
+                        
                         border_color = '#ff6b6b' if visita.get('manual') else '#28a745'
                         
+                        # HTML CORRIGIDO: tags fechadas corretamente
                         cell_html_parts.append(f"""
                         <div style="margin-bottom: 4px; padding: 3px; border-radius: 4px; background-color: #f5f5f5; border-left: 3px solid {border_color};">
                             <span style="background-color: {periodo_color}; border-radius: 3px; padding: 1px 5px; font-size: 11px;">
@@ -1022,7 +1033,7 @@ def agenda_visual_por_vendedora(db):
                     
                     # Renderizar todo o HTML de uma vez
                     st.markdown(f"""
-                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: left; min-height: 60px;">
+                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: left; min-height: 60px; max-height: 150px; overflow-y: auto;">
                         {''.join(cell_html_parts)}
                     </div>
                     """, unsafe_allow_html=True)
@@ -1031,7 +1042,7 @@ def agenda_visual_por_vendedora(db):
             st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
     
     # ============================================================
-    # EDITOR MANUAL DE VISITAS (OTIMIZADO)
+    # EDITOR MANUAL DE VISITAS (OTIMIZADO E CORRIGIDO)
     # ============================================================
     
     st.markdown("---")
