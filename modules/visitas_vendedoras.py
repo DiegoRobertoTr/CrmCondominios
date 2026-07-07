@@ -716,15 +716,14 @@ def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campan
     return sugestoes
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA - OTIMIZADA E CORRIGIDA
+# AGENDA VISUAL POR VENDEDORA - CORRIGIDA DEFINITIVAMENTE
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
     """
     Exibe agenda em formato visual (tabela) com edição manual
     Usando componentes Streamlit com selectbox de condomínios
-    OTIMIZADO: Cache, buscas rápidas e renderização otimizada
-    CORRIGIDO: HTML válido e performance melhorada
+    CORRIGIDO: HTML válido e renderização otimizada
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -842,7 +841,6 @@ def agenda_visual_por_vendedora(db):
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
     data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
     
-    # Buscar apenas as visitas necessárias com filtro por vendedoras
     with st.spinner("Carregando agenda..."):
         visitas_db = list(db.visitas_vendedoras.find({
             "data": {"$gte": data_inicio_str, "$lte": data_fim_str},
@@ -895,7 +893,7 @@ def agenda_visual_por_vendedora(db):
                     })
     
     # ============================================================
-    # EXIBIR TABELA COM STREAMLIT - VERSÃO OTIMIZADA E CORRIGIDA
+    # EXIBIR TABELA - HTML CORRIGIDO DEFINITIVAMENTE
     # ============================================================
     
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
@@ -917,132 +915,117 @@ def agenda_visual_por_vendedora(db):
     
     st.markdown("---")
     
-    # Criar cabeçalho da tabela
-    cols_cabecalho = st.columns([1.5] + [1.2] * len(vendedoras_selecionadas))
-    
+    # Criar cabeçalho
+    cols_cabecalho = st.columns([1.2] + [1.5] * len(vendedoras_selecionadas))
     with cols_cabecalho[0]:
         st.markdown("**Data**")
-    
     for i, vendedora in enumerate(vendedoras_selecionadas):
         with cols_cabecalho[i + 1]:
             st.markdown(f"**{vendedora}**")
     
     st.markdown("---")
     
-    # ============================================================
-    # CONTÊINER PARA A TABELA - OTIMIZADO
-    # ============================================================
-    
-    table_container = st.container()
-    
-    with table_container:
-        # Criar linhas da tabela
-        for data_str in sorted(agenda_data.keys()):
-            data_info = agenda_data[data_str]
-            data_obj = data_info["data"]
-            dia_semana = data_obj.weekday()
-            
-            # Definir cor de fundo
-            if dia_semana == 6:  # Domingo
-                bg_color = "#ffe6e6"
-            elif dia_semana == 5:  # Sábado
-                bg_color = "#e8f4fd"
-            else:
-                bg_color = "#f9f9f9"
-            
-            if data_info.get("feriado"):
-                bg_color = "#ffcccc"
-            
-            # Criar colunas para esta linha
-            cols_linha = st.columns([1.5] + [1.2] * len(vendedoras_selecionadas))
-            
-            # Coluna da data
-            with cols_linha[0]:
-                data_formatada = data_obj.strftime("%d/%m")
-                dia_semana_abrev = data_info["dia_semana"][:3]
+    # Para cada dia, criar uma linha com colunas
+    for data_str in sorted(agenda_data.keys()):
+        data_info = agenda_data[data_str]
+        data_obj = data_info["data"]
+        dia_semana = data_obj.weekday()
+        
+        # Definir cor de fundo
+        if dia_semana == 6:  # Domingo
+            bg_color = "#ffe6e6"
+        elif dia_semana == 5:  # Sábado
+            bg_color = "#e8f4fd"
+        else:
+            bg_color = "#f9f9f9"
+        
+        if data_info.get("feriado"):
+            bg_color = "#ffcccc"
+        
+        # Criar colunas para esta linha
+        cols = st.columns([1.2] + [1.5] * len(vendedoras_selecionadas))
+        
+        # Coluna da data
+        with cols[0]:
+            st.markdown(f"""
+            <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center;">
+                <strong>{data_obj.strftime('%d/%m')}</strong><br>
+                <small>{data_info['dia_semana'][:3]}</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Colunas das vendedoras
+        for i, vendedora in enumerate(vendedoras_selecionadas):
+            with cols[i + 1]:
+                visitas = data_info["vendedoras"].get(vendedora, [])
                 
-                # Usar HTML mínimo para a data
-                st.markdown(f"""
-                <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                    <strong>{data_formatada}</strong><br>
-                    <small>{dia_semana_abrev}</small>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Colunas das vendedoras
-            for i, vendedora in enumerate(vendedoras_selecionadas):
-                with cols_linha[i + 1]:
-                    visitas = data_info["vendedoras"].get(vendedora, [])
-                    
-                    if data_info.get("feriado"):
-                        st.markdown(f"""
-                        <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                            <span style="color: #ff6b6b; font-weight: bold;">🔴 FERIADO</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        continue
-                    
-                    if not visitas:
-                        # Célula vazia - usar HTML mínimo
-                        st.markdown(f"""
-                        <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 60px;">
-                            <span style="font-size: 16px; color: #ccc;">+</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        continue
-                    
-                    # Construir o HTML para todas as visitas da célula
-                    cell_html_parts = []
-                    
-                    for visita in visitas:
-                        status_icons = {
-                            "agendado": "🟢",
-                            "concluido": "✅",
-                            "cancelado": "🔴",
-                            "chuva": "🌧️",
-                            "falta": "⛔"
-                        }
-                        status_icon = status_icons.get(visita["status"], "🟢")
-                        
-                        periodo = visita.get("periodo", "M/T")
-                        periodo_label = periodo
-                        manual_label = "📝" if visita.get("manual") else "🤖"
-                        
-                        # Determinar cor do período
-                        if periodo == 'M':
-                            periodo_color = '#e3f2fd'  # Azul claro
-                        elif periodo == 'T':
-                            periodo_color = '#fff3e0'  # Laranja claro
-                        else:
-                            periodo_color = '#f3e5f5'  # Roxo claro
-                        
-                        border_color = '#ff6b6b' if visita.get('manual') else '#28a745'
-                        
-                        # HTML CORRIGIDO: tags fechadas corretamente
-                        cell_html_parts.append(f"""
-                        <div style="margin-bottom: 4px; padding: 3px; border-radius: 4px; background-color: #f5f5f5; border-left: 3px solid {border_color};">
-                            <span style="background-color: {periodo_color}; border-radius: 3px; padding: 1px 5px; font-size: 11px;">
-                                {periodo_label}
-                            </span>
-                            <strong>{visita['condominio']}</strong>
-                            <span>{status_icon}</span>
-                            <br>
-                            <span style="font-size: 10px; color: #666;">{manual_label}</span>
-                        </div>
-                        """)
-                    
-                    # Renderizar todo o HTML de uma vez
+                if data_info.get("feriado"):
                     st.markdown(f"""
-                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: left; min-height: 60px; max-height: 150px; overflow-y: auto;">
-                        {''.join(cell_html_parts)}
+                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center;">
+                        <span style="color: #ff6b6b; font-weight: bold;">🔴 FERIADO</span>
                     </div>
                     """, unsafe_allow_html=True)
-            
-            # Separador entre linhas
-            st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
+                    continue
+                
+                if not visitas:
+                    st.markdown(f"""
+                    <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 50px;">
+                        <span style="color: #ccc; font-size: 20px;">+</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    continue
+                
+                # ============================================================
+                # CONSTRUIR HTML CORRETO - TODAS AS TAGS FECHADAS
+                # ============================================================
+                
+                html_content = f'<div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; min-height: 50px;">'
+                
+                for visita in visitas:
+                    status_icons = {
+                        "agendado": "🟢",
+                        "concluido": "✅",
+                        "cancelado": "🔴",
+                        "chuva": "🌧️",
+                        "falta": "⛔"
+                    }
+                    status_icon = status_icons.get(visita["status"], "🟢")
+                    
+                    periodo = visita.get("periodo", "M/T")
+                    manual_label = "📝" if visita.get("manual") else "🤖"
+                    
+                    # Cores
+                    if periodo == 'M':
+                        periodo_color = '#e3f2fd'
+                    elif periodo == 'T':
+                        periodo_color = '#fff3e0'
+                    else:
+                        periodo_color = '#f3e5f5'
+                    
+                    border_color = '#ff6b6b' if visita.get('manual') else '#28a745'
+                    
+                    # HTML para cada visita - CORRIGIDO
+                    html_content += f'''
+                    <div style="margin-bottom: 4px; padding: 4px; border-radius: 4px; background-color: #ffffff; border-left: 3px solid {border_color}; font-size: 12px;">
+                        <span style="background-color: {periodo_color}; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: bold;">
+                            {periodo}
+                        </span>
+                        <span style="font-weight: 500;">{visita["condominio"]}</span>
+                        <span>{status_icon}</span>
+                        <span style="font-size: 9px; color: #888;">{manual_label}</span>
+                    </div>
+                    '''
+                
+                html_content += '</div>'
+                
+                # Renderizar tudo de uma vez
+                st.markdown(html_content, unsafe_allow_html=True)
+        
+        # Separador
+        st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
     
     # ============================================================
-    # EDITOR MANUAL DE VISITAS (OTIMIZADO E CORRIGIDO)
+    # EDITOR MANUAL DE VISITAS
     # ============================================================
     
     st.markdown("---")
