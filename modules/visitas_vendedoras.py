@@ -735,8 +735,8 @@ def salvar_alteracoes_em_lote(db, alteracoes_pendentes):
                         if alt.get("visita_id"):
                             try:
                                 db.visitas_vendedoras.delete_one({"_id": ObjectId(alt["visita_id"])})
-                            except:
-                                pass
+                            except Exception as e:
+                                st.error(f"Erro ao remover visita: {str(e)}")
                     
                     elif alt["acao"] == "editar":
                         # Editar visita existente
@@ -799,13 +799,14 @@ def salvar_alteracoes_em_lote(db, alteracoes_pendentes):
                                     st.warning(f"⚠️ {vendedora} já tem 2 visitas em {data_str}. Não foi possível adicionar {alt['condominio']}.")
 
 # ============================================================================
-# AGENDA VISUAL POR VENDEDORA - COM EDIÇÃO EM LOTE
+# AGENDA VISUAL POR VENDEDORA - COM EDIÇÃO EM LOTE (VERSÃO OTIMIZADA)
 # ============================================================================
 
 def agenda_visual_por_vendedora(db):
     """
-    Exibe agenda em formato visual (tabela) com edição manual em LOTE
-    OTIMIZADO: Edições são feitas em memória e salvas apenas no final
+    Exibe agenda em formato visual (tabela) com edição em LOTE
+    Usando um único botão para abrir o editor completo
+    OTIMIZADO: Sem recarregamentos desnecessários
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
@@ -910,30 +911,26 @@ def agenda_visual_por_vendedora(db):
             exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas)
     
     with col_btn4:
-        if st.button("💾 Salvar Alterações", use_container_width=True, type="primary"):
-            # Salvar todas as alterações pendentes
+        # Botão para abrir o editor em lote
+        if st.button("✏️ Editar em Lote", use_container_width=True, type="primary"):
+            st.session_state["modo_edicao_lote"] = True
+            st.rerun()
+    
+    with col_btn5:
+        if st.button("💾 Salvar Alterações", use_container_width=True, type="secondary"):
             if st.session_state.get("alteracoes_pendentes"):
                 salvar_alteracoes_em_lote(db, st.session_state["alteracoes_pendentes"])
                 st.success("✅ Todas as alterações salvas com sucesso!")
                 st.session_state["alteracoes_pendentes"] = {}
+                st.session_state["modo_edicao_lote"] = False
                 st.rerun()
             else:
                 st.info("ℹ️ Nenhuma alteração pendente para salvar.")
     
-    with col_btn5:
-        if st.button("🗑️ Descartar Alterações", use_container_width=True):
-            if st.session_state.get("alteracoes_pendentes"):
-                st.session_state["alteracoes_pendentes"] = {}
-                st.warning("⚠️ Todas as alterações foram descartadas!")
-                st.rerun()
-            else:
-                st.info("ℹ️ Nenhuma alteração pendente para descartar.")
-    
     st.markdown("---")
-    st.info("💡 **Modo de Edição em Lote:** Faça todas as alterações e clique em 'Salvar Alterações' no final.")
     
     # ============================================================
-    # BUSCAR DADOS - OTIMIZADO
+    # BUSCAR DADOS
     # ============================================================
     
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
@@ -991,7 +988,7 @@ def agenda_visual_por_vendedora(db):
                     })
     
     # ============================================================
-    # EXIBIR TABELA - COM EDIÇÃO EM LOTE
+    # EXIBIR TABELA
     # ============================================================
     
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
@@ -1026,6 +1023,9 @@ def agenda_visual_por_vendedora(db):
     # Inicializar alterações pendentes na sessão
     if "alteracoes_pendentes" not in st.session_state:
         st.session_state["alteracoes_pendentes"] = {}
+    
+    # Verificar se estamos em modo de edição
+    modo_edicao = st.session_state.get("modo_edicao_lote", False)
     
     # Para cada dia, criar uma linha com colunas
     for data_str in sorted(agenda_data.keys()):
@@ -1070,19 +1070,27 @@ def agenda_visual_por_vendedora(db):
                     continue
                 
                 if not visitas:
-                    # Botão para ADICIONAR visita
-                    btn_key = f"add_{data_str}_{vendedora}"
-                    if st.button("➕", key=btn_key, use_container_width=True):
-                        st.session_state["edicao_ativa"] = {
-                            "data": data_str,
-                            "vendedora": vendedora,
-                            "acao": "adicionar"
-                        }
-                        st.rerun()
+                    # Se estiver em modo de edição, mostrar botão de adicionar
+                    if modo_edicao:
+                        btn_key = f"add_{data_str}_{vendedora}"
+                        if st.button("➕ Adicionar", key=btn_key, use_container_width=True):
+                            st.session_state["edicao_ativa"] = {
+                                "data": data_str,
+                                "vendedora": vendedora,
+                                "acao": "adicionar"
+                            }
+                            st.rerun()
+                    else:
+                        # Modo visualização - mostrar célula vazia
+                        st.markdown(f"""
+                        <div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; text-align: center; min-height: 50px;">
+                            <span style="color: #ccc; font-size: 16px;">-</span>
+                        </div>
+                        """, unsafe_allow_html=True)
                     continue
                 
                 # ============================================================
-                # EXIBIR VISITAS COM BOTÕES DE EDIÇÃO/REMOÇÃO
+                # EXIBIR VISITAS - HTML CORRIGIDO
                 # ============================================================
                 
                 html_content = f'<div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; min-height: 50px;">'
@@ -1110,7 +1118,7 @@ def agenda_visual_por_vendedora(db):
                     
                     border_color = '#ff6b6b' if visita.get('manual') else '#28a745'
                     
-                    # HTML para cada visita
+                    # HTML para cada visita - CORRIGIDO
                     html_content += f'''
                     <div style="margin-bottom: 4px; padding: 4px; border-radius: 4px; background-color: #ffffff; border-left: 3px solid {border_color}; font-size: 12px;">
                         <span style="background-color: {periodo_color}; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: bold;">
@@ -1122,39 +1130,40 @@ def agenda_visual_por_vendedora(db):
                     </div>
                     '''
                     
-                    # Botões de ação para cada visita (usando st.button)
-                    col_edit, col_remove = st.columns([1, 1])
-                    with col_edit:
-                        edit_key = f"edit_{visita['id']}_{idx}"
-                        if st.button("✏️", key=edit_key, help="Editar esta visita"):
-                            st.session_state["edicao_ativa"] = {
-                                "data": data_str,
-                                "vendedora": vendedora,
-                                "visita_id": visita["id"],
-                                "condominio": visita["condominio"],
-                                "status": visita["status"],
-                                "periodo": visita["periodo"],
-                                "observacao": visita.get("observacao", ""),
-                                "acao": "editar"
-                            }
-                            st.rerun()
-                    
-                    with col_remove:
-                        remove_key = f"remove_{visita['id']}_{idx}"
-                        if st.button("❌", key=remove_key, help="Remover esta visita"):
-                            # Adicionar à lista de alterações pendentes
-                            if data_str not in st.session_state["alteracoes_pendentes"]:
-                                st.session_state["alteracoes_pendentes"][data_str] = {}
-                            if vendedora not in st.session_state["alteracoes_pendentes"][data_str]:
-                                st.session_state["alteracoes_pendentes"][data_str][vendedora] = []
-                            
-                            st.session_state["alteracoes_pendentes"][data_str][vendedora].append({
-                                "acao": "remover",
-                                "visita_id": visita["id"],
-                                "condominio": visita["condominio"]
-                            })
-                            st.success(f"✅ Visita marcada para remoção: {visita['condominio']}")
-                            st.rerun()
+                    # Botões de ação - apenas em modo de edição
+                    if modo_edicao:
+                        col_edit, col_remove = st.columns([1, 1])
+                        with col_edit:
+                            edit_key = f"edit_{visita['id']}_{idx}"
+                            if st.button("✏️", key=edit_key, help="Editar esta visita"):
+                                st.session_state["edicao_ativa"] = {
+                                    "data": data_str,
+                                    "vendedora": vendedora,
+                                    "visita_id": visita["id"],
+                                    "condominio": visita["condominio"],
+                                    "status": visita["status"],
+                                    "periodo": visita["periodo"],
+                                    "observacao": visita.get("observacao", ""),
+                                    "acao": "editar"
+                                }
+                                st.rerun()
+                        
+                        with col_remove:
+                            remove_key = f"remove_{visita['id']}_{idx}"
+                            if st.button("❌", key=remove_key, help="Remover esta visita"):
+                                # Adicionar à lista de alterações pendentes
+                                if data_str not in st.session_state["alteracoes_pendentes"]:
+                                    st.session_state["alteracoes_pendentes"][data_str] = {}
+                                if vendedora not in st.session_state["alteracoes_pendentes"][data_str]:
+                                    st.session_state["alteracoes_pendentes"][data_str][vendedora] = []
+                                
+                                st.session_state["alteracoes_pendentes"][data_str][vendedora].append({
+                                    "acao": "remover",
+                                    "visita_id": visita["id"],
+                                    "condominio": visita["condominio"]
+                                })
+                                st.success(f"✅ Visita marcada para remoção: {visita['condominio']}")
+                                st.rerun()
                 
                 html_content += '</div>'
                 st.markdown(html_content, unsafe_allow_html=True)
@@ -1163,7 +1172,7 @@ def agenda_visual_por_vendedora(db):
         st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
     
     # ============================================================
-    # MODAL DE EDIÇÃO/ADIÇÃO DE VISITA (EM LOTE)
+    # MODAL DE EDIÇÃO/ADIÇÃO DE VISITA
     # ============================================================
     
     if "edicao_ativa" in st.session_state:
@@ -1234,7 +1243,7 @@ def agenda_visual_por_vendedora(db):
                 # Determinar o nome do condomínio
                 nome_condominio = condominio_edicao if condominio_edicao else condominio_manual
                 
-                if not nome_condominio and edicao["acao"] != "remover":
+                if not nome_condominio:
                     st.error("⚠️ Selecione ou digite o nome do condomínio!")
                 else:
                     # Adicionar à lista de alterações pendentes
@@ -1314,6 +1323,30 @@ def agenda_visual_por_vendedora(db):
                     st.write(f"{acao_icon} **{alt['acao'].title()}** - {data_str} - {vendedora} - {alt.get('condominio', 'N/A')}")
         
         st.info(f"💡 Total de {total_pendentes} alterações pendentes. Clique em 'Salvar Alterações' para confirmar.")
+        
+        # Botão rápido para salvar
+        if st.button("💾 Salvar Todas as Alterações Agora", use_container_width=True, type="primary"):
+            salvar_alteracoes_em_lote(db, st.session_state["alteracoes_pendentes"])
+            st.success("✅ Todas as alterações salvas com sucesso!")
+            st.session_state["alteracoes_pendentes"] = {}
+            st.session_state["modo_edicao_lote"] = False
+            st.rerun()
+    
+    # ============================================================
+    # INDICADOR DE MODO DE EDIÇÃO
+    # ============================================================
+    
+    if modo_edicao:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### ✏️ Modo de Edição Ativo")
+        st.sidebar.info("Clique em 'Salvar Alterações' para confirmar ou 'Editar em Lote' para sair.")
+        
+        total_pendentes = sum(
+            len(alteracoes) 
+            for data in st.session_state["alteracoes_pendentes"].values() 
+            for alteracoes in data.values()
+        )
+        st.sidebar.metric("Alterações Pendentes", total_pendentes)
 
 # ============================================================================
 # FUNÇÃO PARA EXPORTAR AGENDA VISUAL
