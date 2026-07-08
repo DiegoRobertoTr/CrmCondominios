@@ -1,15 +1,17 @@
-modules/visitas_vendedoras.py
+# modules/visitas_vendedoras.py
 """
 Módulo de Gerenciamento de Visitas de Vendedoras
-Integrado com cadastro de condomínios existente
-Histórico completo de campanhas
-Especialização por região (Zona Sul, Norte, Oeste, etc.)
-Visualizações por perfil (admin, vendedora, atendente)
-Múltiplos relatórios e exportações
-AGENDA VISUAL POR VENDEDORA COM EDIÇÃO MANUAL
-SELECTBOX DE CONDOMÍNIOS VINCULADO AO CADASTRO
-OTIMIZADO: Busca rápida com cache, índices e Aggregation Pipelines
+- Integrado com cadastro de condomínios existente
+- Histórico completo de campanhas
+- Agendamento inteligente com regras de negócio
+- Especialização por região (Zona Sul, Norte, Oeste, etc.)
+- Visualizações por perfil (admin, vendedora, atendente)
+- Múltiplos relatórios e exportações
+- AGENDA VISUAL POR VENDEDORA COM EDIÇÃO MANUAL
+- SELECTBOX DE CONDOMÍNIOS VINCULADO AO CADASTRO
+- OTIMIZADO: Busca rápida com cache e índices
 """
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, date
@@ -51,33 +53,33 @@ REGIOES_DISPONIVEIS = [
 
 # Configuração padrão de disponibilidade das vendedoras
 DISPONIBILIDADE_PADRAO = {
-    "Kessia ": {
-        "dias ": [0, 1, 2, 3, 4],
-        "horario ": "08:00-17:00 ",
-        "max_visitas_dia ": 2,
-        "tipo ": "fixa ",
-        "regiao_preferencial ": "Zona Oeste "
+    "Kessia": {
+        "dias": [0, 1, 2, 3, 4],
+        "horario": "08:00-17:00",
+        "max_visitas_dia": 2,
+        "tipo": "fixa",
+        "regiao_preferencial": "Zona Oeste"
     },
-    "Larissa ": {
-        "dias ": [0, 1, 2, 3, 4],
-        "horario ": "08:00-17:00 ",
-        "max_visitas_dia ": 2,
-        "tipo ": "fixa ",
-        "regiao_preferencial ": "Zona Norte "
+    "Larissa": {
+        "dias": [0, 1, 2, 3, 4],
+        "horario": "08:00-17:00",
+        "max_visitas_dia": 2,
+        "tipo": "fixa",
+        "regiao_preferencial": "Zona Norte"
     },
-    "Estephanie ": {
-        "dias ": [0, 1, 2, 3, 4],
-        "horario ": "08:00-17:00 ",
-        "max_visitas_dia ": 2,
-        "tipo ": "fixa ",
-        "regiao_preferencial ": "Zona Sul "
+    "Estephanie": {
+        "dias": [0, 1, 2, 3, 4],
+        "horario": "08:00-17:00",
+        "max_visitas_dia": 2,
+        "tipo": "fixa",
+        "regiao_preferencial": "Zona Sul"
     },
-    "Juliana ": {
-        "dias ": [2, 4],
-        "horario ": "08:00-17:00 ",
-        "max_visitas_dia ": 2,
-        "tipo ": "freelancer ",
-        "regiao_preferencial ": "Todas as regiões "
+    "Juliana": {
+        "dias": [2, 4],
+        "horario": "08:00-17:00",
+        "max_visitas_dia": 2,
+        "tipo": "freelancer",
+        "regiao_preferencial": "Todas as regiões"
     }
 }
 
@@ -94,6 +96,7 @@ def get_prioridade_condominio(aptos: int = 0, prioridade_manual: str = None) -> 
     """Define prioridade baseada no número de apartamentos"""
     if prioridade_manual and prioridade_manual != "Automática":
         return prioridade_manual
+    
     if aptos >= 1000:
         return "A+"
     elif aptos >= 500:
@@ -125,10 +128,13 @@ def condominios_proximos(cond1: dict, cond2: dict) -> bool:
     """Verifica se dois condomínios são próximos baseado no bairro"""
     bairro1 = cond1.get('bairro', '').upper().strip()
     bairro2 = cond2.get('bairro', '').upper().strip()
+    
     if not bairro1 or not bairro2:
         return False
+    
     if bairro1 == bairro2:
         return True
+    
     return False
 
 def calcular_adequacao_vendedora_condominio(vendedora: dict, condominio_zona: str) -> dict:
@@ -137,18 +143,21 @@ def calcular_adequacao_vendedora_condominio(vendedora: dict, condominio_zona: st
     Baseado na região preferencial da vendedora
     """
     regiao_preferencial = vendedora.get('regiao_preferencial', 'Todas as regiões')
+    
     if regiao_preferencial == "Todas as regiões":
         return {
             "peso": 0.8,
             "nivel": "disponivel",
             "motivo": f"✓ {vendedora['nome']} atende todas as regiões"
         }
+    
     if regiao_preferencial == condominio_zona:
         return {
             "peso": 1.0,
             "nivel": "preferencial",
             "motivo": f"⭐ REGIÃO PREFERENCIAL! {vendedora['nome']} é especialista em {condominio_zona}"
         }
+    
     return {
         "peso": 0.4,
         "nivel": "nao_preferencial",
@@ -181,26 +190,21 @@ def formatar_status_visita(status: str) -> str:
 # ============================================================================
 
 @st.cache_data(ttl=300)
-def get_all_condominios_cached():
-    """Retorna lista completa de condomínios com cache de 5 minutos"""
-    return get_all_condominios()
-
-@st.cache_data(ttl=300)
 def get_condominios_nomes_cached():
     """Retorna lista de nomes de condomínios com cache"""
-    condominios = get_all_condominios_cached()
+    condominios = get_all_condominios()
     return sorted([c["nome"] for c in condominios])
 
 @st.cache_data(ttl=300)
 def get_condominios_dict_cached():
     """Retorna dicionário de condomínios com cache para busca rápida"""
-    condominios = get_all_condominios_cached()
+    condominios = get_all_condominios()
     return {c["nome"].upper(): c for c in condominios}
 
 @st.cache_data(ttl=300)
 def get_condominio_by_id_cached(condominio_id):
     """Busca condomínio por ID com cache"""
-    condominios = get_all_condominios_cached()
+    condominios = get_all_condominios()
     for c in condominios:
         if str(c["_id"]) == str(condominio_id):
             return c
@@ -220,12 +224,12 @@ def init_colecoes_visitas(clientes_collection):
         db.campanhas_historico.create_index("data_criacao")
         db.campanhas_historico.create_index("status")
         db.campanhas_historico.create_index("versao")
-
+    
     # Coleção para campanha atual (mantida para compatibilidade)
     if 'campanha_visitas' not in db.list_collection_names():
         db.create_collection('campanha_visitas')
         db.campanha_visitas.create_index("condominio_id", unique=True)
-
+    
     # Coleção de vendedoras
     if 'vendedoras' not in db.list_collection_names():
         db.create_collection('vendedoras')
@@ -243,7 +247,7 @@ def init_colecoes_visitas(clientes_collection):
                     "data_desativacao": None,
                     "motivo_desativacao": None
                 })
-
+    
     # Coleção de visitas agendadas
     if 'visitas_vendedoras' not in db.list_collection_names():
         db.create_collection('visitas_vendedoras')
@@ -251,7 +255,7 @@ def init_colecoes_visitas(clientes_collection):
         db.visitas_vendedoras.create_index([("condominio_id", 1), ("data", 1)])
         db.visitas_vendedoras.create_index("status")
         db.visitas_vendedoras.create_index("campanha_id")
-
+    
     return db
 
 # ============================================================================
@@ -265,17 +269,16 @@ def selecionar_condominios_campanha(db, clientes_collection):
     """
     st.markdown("### 🎯 Seleção de Condomínios para Campanha de Visitas")
     
-    # Buscar condomínios do cadastro principal (COM CACHE)
-    condominios_cadastro = get_all_condominios_cached()
+    # Buscar condomínios do cadastro principal
+    condominios_cadastro = get_all_condominios()
     
     if not condominios_cadastro:
         st.warning("⚠️ Nenhum condomínio cadastrado no sistema. Cadastre condomínios primeiro.")
         return
-
-    # Buscar campanha ativa atual (UMA ÚNICA VEZ)
-    campanha_ativa_list = list(db.campanha_visitas.find({}))
-    campanha_ativa_ids = {str(c["condominio_id"]) for c in campanha_ativa_list}
-
+    
+    # Buscar campanha ativa atual
+    campanha_ativa = list(db.campanha_visitas.find({}))
+    
     # Informações da última campanha
     ultima_campanha = db.campanhas_historico.find_one(
         {}, 
@@ -289,9 +292,9 @@ def selecionar_condominios_campanha(db, clientes_collection):
         if ultima_campanha:
             st.info(f"📌 **Última versão:** Campanha #{ultima_campanha.get('versao', 0)}")
     with col_info3:
-        total_campanhas = db.campanhas_historico.estimated_document_count()
+        total_campanhas = db.campanhas_historico.count_documents({})
         st.info(f"📚 **Total campanhas:** {total_campanhas}")
-
+    
     # Preparar dados para seleção
     dados_selecao = []
     for cond in condominios_cadastro:
@@ -299,11 +302,11 @@ def selecionar_condominios_campanha(db, clientes_collection):
         prioridade = get_prioridade_condominio(aptos)
         zona = cond.get("zona", "Não definida")
         
-        # Verificar se já está na campanha atual (O(1) em memória)
-        campanha = str(cond["_id"]) in campanha_ativa_ids
+        # Verificar se já está na campanha atual
+        campanha = db.campanha_visitas.find_one({"condominio_id": cond["_id"]})
         
         dados_selecao.append({
-            "Selecionar": campanha,
+            "Selecionar": campanha is not None,
             "Condomínio": cond["nome"],
             "Bairro": cond.get("bairro", "N/I"),
             "Zona": zona,
@@ -312,11 +315,12 @@ def selecionar_condominios_campanha(db, clientes_collection):
             "Visitas/Semana": calcular_frequencia_semanal(aptos),
             "ID": str(cond["_id"])
         })
-
+    
     df = pd.DataFrame(dados_selecao)
-
+    
     # Editor de seleção
     st.markdown("#### 📋 Selecione os condomínios para a campanha")
+    
     edited_df = st.data_editor(
         df,
         column_config={
@@ -336,39 +340,45 @@ def selecionar_condominios_campanha(db, clientes_collection):
         use_container_width=True,
         height=500
     )
-
+    
     # Configuração do período da campanha
     st.markdown("---")
     st.markdown("#### 📅 Período da Campanha")
+    
     col_p1, col_p2, col_p3 = st.columns(3)
+    
     with col_p1:
         data_inicio = st.date_input(
             "Data de início",
             value=datetime.now().date(),
             help="Quando a campanha começa"
         )
+    
     with col_p2:
         data_fim = st.date_input(
             "Data de término",
             value=datetime.now().date() + timedelta(days=120),
             help="Duração sugerida: 3-4 meses (120 dias)"
         )
+    
     with col_p3:
         meses = ((data_fim - data_inicio).days) // 30
         st.metric("Duração da Campanha", f"~{meses} meses", f"{((data_fim - data_inicio).days)} dias")
-
+    
     # Nome da campanha
     nome_campanha = st.text_input(
         "🏷️ Nome da Campanha (opcional)",
         value=f"Campanha {datetime.now().strftime('%B %Y')}",
         help="Dê um nome para identificar esta campanha nos relatórios históricos"
     )
-
+    
     # Botões de ação
     col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns(6)
+    
     with col_b1:
         if st.button("💾 Salvar Campanha", use_container_width=True, type="primary"):
             selecionados = edited_df[edited_df["Selecionar"] == True]
+            
             if len(selecionados) == 0:
                 st.warning("⚠️ Selecione pelo menos um condomínio!")
             else:
@@ -433,20 +443,21 @@ def selecionar_condominios_campanha(db, clientes_collection):
                 
                 st.success(f"✅ Campanha #{nova_versao} salva com sucesso! {len(condominios_selecionados)} condomínios selecionados.")
                 st.balloons()
-                st.cache_data.clear()
                 st.rerun()
-
+    
     with col_b2:
         if st.button("🤖 Seleção Inteligente", use_container_width=True):
             df_temp = edited_df.copy()
             df_temp['Peso'] = df_temp['Prioridade'].apply(lambda x: get_peso_prioridade(x))
             df_temp = df_temp.sort_values(['Peso', 'Aptos'], ascending=[False, False])
+            
             limite = min(28, len(df_temp))
             indices_selecionados = df_temp.head(limite).index
             edited_df.loc[indices_selecionados, 'Selecionar'] = True
+            
             st.success(f"✅ Seleção inteligente concluída! {limite} condomínios selecionados.")
             st.rerun()
-
+    
     with col_b3:
         zona_filter = st.selectbox("Zona", ["Todas"] + REGIOES_DISPONIVEIS[:-1], key="zona_filter")
         if st.button("📍 Selecionar por Zona", use_container_width=True):
@@ -454,23 +465,25 @@ def selecionar_condominios_campanha(db, clientes_collection):
                 df_temp = edited_df[edited_df["Zona"] == zona_filter]
                 edited_df.loc[df_temp.index, 'Selecionar'] = True
                 st.rerun()
-
+    
     with col_b4:
         prioridade_min = st.selectbox("Prioridade mínima", ["A+", "A", "B", "C", "D"], key="prioridade_min_filter")
         if st.button("⭐ Selecionar por Prioridade", use_container_width=True):
             pesos = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
             peso_min = pesos.get(prioridade_min, 0)
+            
             df_temp = edited_df.copy()
             df_temp['Peso'] = df_temp['Prioridade'].apply(lambda x: get_peso_prioridade(x))
             df_temp = df_temp[df_temp['Peso'] >= peso_min]
+            
             edited_df.loc[df_temp.index, 'Selecionar'] = True
             st.rerun()
-
+    
     with col_b5:
         if st.button("🗑️ Limpar Todos", use_container_width=True):
             edited_df['Selecionar'] = False
             st.rerun()
-
+    
     with col_b6:
         # Monitoramento de espaço
         tamanho_mb = verificar_espaco_mongo(db)
@@ -480,43 +493,227 @@ def selecionar_condominios_campanha(db, clientes_collection):
                 f"{tamanho_mb:.2f} MB",
                 f"{tamanho_mb/512*100:.1f}% do Free Tier"
             )
-
+    
     # Estatísticas da seleção atual
     st.markdown("---")
     st.markdown("### 📊 Estatísticas da Campanha")
+    
     selecionados_atual = edited_df[edited_df["Selecionar"] == True]
     
     if len(selecionados_atual) > 0:
         col_e1, col_e2, col_e3, col_e4 = st.columns(4)
+        
         with col_e1:
             st.metric("Condomínios Selecionados", len(selecionados_atual))
+        
         with col_e2:
             total_aptos = selecionados_atual["Aptos"].sum()
             st.metric("Total de Apartamentos", f"{total_aptos:,}")
+        
         with col_e3:
             visitas_semana = selecionados_atual["Visitas/Semana"].sum()
             st.metric("Visitas/Semana", visitas_semana)
+        
         with col_e4:
             dias_campanha = (data_fim - data_inicio).days
             semanas = dias_campanha / 7
             total_visitas = int(visitas_semana * semanas)
             st.metric("Total de Visitas (período)", f"{total_visitas:,}")
-
+        
         # Distribuição por zona
         st.markdown("#### 📍 Distribuição por Zona")
         zona_counts = selecionados_atual["Zona"].value_counts()
+        
         cols_zona = st.columns(min(len(zona_counts), 5))
         for idx, (zona, count) in enumerate(zona_counts.items()):
             if idx < len(cols_zona):
                 with cols_zona[idx]:
                     st.metric(zona, count)
-
+        
         # Lista detalhada
         with st.expander("📋 Ver lista detalhada dos condomínios selecionados"):
             for _, row in selecionados_atual.sort_values(["Prioridade", "Aptos"], ascending=[True, False]).iterrows():
                 st.write(f"**{row['Prioridade']}** - {row['Condomínio']} | {row['Zona']} | {row['Aptos']} aptos | {row['Visitas/Semana']}x/semana")
     else:
         st.warning("Nenhum condomínio selecionado.")
+
+# ============================================================================
+# AGENDAMENTO INTELIGENTE COM ESPECIALIZAÇÃO
+# ============================================================================
+
+def agendamento_inteligente(db, data_inicio: date, data_fim: date = None, campanha_id: str = None):
+    """
+    Algoritmo inteligente para sugerir agendamentos baseado nos condomínios da campanha
+    e especialização das vendedoras por região
+    """
+    if not data_fim:
+        data_fim = data_inicio + timedelta(days=30)
+    
+    # Buscar condomínios ativos na campanha
+    if campanha_id:
+        campanha = list(db.campanha_visitas.find({"campanha_id": campanha_id, "ativo": True}))
+    else:
+        campanha = list(db.campanha_visitas.find({"ativo": True}))
+    
+    if not campanha:
+        return []
+    
+    # Buscar vendedoras ativas
+    vendedoras = list(db.vendedoras.find({"ativo": True}))
+    
+    if not vendedoras:
+        return []
+    
+    # Calcular necessidade de visitas
+    necessidade = {}
+    for cond_campanha in campanha:
+        freq = cond_campanha.get('frequencia_sugerida', 1)
+        dias_periodo = (data_fim - data_inicio).days
+        semanas = dias_periodo / 7
+        visitas_necessarias = max(1, int(freq * semanas))
+        
+        agendados = db.visitas_vendedoras.count_documents({
+            "condominio_id": cond_campanha["condominio_id"],
+            "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
+            "status": {"$ne": "cancelado"}
+        })
+        
+        necessidade[str(cond_campanha["condominio_id"])] = {
+            "necessario": max(0, visitas_necessarias - agendados),
+            "prioridade": cond_campanha.get("prioridade", "D"),
+            "zona": cond_campanha.get("zona", "Zona Central"),
+            "nome": cond_campanha["condominio_nome"],
+            "bairro": cond_campanha.get("bairro", ""),
+            "campanha_id": cond_campanha.get("campanha_id")
+        }
+    
+    # Criar mapa de disponibilidade
+    dias_disponiveis = {}
+    for delta in range((data_fim - data_inicio).days + 1):
+        data = data_inicio + timedelta(days=delta)
+        dia_semana = data.weekday()
+        
+        if dia_semana == 6:  # Domingo
+            continue
+        
+        dias_disponiveis[data.strftime("%Y-%m-%d")] = {
+            "dia_semana": dia_semana,
+            "data_obj": data,
+            "eh_sabado": dia_semana == 5,
+            "agendamentos": {vend["nome"]: 0 for vend in vendedoras}
+        }
+    
+    # Contar agendamentos existentes
+    agendamentos_existentes = list(db.visitas_vendedoras.find({
+        "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
+        "status": {"$ne": "cancelado"}
+    }))
+    
+    for ag in agendamentos_existentes:
+        data_str = ag["data"]
+        if data_str in dias_disponiveis and ag["vendedora"] in dias_disponiveis[data_str]["agendamentos"]:
+            dias_disponiveis[data_str]["agendamentos"][ag["vendedora"]] += 1
+    
+    # Ordenar condomínios: prioridade > necessidade
+    campanha_ordenada = sorted(
+        necessidade.items(),
+        key=lambda x: (-get_peso_prioridade(x[1]["prioridade"]), -x[1]["necessario"])
+    )
+    
+    sugestoes = []
+    estatisticas_especializacao = {
+        "preferencial": 0,
+        "disponivel": 0,
+        "nao_preferencial": 0
+    }
+    
+    for cond_id, nec in campanha_ordenada:
+        if nec["necessario"] <= 0:
+            continue
+        
+        # Ordenar dias disponíveis
+        dias_ordenados = sorted(dias_disponiveis.items())
+        
+        for data_str, dia_info in dias_ordenados:
+            dia_semana = dia_info["dia_semana"]
+            
+            # Ordenar vendedoras por especialização
+            vendedoras_com_peso = []
+            for vend in vendedoras:
+                # Verificar disponibilidade no dia
+                if dia_semana not in vend["disponibilidade"]:
+                    continue
+                
+                # Verificar limite de visitas
+                if dia_info["agendamentos"][vend["nome"]] >= vend.get("max_visitas_dia", 2):
+                    continue
+                
+                # Calcular adequação para este condomínio
+                adequacao = calcular_adequacao_vendedora_condominio(vend, nec["zona"])
+                
+                vendedoras_com_peso.append({
+                    "vendedora": vend,
+                    "peso": adequacao["peso"],
+                    "nivel": adequacao["nivel"],
+                    "motivo": adequacao["motivo"],
+                    "visitas_hoje": dia_info["agendamentos"][vend["nome"]]
+                })
+            
+            # Ordenar por peso (maior = mais adequada)
+            vendedoras_com_peso.sort(key=lambda x: (-x["peso"], x["visitas_hoje"]))
+            
+            for vp in vendedoras_com_peso:
+                vend = vp["vendedora"]
+                
+                # Verificar proximidade com outras visitas do mesmo dia
+                visitas_do_dia = db.visitas_vendedoras.find({
+                    "data": data_str,
+                    "vendedora": vend["nome"],
+                    "status": {"$ne": "cancelado"}
+                })
+                
+                cond_obj = {"bairro": nec.get("bairro", "")}
+                
+                ja_tem_proxima = False
+                for visita in visitas_do_dia:
+                    cond_visitado = db.campanha_visitas.find_one({"condominio_id": visita["condominio_id"]})
+                    if cond_visitado:
+                        cond_visitado_obj = {"bairro": cond_visitado.get("bairro", "")}
+                        if condominios_proximos(cond_obj, cond_visitado_obj):
+                            ja_tem_proxima = True
+                            break
+                
+                if ja_tem_proxima and dia_info["agendamentos"][vend["nome"]] > 0:
+                    continue
+                
+                # Registrar estatística
+                estatisticas_especializacao[vp["nivel"]] += 1
+                
+                # Criar sugestão
+                sugestoes.append({
+                    "condominio_id": cond_id,
+                    "condominio_nome": nec["nome"],
+                    "condominio_zona": nec["zona"],
+                    "vendedora": vend["nome"],
+                    "vendedora_motivo": vp["motivo"],
+                    "data": data_str,
+                    "data_obj": dia_info["data_obj"],
+                    "dia_semana": DIAS_SEMANA[dia_semana],
+                    "prioridade": nec["prioridade"],
+                    "adequacao": vp["nivel"],
+                    "campanha_id": nec.get("campanha_id"),
+                    "periodo": "M/T"
+                })
+                
+                # Atualizar contadores
+                dias_disponiveis[data_str]["agendamentos"][vend["nome"]] += 1
+                necessidade[cond_id]["necessario"] -= 1
+                break
+            
+            if necessidade[cond_id]["necessario"] <= 0:
+                break
+    
+    return sugestoes
 
 # ============================================================================
 # AGENDA VISUAL POR VENDEDORA - CORRIGIDA DEFINITIVAMENTE
@@ -526,12 +723,13 @@ def agenda_visual_por_vendedora(db):
     """
     Exibe agenda em formato visual (tabela) com edição manual
     Usando componentes Streamlit com selectbox de condomínios
-    CORRIGIDO: HTML válido, renderização otimizada com join()
+    CORRIGIDO: HTML válido e renderização otimizada
     """
     st.markdown("### 📅 Agenda Visual por Vendedora")
     
     # Seleção do período
     col_per1, col_per2, col_per3 = st.columns([1, 1, 1])
+    
     with col_per1:
         mes_ano = st.date_input(
             "Mês/Ano",
@@ -541,20 +739,22 @@ def agenda_visual_por_vendedora(db):
         mes = mes_ano.month
         ano = mes_ano.year
         dias_no_mes = calendar.monthrange(ano, mes)[1]
-
+    
     with col_per2:
         vendedoras_ativas = list(db.vendedoras.find({"ativo": True}))
         vendedoras_opcoes = [v["nome"] for v in vendedoras_ativas]
+        
         if not vendedoras_opcoes:
             st.warning("⚠️ Nenhuma vendedora ativa cadastrada.")
             return
+        
         vendedoras_selecionadas = st.multiselect(
             "Vendedoras",
             options=vendedoras_opcoes,
             default=vendedoras_opcoes[:3] if len(vendedoras_opcoes) >= 3 else vendedoras_opcoes,
             key="vendedoras_agenda_visual"
         )
-
+    
     with col_per3:
         mostrar_status = st.multiselect(
             "Mostrar Status",
@@ -563,29 +763,81 @@ def agenda_visual_por_vendedora(db):
             key="status_agenda_visual",
             format_func=formatar_status_visita
         )
-
+    
     if not vendedoras_selecionadas:
         st.warning("Selecione pelo menos uma vendedora para visualizar.")
         return
-
+    
     # Botões de ação
-    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+    
     with col_btn1:
         if st.button("📥 Carregar Agenda", use_container_width=True):
             st.rerun()
+    
     with col_btn2:
+        if st.button("🔃 Resetar para Sugestões", use_container_width=True):
+            st.warning("⚠️ Isso irá substituir a agenda manual pelas sugestões automáticas.")
+            if st.button("✅ Confirmar Reset", key="confirm_reset"):
+                with st.spinner("Resetando agenda..."):
+                    data_inicio = datetime(ano, mes, 1).date()
+                    data_fim = datetime(ano, mes, dias_no_mes).date()
+                    
+                    campanha_ativa = db.campanha_visitas.find_one({"ativo": True})
+                    campanha_id = campanha_ativa.get("campanha_id") if campanha_ativa else None
+                    
+                    sugestoes = agendamento_inteligente(db, data_inicio, data_fim, campanha_id)
+                    
+                    if sugestoes:
+                        db.visitas_vendedoras.delete_many({
+                            "data": {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")},
+                            "manual": True
+                        })
+                        
+                        for sug in sugestoes:
+                            existente = db.visitas_vendedoras.find_one({
+                                "data": sug["data"],
+                                "vendedora": sug["vendedora"],
+                                "condominio_id": ObjectId(sug["condominio_id"])
+                            })
+                            
+                            if not existente:
+                                nova_visita = {
+                                    "condominio_id": ObjectId(sug["condominio_id"]),
+                                    "condominio_nome": sug["condominio_nome"],
+                                    "vendedora": sug["vendedora"],
+                                    "data": sug["data"],
+                                    "status": "agendado",
+                                    "periodo": "M/T",
+                                    "criado_por": "Sistema (Reset)",
+                                    "data_criacao": datetime.now(),
+                                    "zona": sug["condominio_zona"],
+                                    "adequacao": sug["adequacao"],
+                                    "campanha_id": sug.get("campanha_id"),
+                                    "manual": False
+                                }
+                                db.visitas_vendedoras.insert_one(nova_visita)
+                        
+                        st.success(f"✅ Agenda resetada com sucesso! {len(sugestoes)} visitas geradas.")
+                        st.rerun()
+                    else:
+                        st.warning("Nenhuma sugestão gerada. Verifique a campanha ativa.")
+    
+    with col_btn3:
         if st.button("📊 Exportar Agenda Visual", use_container_width=True):
             exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas)
-    with col_btn3:
+    
+    with col_btn4:
         if st.button("💾 Salvar Alterações", use_container_width=True, type="primary"):
             st.success("✅ Alterações salvas com sucesso!")
             st.rerun()
-
+    
     st.markdown("---")
-
+    
     # ============================================================
     # BUSCAR DADOS - OTIMIZADO
     # ============================================================
+    
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
     data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
     
@@ -594,7 +846,7 @@ def agenda_visual_por_vendedora(db):
             "data": {"$gte": data_inicio_str, "$lte": data_fim_str},
             "vendedora": {"$in": vendedoras_selecionadas}
         }))
-
+    
     # Criar um índice rápido por data e vendedora
     visitas_index = {}
     for visita in visitas_db:
@@ -602,13 +854,14 @@ def agenda_visual_por_vendedora(db):
         if key not in visitas_index:
             visitas_index[key] = []
         visitas_index[key].append(visita)
-
+    
     # Criar estrutura de dados
     agenda_data = {}
     for dia in range(1, dias_no_mes + 1):
         data_obj = datetime(ano, mes, dia).date()
         data_str = data_obj.strftime("%Y-%m-%d")
         dia_semana = data_obj.weekday()
+        
         agenda_data[data_str] = {
             "data": data_obj,
             "dia_semana": DIAS_SEMANA[dia_semana],
@@ -616,7 +869,7 @@ def agenda_visual_por_vendedora(db):
             "feriado": False,
             "obs": ""
         }
-
+    
     # Preencher com dados do banco usando o índice
     for data_str in agenda_data:
         for vendedora in vendedoras_selecionadas:
@@ -626,8 +879,10 @@ def agenda_visual_por_vendedora(db):
                     if visita.get("status") == "feriado":
                         agenda_data[data_str]["feriado"] = True
                         continue
+                    
                     if mostrar_status and visita.get("status") not in mostrar_status:
                         continue
+                    
                     agenda_data[data_str]["vendedoras"][vendedora].append({
                         "id": str(visita["_id"]),
                         "condominio": visita["condominio_nome"],
@@ -636,12 +891,13 @@ def agenda_visual_por_vendedora(db):
                         "observacao": visita.get("observacoes", ""),
                         "manual": visita.get("manual", False)
                     })
-
+    
     # ============================================================
     # EXIBIR TABELA - HTML CORRIGIDO DEFINITIVAMENTE
     # ============================================================
+    
     st.markdown(f"### 📆 {calendar.month_name[mes]} {ano}")
-
+    
     # Legenda
     col_leg1, col_leg2, col_leg3, col_leg4, col_leg5, col_leg6 = st.columns(6)
     with col_leg1:
@@ -658,7 +914,7 @@ def agenda_visual_por_vendedora(db):
         st.markdown("📌 **Feriado**")
     
     st.markdown("---")
-
+    
     # Criar cabeçalho
     cols_cabecalho = st.columns([1.2] + [1.5] * len(vendedoras_selecionadas))
     with cols_cabecalho[0]:
@@ -666,15 +922,15 @@ def agenda_visual_por_vendedora(db):
     for i, vendedora in enumerate(vendedoras_selecionadas):
         with cols_cabecalho[i + 1]:
             st.markdown(f"**{vendedora}**")
-
+    
     st.markdown("---")
-
+    
     # Para cada dia, criar uma linha com colunas
     for data_str in sorted(agenda_data.keys()):
         data_info = agenda_data[data_str]
         data_obj = data_info["data"]
         dia_semana = data_obj.weekday()
-
+        
         # Definir cor de fundo
         if dia_semana == 6:  # Domingo
             bg_color = "#ffe6e6"
@@ -685,7 +941,7 @@ def agenda_visual_por_vendedora(db):
         
         if data_info.get("feriado"):
             bg_color = "#ffcccc"
-
+        
         # Criar colunas para esta linha
         cols = st.columns([1.2] + [1.5] * len(vendedoras_selecionadas))
         
@@ -697,7 +953,7 @@ def agenda_visual_por_vendedora(db):
                 <small>{data_info['dia_semana'][:3]}</small>
             </div>
             """, unsafe_allow_html=True)
-
+        
         # Colunas das vendedoras
         for i, vendedora in enumerate(vendedoras_selecionadas):
             with cols[i + 1]:
@@ -718,11 +974,12 @@ def agenda_visual_por_vendedora(db):
                     </div>
                     """, unsafe_allow_html=True)
                     continue
-
+                
                 # ============================================================
-                # CONSTRUIR HTML CORRETO - OTIMIZADO COM JOIN
+                # CONSTRUIR HTML CORRETO - TODAS AS TAGS FECHADAS
                 # ============================================================
-                html_parts = [f'<div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; min-height: 50px;">']
+                
+                html_content = f'<div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; min-height: 50px;">'
                 
                 for visita in visitas:
                     status_icons = {
@@ -733,6 +990,7 @@ def agenda_visual_por_vendedora(db):
                         "falta": "⛔"
                     }
                     status_icon = status_icons.get(visita["status"], "🟢")
+                    
                     periodo = visita.get("periodo", "M/T")
                     manual_label = "📝" if visita.get("manual") else "🤖"
                     
@@ -746,7 +1004,8 @@ def agenda_visual_por_vendedora(db):
                     
                     border_color = '#ff6b6b' if visita.get('manual') else '#28a745'
                     
-                    html_parts.append(f'''
+                    # HTML para cada visita - CORRIGIDO
+                    html_content += f'''
                     <div style="margin-bottom: 4px; padding: 4px; border-radius: 4px; background-color: #ffffff; border-left: 3px solid {border_color}; font-size: 12px;">
                         <span style="background-color: {periodo_color}; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: bold;">
                             {periodo}
@@ -755,27 +1014,31 @@ def agenda_visual_por_vendedora(db):
                         <span>{status_icon}</span>
                         <span style="font-size: 9px; color: #888;">{manual_label}</span>
                     </div>
-                    ''')
+                    '''
                 
-                html_parts.append('</div>')
-                st.markdown("".join(html_parts), unsafe_allow_html=True)
-
+                html_content += '</div>'
+                
+                # Renderizar tudo de uma vez
+                st.markdown(html_content, unsafe_allow_html=True)
+        
         # Separador
         st.markdown("<hr style='margin: 2px 0; border-color: #ddd;'>", unsafe_allow_html=True)
-
+    
     # ============================================================
     # EDITOR MANUAL DE VISITAS
     # ============================================================
+    
     st.markdown("---")
     st.markdown("### ✏️ Editor Manual de Visitas")
     st.info("💡 Selecione a data, vendedora e condomínio para adicionar ou editar uma visita.")
-
+    
     # Usar cache para lista de condomínios
     condominios_nomes = get_condominios_nomes_cached()
     condominios_dict = get_condominios_dict_cached()
-
+    
     with st.form("form_edicao_visita"):
         col_ed1, col_ed2, col_ed3, col_ed4 = st.columns(4)
+        
         with col_ed1:
             data_edicao = st.date_input(
                 "Data",
@@ -784,12 +1047,14 @@ def agenda_visual_por_vendedora(db):
                 min_value=datetime(ano, mes, 1).date(),
                 max_value=datetime(ano, mes, dias_no_mes).date()
             )
+        
         with col_ed2:
             vendedora_edicao = st.selectbox(
                 "Vendedora",
                 options=vendedoras_selecionadas if vendedoras_selecionadas else ["Selecione uma vendedora"],
                 key="vendedora_edicao_form"
             )
+        
         with col_ed3:
             if condominios_nomes:
                 condominio_edicao = st.selectbox(
@@ -798,6 +1063,7 @@ def agenda_visual_por_vendedora(db):
                     key="condominio_edicao_form",
                     help="Selecione o condomínio da lista cadastrada"
                 )
+                
                 condominio_manual = st.text_input(
                     "Ou digite manualmente (se não estiver na lista)",
                     placeholder="Digite o nome do condomínio",
@@ -812,6 +1078,7 @@ def agenda_visual_por_vendedora(db):
                     placeholder="Digite o nome do condomínio",
                     key="condominio_manual_form"
                 )
+        
         with col_ed4:
             periodo_edicao = st.selectbox(
                 "Período",
@@ -820,6 +1087,7 @@ def agenda_visual_por_vendedora(db):
             )
         
         col_ed5, col_ed6, col_ed7, col_ed8 = st.columns(4)
+        
         with col_ed5:
             status_edicao = st.selectbox(
                 "Status",
@@ -827,17 +1095,20 @@ def agenda_visual_por_vendedora(db):
                 key="status_edicao_form",
                 format_func=formatar_status_visita
             )
+        
         with col_ed6:
             observacao_edicao = st.text_input(
                 "Observação",
                 placeholder="Ex: Chuva, falta, etc.",
                 key="obs_edicao_form"
             )
+        
         with col_ed7:
             submitted = st.form_submit_button("✅ Adicionar/Editar Visita", use_container_width=True, type="primary")
+        
         with col_ed8:
             remover_submitted = st.form_submit_button("🗑️ Remover Visitas do Dia", use_container_width=True)
-
+        
         if submitted:
             data_str = data_edicao.strftime("%Y-%m-%d")
             
@@ -849,6 +1120,7 @@ def agenda_visual_por_vendedora(db):
                     "data": data_str,
                     "status": "feriado"
                 })
+                
                 if not feriado_existente:
                     nova_visita = {
                         "condominio_id": None,
@@ -868,10 +1140,10 @@ def agenda_visual_por_vendedora(db):
                     st.success(f"✅ Feriado marcado para {data_edicao.strftime('%d/%m/%Y')}")
                 else:
                     st.info(f"ℹ️ Feriado já marcado para {data_edicao.strftime('%d/%m/%Y')}")
-                st.cache_data.clear()
+                
                 st.rerun()
                 return
-
+            
             if not nome_condominio:
                 st.error("⚠️ Selecione ou digite o nome do condomínio!")
             else:
@@ -895,6 +1167,7 @@ def agenda_visual_por_vendedora(db):
                         "manual": True,
                         "ultima_edicao": datetime.now()
                     }
+                    
                     if condominio_id:
                         update_data["condominio_id"] = condominio_id
                         if condominio_encontrado:
@@ -911,6 +1184,7 @@ def agenda_visual_por_vendedora(db):
                         "vendedora": vendedora_edicao,
                         "status": {"$ne": "cancelado"}
                     })
+                    
                     if visitas_dia >= 2:
                         st.warning(f"⚠️ {vendedora_edicao} já tem {visitas_dia} visitas neste dia. Limite é 2.")
                     else:
@@ -934,14 +1208,16 @@ def agenda_visual_por_vendedora(db):
                 # Limpar cache para forçar recarregamento
                 st.cache_data.clear()
                 st.rerun()
-
+        
         if remover_submitted:
             data_str = data_edicao.strftime("%Y-%m-%d")
+            
             visitas_remover = list(db.visitas_vendedoras.find({
                 "data": data_str,
                 "vendedora": vendedora_edicao,
                 "status": {"$ne": "feriado"}
             }))
+            
             if visitas_remover:
                 for vis in visitas_remover:
                     db.visitas_vendedoras.delete_one({"_id": vis["_id"]})
@@ -960,6 +1236,7 @@ def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
     Exporta a agenda visual para Excel
     """
     dias_no_mes = calendar.monthrange(ano, mes)[1]
+    
     data_inicio_str = datetime(ano, mes, 1).strftime("%Y-%m-%d")
     data_fim_str = datetime(ano, mes, dias_no_mes).strftime("%Y-%m-%d")
     
@@ -1000,6 +1277,7 @@ def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
                     "chuva": "🌧️",
                     "falta": "⛔"
                 }.get(status, "")
+                
                 texto = f"{periodo} {visita['condominio_nome']} {status_emoji}"
                 pivot_data.append({
                     "Data": data_obj.strftime("%d/%m"),
@@ -1038,6 +1316,7 @@ def exportar_agenda_visual(db, ano, mes, vendedoras_selecionadas):
                     worksheet.column_dimensions[column_letter].width = adjusted_width
         
         output.seek(0)
+        
         st.download_button(
             label="📊 Baixar Agenda Visual",
             data=output.getvalue(),
@@ -1061,9 +1340,10 @@ def gerenciar_vendedoras(db):
         "✏️ Editar Vendedora",
         "📊 Histórico"
     ])
-
+    
     with tab_lista:
         vendedoras = list(db.vendedoras.find({}))
+        
         if vendedoras:
             # Filtros
             col_f1, col_f2 = st.columns(2)
@@ -1089,43 +1369,26 @@ def gerenciar_vendedoras(db):
             
             if filtro_tipo != "Todos":
                 vendedoras_filtradas = [v for v in vendedoras_filtradas if v.get("tipo") == filtro_tipo]
-
-            # OTIMIZAÇÃO: Aggregation Pipeline para buscar estatísticas de todas as vendedoras de uma vez
-            pipeline_stats = [
-                {"$group": {
-                    "_id": "$vendedora",
-                    "total": {"$sum": 1},
-                    "concluidas": {"$sum": {"$cond": [{"$eq": ["$status", "concluido"]}, 1, 0]}}
-                }}
-            ]
-            stats_vendedoras = {doc["_id"]: doc for doc in db.visitas_vendedoras.aggregate(pipeline_stats)}
             
-            # OTIMIZAÇÃO: Buscar próximas visitas de uma vez
-            proximas_visitas_db = list(db.visitas_vendedoras.find({
-                "status": "agendado",
-                "data": {"$gte": datetime.now().strftime("%Y-%m-%d")}
-            }).sort("data", 1))
-            
-            proximas_por_vendedora = defaultdict(list)
-            for p in proximas_visitas_db:
-                if len(proximas_por_vendedora[p["vendedora"]]) < 3:
-                    proximas_por_vendedora[p["vendedora"]].append(p)
-
             for vendedora in vendedoras_filtradas:
                 status_icon = "🟢" if vendedora.get("ativo", True) else "🔴"
                 with st.expander(f"{status_icon} {vendedora['nome']} - {vendedora['tipo'].title()}", expanded=False):
                     col1, col2, col3 = st.columns(3)
+                    
                     with col1:
                         st.write(f"**Tipo:** {vendedora['tipo'].title()}")
                         st.write(f"**Horário:** {vendedora.get('horario', '08:00-17:00')}")
                         st.write(f"**Max visitas/dia:** {vendedora.get('max_visitas_dia', 2)}")
                         st.write(f"**Status:** {'✅ Ativa' if vendedora.get('ativo', True) else '❌ Inativa'}")
+                    
                     with col2:
                         dias_disponiveis = [DIAS_SEMANA[d] for d in vendedora.get('disponibilidade', [])]
                         st.write(f"**Dias disponíveis:** {', '.join(dias_disponiveis) if dias_disponiveis else 'Nenhum'}")
+                    
                     with col3:
                         regiao_pref = vendedora.get('regiao_preferencial', 'Todas as regiões')
                         st.write(f"**📍 Região preferencial:** {regiao_pref}")
+                        
                         if vendedora.get("data_desativacao"):
                             st.write(f"**Desativada em:** {vendedora['data_desativacao'].strftime('%d/%m/%Y')}")
                         if vendedora.get("motivo_desativacao"):
@@ -1134,10 +1397,11 @@ def gerenciar_vendedoras(db):
                     st.markdown("---")
                     st.markdown("**📊 Estatísticas de Performance:**")
                     
-                    # Usar dados do aggregation (O(1) em memória)
-                    stats = stats_vendedoras.get(vendedora["nome"], {"total": 0, "concluidas": 0})
-                    total_visitas = stats["total"]
-                    visitas_concluidas = stats["concluidas"]
+                    total_visitas = db.visitas_vendedoras.count_documents({"vendedora": vendedora["nome"]})
+                    visitas_concluidas = db.visitas_vendedoras.count_documents({
+                        "vendedora": vendedora["nome"],
+                        "status": "concluido"
+                    })
                     
                     col_e1, col_e2, col_e3 = st.columns(3)
                     with col_e1:
@@ -1148,21 +1412,28 @@ def gerenciar_vendedoras(db):
                         taxa = (visitas_concluidas / total_visitas * 100) if total_visitas > 0 else 0
                         st.metric("Taxa de Sucesso", f"{taxa:.1f}%")
                     
-                    # Próximas visitas (O(1) em memória)
-                    proximas = proximas_por_vendedora.get(vendedora["nome"], [])
+                    # Próximas visitas
+                    proximas = list(db.visitas_vendedoras.find({
+                        "vendedora": vendedora["nome"],
+                        "status": "agendado",
+                        "data": {"$gte": datetime.now().strftime("%Y-%m-%d")}
+                    }).sort("data", 1).limit(3))
+                    
                     if proximas:
                         st.markdown("**📅 Próximas visitas:**")
                         for p in proximas:
                             st.caption(f"- {p['data']}: {p['condominio_nome']}")
         else:
             st.info("Nenhuma vendedora cadastrada.")
-
+    
     with tab_nova:
         col1, col2 = st.columns(2)
+        
         with col1:
             nome = st.text_input("Nome da Vendedora*", key="nova_vend_nome")
             tipo = st.selectbox("Tipo", ["fixa", "freelancer"], key="nova_vend_tipo")
             max_visitas = st.number_input("Máximo de visitas por dia", min_value=1, max_value=5, value=2, key="nova_vend_max")
+        
         with col2:
             horario = st.text_input("Horário de trabalho", value="08:00-17:00", key="nova_vend_horario")
             regiao_preferencial = st.selectbox(
@@ -1176,6 +1447,7 @@ def gerenciar_vendedoras(db):
         st.markdown("**Dias disponíveis:**")
         col_dias = st.columns(7)
         dias_selecionados = []
+        
         for i, dia in enumerate(DIAS_SEMANA[:6]):
             with col_dias[i]:
                 if st.checkbox(dia, key=f"dia_nova_{nome}_{i}"):
@@ -1209,7 +1481,7 @@ def gerenciar_vendedoras(db):
                     st.success(f"✅ Vendedora '{nome}' cadastrada com sucesso!")
                     st.balloons()
                     st.rerun()
-
+    
     with tab_editar:
         vendedoras_lista = list(db.vendedoras.find({}))
         if vendedoras_lista:
@@ -1223,10 +1495,12 @@ def gerenciar_vendedoras(db):
                 vend = db.vendedoras.find_one({"nome": vendedora_selecionada})
                 if vend:
                     col_edit1, col_edit2 = st.columns(2)
+                    
                     with col_edit1:
                         novo_nome = st.text_input("Nome", value=vend["nome"], key="edit_vend_nome")
                         novo_tipo = st.selectbox("Tipo", ["fixa", "freelancer"], index=0 if vend["tipo"] == "fixa" else 1, key="edit_vend_tipo")
                         novo_max = st.number_input("Max visitas/dia", value=vend.get("max_visitas_dia", 2), key="edit_vend_max")
+                    
                     with col_edit2:
                         novo_horario = st.text_input("Horário", value=vend.get("horario", "08:00-17:00"), key="edit_vend_horario")
                         nova_regiao = st.selectbox(
@@ -1249,12 +1523,14 @@ def gerenciar_vendedoras(db):
                     col_dias_edit = st.columns(7)
                     dias_atuais = vend.get("disponibilidade", [])
                     novos_dias = []
+                    
                     for i, dia in enumerate(DIAS_SEMANA[:6]):
                         with col_dias_edit[i]:
                             if st.checkbox(dia, value=(i in dias_atuais), key=f"edit_dia_{vend['_id']}_{i}"):
                                 novos_dias.append(i)
                     
                     col_btn_edit1, col_btn_edit2 = st.columns(2)
+                    
                     with col_btn_edit1:
                         if st.button("💾 Salvar Alterações", key="btn_save_vend_edit"):
                             update_data = {
@@ -1294,15 +1570,14 @@ def gerenciar_vendedoras(db):
                                 st.rerun()
         else:
             st.info("Nenhuma vendedora cadastrada para editar.")
-
+    
     with tab_historico:
         st.markdown("#### 📊 Histórico de Vendedoras")
         
-        # Estatísticas gerais (em memória, já que a lista é pequena)
-        vendedoras_all = list(db.vendedoras.find({}))
-        total_vendedoras = len(vendedoras_all)
-        ativas = len([v for v in vendedoras_all if v.get("ativo", True)])
-        inativas = len([v for v in vendedoras_all if not v.get("ativo", True)])
+        # Estatísticas gerais
+        total_vendedoras = db.vendedoras.count_documents({})
+        ativas = db.vendedoras.count_documents({"ativo": True})
+        inativas = db.vendedoras.count_documents({"ativo": False})
         
         col_h1, col_h2, col_h3 = st.columns(3)
         with col_h1:
@@ -1313,27 +1588,14 @@ def gerenciar_vendedoras(db):
             st.metric("Inativas", inativas)
         
         # Lista de vendedoras inativas
-        inativas_lista = [v for v in vendedoras_all if not v.get("ativo", True)]
+        inativas_lista = list(db.vendedoras.find({"ativo": False}))
         if inativas_lista:
-            # Reutilizar stats_vendedoras do aggregation se disponível
-            if 'stats_vendedoras' not in locals():
-                pipeline_stats = [
-                    {"$group": {
-                        "_id": "$vendedora",
-                        "total": {"$sum": 1}
-                    }}
-                ]
-                stats_vendedoras_hist = {doc["_id"]: doc for doc in db.visitas_vendedoras.aggregate(pipeline_stats)}
-            else:
-                stats_vendedoras_hist = stats_vendedoras
-
             st.markdown("**📋 Vendedoras Inativas:**")
             for vend in inativas_lista:
                 with st.expander(f"🔴 {vend['nome']}"):
                     st.write(f"**Desativada em:** {vend.get('data_desativacao', 'N/A')}")
                     st.write(f"**Motivo:** {vend.get('motivo_desativacao', 'Não informado')}")
-                    stats = stats_vendedoras_hist.get(vend['nome'], {"total": 0})
-                    st.write(f"**Total de visitas:** {stats['total']}")
+                    st.write(f"**Total de visitas:** {db.visitas_vendedoras.count_documents({'vendedora': vend['nome']})}")
 
 # ============================================================================
 # RELATÓRIOS COMPLETOS
@@ -1348,9 +1610,10 @@ def relatorios_completos(db):
         ["Resumo da Campanha Atual", "Visitas por Vendedora", "Visitas por Condomínio", 
          "Distribuição por Zona", "Exportar Agenda", "Comparativo de Campanhas"]
     )
-
+    
     if tipo_relatorio == "Resumo da Campanha Atual":
         campanha_ativa = list(db.campanha_visitas.find({"ativo": True}))
+        
         if campanha_ativa:
             # Buscar informações da campanha no histórico
             campanha_id = campanha_ativa[0].get("campanha_id") if campanha_ativa else None
@@ -1359,34 +1622,32 @@ def relatorios_completos(db):
                 campanha_historico = db.campanhas_historico.find_one({"campanha_id": campanha_id})
             
             col_r1, col_r2, col_r3 = st.columns(3)
+            
             with col_r1:
                 st.metric("Condomínios na Campanha", len(campanha_ativa))
                 if campanha_historico:
                     st.caption(f"Versão: #{campanha_historico.get('versao', 'N/A')}")
+            
             with col_r2:
                 total_aptos = sum(c.get("aptos", 0) for c in campanha_ativa)
                 st.metric("Total de Apartamentos", f"{total_aptos:,}")
+            
             with col_r3:
                 visitas_concluidas = db.visitas_vendedoras.count_documents({"status": "concluido"})
                 st.metric("Visitas Concluídas (Total)", visitas_concluidas)
             
-            # OTIMIZAÇÃO: Trazer todas as visitas de uma vez e agrupar em memória
-            todas_visitas = list(db.visitas_vendedoras.find({"status": {"$ne": "cancelado"}}))
-            visitas_por_cond = defaultdict(lambda: {"total": 0, "concluidas": 0})
-            for v in todas_visitas:
-                cid = str(v.get("condominio_id"))
-                visitas_por_cond[cid]["total"] += 1
-                if v.get("status") == "concluido":
-                    visitas_por_cond[cid]["concluidas"] += 1
-
             # Progresso por condomínio
             st.markdown("#### 📈 Progresso por Condomínio")
+            
             dados_progresso = []
             for cond in campanha_ativa:
-                cid = str(cond["condominio_id"])
-                stats_cond = visitas_por_cond.get(cid, {"total": 0, "concluidas": 0})
-                total_visitas = stats_cond["total"]
-                visitas_concluidas_cond = stats_cond["concluidas"]
+                total_visitas = db.visitas_vendedoras.count_documents({
+                    "condominio_id": cond["condominio_id"]
+                })
+                visitas_concluidas_cond = db.visitas_vendedoras.count_documents({
+                    "condominio_id": cond["condominio_id"],
+                    "status": "concluido"
+                })
                 
                 dados_progresso.append({
                     "Condomínio": cond["condominio_nome"][:35],
@@ -1395,21 +1656,24 @@ def relatorios_completos(db):
                     "Concluídas": visitas_concluidas_cond,
                     "Progresso": f"{(visitas_concluidas_cond/total_visitas*100):.0f}%" if total_visitas > 0 else "0%"
                 })
+            
             df_progresso = pd.DataFrame(dados_progresso)
             st.dataframe(df_progresso, use_container_width=True, hide_index=True)
         else:
             st.info("Nenhuma campanha ativa.")
-
+    
     elif tipo_relatorio == "Visitas por Vendedora":
         # Incluir vendedoras inativas nos relatórios
         vendedoras_opcoes = [v["nome"] for v in db.vendedoras.find({})]
         if vendedoras_opcoes:
             vendedora_sel = st.selectbox("Vendedora", options=vendedoras_opcoes)
+            
             if vendedora_sel:
                 visitas_vend = list(db.visitas_vendedoras.find({
                     "vendedora": vendedora_sel,
                     "status": {"$ne": "cancelado"}
                 }).sort("data", -1))
+                
                 if visitas_vend:
                     dados = []
                     for vis in visitas_vend:
@@ -1419,6 +1683,7 @@ def relatorios_completos(db):
                             "Zona": vis.get("zona", "N/D"),
                             "Status": formatar_status_visita(vis["status"])
                         })
+                    
                     df = pd.DataFrame(dados)
                     st.dataframe(df, use_container_width=True, hide_index=True)
                     
@@ -1436,13 +1701,10 @@ def relatorios_completos(db):
                     st.info("Nenhuma visita encontrada.")
         else:
             st.warning("Nenhuma vendedora cadastrada.")
-
-    elif tipo_relatorio == "Visitas por Condomínio":
-        # Placeholder para este relatório (pode ser implementado se necessário)
-        st.info("Relatório de Visitas por Condomínio em breve.")
-
+    
     elif tipo_relatorio == "Distribuição por Zona":
         campanha = list(db.campanha_visitas.find({"ativo": True}))
+        
         if campanha:
             # Distribuição dos condomínios por zona
             zona_counts = defaultdict(int)
@@ -1451,13 +1713,16 @@ def relatorios_completos(db):
                 zona_counts[zona] += 1
             
             st.markdown("#### 📍 Distribuição dos Condomínios por Zona")
+            
             for zona, count in sorted(zona_counts.items()):
                 st.progress(count / len(campanha), text=f"{zona}: {count} condomínios ({count/len(campanha)*100:.1f}%)")
             
             # Distribuição das visitas por zona
             st.markdown("#### 📊 Distribuição das Visitas por Zona")
+            
             visitas = list(db.visitas_vendedoras.find({"status": {"$ne": "cancelado"}}))
             visitas_por_zona = defaultdict(int)
+            
             for visita in visitas:
                 zona = visita.get("zona", "Não definida")
                 visitas_por_zona[zona] += 1
@@ -1469,27 +1734,19 @@ def relatorios_completos(db):
                 st.info("Nenhuma visita registrada ainda.")
         else:
             st.info("Nenhuma campanha ativa.")
-
+    
     elif tipo_relatorio == "Comparativo de Campanhas":
         st.markdown("#### 📊 Comparativo entre Campanhas")
         
         # Buscar todas as campanhas
         campanhas = list(db.campanhas_historico.find().sort("versao", -1))
+        
         if len(campanhas) < 2:
             st.info("Precisa de pelo menos 2 campanhas para comparar.")
         else:
-            # OTIMIZAÇÃO: Aggregation para contar visitas por campanha
-            pipeline_camp = [
-                {"$group": {
-                    "_id": "$campanha_id",
-                    "total": {"$sum": 1},
-                    "concluidas": {"$sum": {"$cond": [{"$eq": ["$status", "concluido"]}, 1, 0]}}
-                }}
-            ]
-            stats_campanhas = {doc["_id"]: doc for doc in db.visitas_vendedoras.aggregate(pipeline_camp)}
-
             # Selecionar campanhas para comparar
             opcoes = [f"#{c['versao']} - {c.get('nome', 'Sem nome')} ({c['data_criacao'].strftime('%d/%m/%Y')})" for c in campanhas]
+            
             col_comp1, col_comp2 = st.columns(2)
             with col_comp1:
                 camp1_idx = st.selectbox("Campanha 1", options=range(len(opcoes)), format_func=lambda x: opcoes[x], key="comp1")
@@ -1502,26 +1759,34 @@ def relatorios_completos(db):
                 
                 # Métricas comparativas
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                
                 with col_m1:
                     st.metric(
                         "Condomínios",
                         f"{camp1['total_condominios']} → {camp2['total_condominios']}",
                         delta=camp2['total_condominios'] - camp1['total_condominios']
                     )
+                
                 with col_m2:
-                    # Usar stats do aggregation (O(1))
-                    vis1_stats = stats_campanhas.get(camp1.get("campanha_id"), {"total": 0, "concluidas": 0})
-                    vis2_stats = stats_campanhas.get(camp2.get("campanha_id"), {"total": 0, "concluidas": 0})
-                    vis1 = vis1_stats["total"]
-                    vis2 = vis2_stats["total"]
+                    # Contar visitas de cada campanha
+                    vis1 = db.visitas_vendedoras.count_documents({"campanha_id": camp1.get("campanha_id")})
+                    vis2 = db.visitas_vendedoras.count_documents({"campanha_id": camp2.get("campanha_id")})
                     st.metric(
                         "Total Visitas",
                         f"{vis1} → {vis2}",
                         delta=vis2 - vis1
                     )
+                
                 with col_m3:
-                    conc1 = vis1_stats["concluidas"]
-                    conc2 = vis2_stats["concluidas"]
+                    # Visitas concluídas
+                    conc1 = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp1.get("campanha_id"),
+                        "status": "concluido"
+                    })
+                    conc2 = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp2.get("campanha_id"),
+                        "status": "concluido"
+                    })
                     taxa1 = (conc1 / vis1 * 100) if vis1 > 0 else 0
                     taxa2 = (conc2 / vis2 * 100) if vis2 > 0 else 0
                     st.metric(
@@ -1529,7 +1794,9 @@ def relatorios_completos(db):
                         f"{taxa1:.1f}% → {taxa2:.1f}%",
                         delta=f"{taxa2 - taxa1:.1f}%"
                     )
+                
                 with col_m4:
+                    # Dias de campanha
                     dias1 = (camp1['data_fim'] - camp1['data_inicio']).days
                     dias2 = (camp2['data_fim'] - camp2['data_inicio']).days
                     st.metric(
@@ -1541,19 +1808,21 @@ def relatorios_completos(db):
                 # Detalhes das campanhas
                 st.markdown("---")
                 col_det1, col_det2 = st.columns(2)
+                
                 with col_det1:
                     st.markdown(f"**📋 Campanha #{camp1['versao']}**")
                     st.write(f"Nome: {camp1.get('nome', 'Sem nome')}")
                     st.write(f"Período: {camp1['data_inicio'].strftime('%d/%m/%Y')} a {camp1['data_fim'].strftime('%d/%m/%Y')}")
                     st.write(f"Condomínios: {camp1['total_condominios']}")
                     st.write(f"Visitas: {vis1} agendadas, {conc1} concluídas")
+                
                 with col_det2:
                     st.markdown(f"**📋 Campanha #{camp2['versao']}**")
                     st.write(f"Nome: {camp2.get('nome', 'Sem nome')}")
                     st.write(f"Período: {camp2['data_inicio'].strftime('%d/%m/%Y')} a {camp2['data_fim'].strftime('%d/%m/%Y')}")
                     st.write(f"Condomínios: {camp2['total_condominios']}")
                     st.write(f"Visitas: {vis2} agendadas, {conc2} concluídas")
-
+    
     elif tipo_relatorio == "Exportar Agenda":
         data_export_inicio = st.date_input("Data Início", value=datetime.now().date())
         data_export_fim = st.date_input("Data Fim", value=datetime.now().date() + timedelta(days=30))
@@ -1565,22 +1834,21 @@ def relatorios_completos(db):
             query = {
                 "data": {"$gte": data_export_inicio.strftime("%Y-%m-%d"), "$lte": data_export_fim.strftime("%Y-%m-%d")}
             }
+            
             if not incluir_historico:
                 query["status"] = {"$ne": "cancelado"}
             
             visitas_export = list(db.visitas_vendedoras.find(query).sort("data", 1))
+            
             if visitas_export:
-                # OTIMIZAÇÃO: Trazer campanhas de uma vez
-                campanhas_dict = {str(c["campanha_id"]): c for c in db.campanhas_historico.find({})}
-                
                 dados_export = []
                 for vis in visitas_export:
                     data_obj = datetime.strptime(vis["data"], "%Y-%m-%d")
                     
-                    # Buscar campanha (O(1) em memória)
+                    # Buscar campanha
                     campanha_nome = "N/A"
                     if vis.get("campanha_id"):
-                        campanha = campanhas_dict.get(str(vis["campanha_id"]))
+                        campanha = db.campanhas_historico.find_one({"campanha_id": vis["campanha_id"]})
                         if campanha:
                             campanha_nome = f"#{campanha['versao']} - {campanha.get('nome', '')}"
                     
@@ -1596,9 +1864,11 @@ def relatorios_completos(db):
                     })
                 
                 df_export = pd.DataFrame(dados_export)
+                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_export.to_excel(writer, index=False, sheet_name='Agenda Visitas')
+                    
                     worksheet = writer.sheets['Agenda Visitas']
                     for column in worksheet.columns:
                         max_length = 0
@@ -1613,6 +1883,7 @@ def relatorios_completos(db):
                         worksheet.column_dimensions[column_letter].width = adjusted_width
                 
                 output.seek(0)
+                
                 st.download_button(
                     label="📊 Baixar Excel",
                     data=output.getvalue(),
@@ -1631,8 +1902,8 @@ def historico_campanhas(db):
     st.markdown("### 📚 Histórico Completo de Campanhas")
     
     # Estatísticas gerais
-    total_campanhas = db.campanhas_historico.estimated_document_count()
-    total_visitas = db.visitas_vendedoras.estimated_document_count()
+    total_campanhas = db.campanhas_historico.count_documents({})
+    total_visitas = db.visitas_vendedoras.count_documents({})
     
     col_h1, col_h2, col_h3 = st.columns(3)
     with col_h1:
@@ -1645,33 +1916,29 @@ def historico_campanhas(db):
     
     # Lista de campanhas
     campanhas = list(db.campanhas_historico.find().sort("versao", -1))
+    
     if campanhas:
-        # OTIMIZAÇÃO: Aggregation para contar visitas por campanha
-        pipeline_camp = [
-            {"$group": {
-                "_id": "$campanha_id",
-                "total": {"$sum": 1},
-                "concluidas": {"$sum": {"$cond": [{"$eq": ["$status", "concluido"]}, 1, 0]}}
-            }}
-        ]
-        stats_campanhas_hist = {doc["_id"]: doc for doc in db.visitas_vendedoras.aggregate(pipeline_camp)}
-
         for camp in campanhas:
             with st.expander(f"📋 Campanha #{camp['versao']} - {camp.get('nome', 'Sem nome')}", expanded=False):
                 col_c1, col_c2, col_c3 = st.columns(3)
+                
                 with col_c1:
                     st.write(f"**Período:** {camp['data_inicio'].strftime('%d/%m/%Y')} a {camp['data_fim'].strftime('%d/%m/%Y')}")
                     st.write(f"**Status:** {'✅ Ativa' if camp.get('status') == 'ativa' else '📌 Concluída'}")
+                
                 with col_c2:
                     st.write(f"**Condomínios:** {camp['total_condominios']}")
                     st.write(f"**Criado por:** {camp.get('criado_por', 'Sistema')}")
+                
                 with col_c3:
-                    # Usar stats do aggregation (O(1))
-                    camp_id = camp.get("campanha_id")
-                    stats_camp = stats_campanhas_hist.get(camp_id, {"total": 0, "concluidas": 0})
-                    visitas_camp = stats_camp["total"]
-                    concluidas_camp = stats_camp["concluidas"]
-                    
+                    # Contar visitas desta campanha
+                    visitas_camp = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp.get("campanha_id")
+                    })
+                    concluidas_camp = db.visitas_vendedoras.count_documents({
+                        "campanha_id": camp.get("campanha_id"),
+                        "status": "concluido"
+                    })
                     st.metric("Visitas", visitas_camp)
                     st.metric("Concluídas", concluidas_camp)
                 
@@ -1688,6 +1955,7 @@ def historico_campanhas(db):
 
 def tela_admin_visitas(db, perfil_usuario, nome_usuario):
     """Interface completa para admin/diretoria/supervisores com histórico e agenda visual"""
+    
     st.markdown("## 📅 Gerenciamento de Visitas de Vendedoras")
     
     # Abas principais
@@ -1699,20 +1967,22 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
         "📊 Relatórios",
         "📚 Histórico"
     ])
-
+    
     with tab_campanha:
         from modules.condominios import get_condominios_collection
         clientes_collection = get_condominios_collection()
         selecionar_condominios_campanha(db, clientes_collection)
-
+    
     with tab_agenda:
         col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+        
         with col_f1:
             filtro_vendedora = st.selectbox(
                 "👩‍💼 Vendedora",
                 options=["Todas"] + [v["nome"] for v in db.vendedoras.find({"ativo": True})],
                 key="filtro_vend_agenda"
             )
+        
         with col_f2:
             filtro_status = st.selectbox(
                 "Status",
@@ -1720,10 +1990,13 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                 key="filtro_status_agenda",
                 format_func=lambda x: formatar_status_visita(x) if x != "Todos" else "Todos"
             )
+        
         with col_f3:
             data_inicio = st.date_input("Data Início", value=datetime.now().date(), key="data_inicio_agenda")
+        
         with col_f4:
             data_fim = st.date_input("Data Fim", value=datetime.now().date() + timedelta(days=30), key="data_fim_agenda")
+        
         with col_f5:
             # Selecionar campanha específica
             campanhas = list(db.campanhas_historico.find().sort("versao", -1).limit(10))
@@ -1733,15 +2006,70 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                 options=campanha_options,
                 key="campanha_agenda"
             )
+            
             campanha_id = None
             if campanha_selecionada != "Última ativa" and campanhas:
                 idx = campanha_options.index(campanha_selecionada) - 1
                 if idx < len(campanhas):
                     campanha_id = campanhas[idx].get("campanha_id")
         
-        # Botão para atualizar
-        if st.button("🔄 Atualizar Agenda", key="btn_atualizar_agenda", use_container_width=True):
-            st.rerun()
+        # Botão para gerar agenda
+        col_btn1, col_btn2 = st.columns([1, 3])
+        with col_btn1:
+            if st.button("🤖 Gerar Agenda Inteligente", key="btn_auto_agendar", use_container_width=True):
+                with st.spinner("Gerando sugestões com especialização geográfica..."):
+                    campanha_count = db.campanha_visitas.count_documents({"ativo": True})
+                    
+                    if campanha_count == 0:
+                        st.error("❌ Nenhum condomínio selecionado na campanha!")
+                    else:
+                        sugestoes = agendamento_inteligente(db, data_inicio, data_fim, campanha_id)
+                        
+                        if sugestoes:
+                            st.success(f"✅ Geradas {len(sugestoes)} sugestões!")
+                            
+                            for sug in sugestoes[:10]:
+                                icone = "⭐" if sug["adequacao"] == "preferencial" else "✓" if sug["adequacao"] == "disponivel" else "⚠️"
+                                
+                                with st.expander(f"{icone} {sug['condominio_nome']} ({sug['condominio_zona']}) - {sug['data']} - {sug['vendedora']}"):
+                                    st.write(f"**Prioridade:** {sug['prioridade']}")
+                                    st.write(f"**Zona:** {sug['condominio_zona']}")
+                                    st.write(f"**Adequação:** {sug['vendedora_motivo']}")
+                                    
+                                    if st.button(f"✅ Confirmar", key=f"confirm_{sug['condominio_id']}_{sug['data']}_{sug['vendedora']}"):
+                                        # Verificar se já existe
+                                        existente = db.visitas_vendedoras.find_one({
+                                            "data": sug["data"],
+                                            "vendedora": sug["vendedora"],
+                                            "condominio_id": ObjectId(sug["condominio_id"])
+                                        })
+                                        
+                                        if not existente:
+                                            nova_visita = {
+                                                "condominio_id": ObjectId(sug["condominio_id"]),
+                                                "condominio_nome": sug["condominio_nome"],
+                                                "vendedora": sug["vendedora"],
+                                                "data": sug["data"],
+                                                "status": "agendado",
+                                                "criado_por": nome_usuario,
+                                                "data_criacao": datetime.now(),
+                                                "zona": sug["condominio_zona"],
+                                                "adequacao": sug["adequacao"],
+                                                "campanha_id": sug.get("campanha_id"),
+                                                "periodo": "M/T",
+                                                "manual": False
+                                            }
+                                            db.visitas_vendedoras.insert_one(nova_visita)
+                                            st.success("✅ Visita agendada!")
+                                            st.rerun()
+                                        else:
+                                            st.warning("⚠️ Visita já existe para este dia/vendedora/condomínio.")
+                        else:
+                            st.info("Nenhuma sugestão gerada.")
+        
+        with col_btn2:
+            if st.button("🔄 Atualizar", key="btn_atualizar_agenda", use_container_width=True):
+                st.rerun()
         
         st.markdown("---")
         
@@ -1753,12 +2081,14 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
             query["status"] = filtro_status
         if campanha_id:
             query["campanha_id"] = campanha_id
+        
         query["data"] = {"$gte": data_inicio.strftime("%Y-%m-%d"), "$lte": data_fim.strftime("%Y-%m-%d")}
         
         visitas = list(db.visitas_vendedoras.find(query).sort("data", 1))
         
         if visitas:
             st.markdown(f"### 📋 Visitas Agendadas ({len(visitas)})")
+            
             for visita in visitas:
                 data_obj = datetime.strptime(visita["data"], "%Y-%m-%d").date()
                 status_icon = {
@@ -1772,6 +2102,7 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                 
                 with st.expander(f"{status_icon} {data_obj.strftime('%d/%m/%Y')} - {visita['condominio_nome']} - {visita['vendedora']}", expanded=False):
                     col1, col2 = st.columns(2)
+                    
                     with col1:
                         st.write(f"**Status:** {formatar_status_visita(visita['status'])}")
                         if visita.get("zona"):
@@ -1788,6 +2119,7 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                     with col2:
                         if visita["status"] == "agendado":
                             obs = st.text_area("Observações da visita", key=f"obs_{visita['_id']}")
+                            
                             if st.button("✅ Concluir", key=f"conc_{visita['_id']}"):
                                 db.visitas_vendedoras.update_one(
                                     {"_id": visita["_id"]},
@@ -1815,16 +2147,16 @@ def tela_admin_visitas(db, perfil_usuario, nome_usuario):
                                     st.rerun()
         else:
             st.info("Nenhuma visita agendada no período.")
-
+    
     with tab_agenda_visual:
         agenda_visual_por_vendedora(db)
-
+    
     with tab_vendedoras:
         gerenciar_vendedoras(db)
-
+    
     with tab_relatorios:
         relatorios_completos(db)
-
+    
     with tab_historico:
         historico_campanhas(db)
 
@@ -1848,7 +2180,7 @@ def render_visitas_vendedoras(clientes_collection):
     <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1rem; border-radius: 10px; margin-bottom: 2rem;'>
         <h2 style='color: white; margin: 0;'>👩‍💼 Gestão de Visitas de Vendedoras</h2>
         <p style='color: white; margin: 0.5rem 0 0 0; opacity: 0.9;'>
-            Histórico completo, agenda visual e relatórios otimizados
+            Agendamento inteligente com especialização por região, histórico completo e agenda visual
         </p>
     </div>
     """, unsafe_allow_html=True)
