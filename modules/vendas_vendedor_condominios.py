@@ -570,7 +570,6 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
         - O último mês do período (**{mes_parcial_nome}**) é parcial (apenas {dias_periodo} dias)
         - Calculamos a **média diária** baseada nos dias do período: vendas / dias no período
         - Projetamos o total estimado multiplicando essa média pelo **total de dias do mês**
-        - Exemplo: Se vendeu 7 vendas em {dias_periodo} dias, média = {7/dias_periodo:.2f} vendas/dia → Projeção = {7/dias_periodo:.2f} × 31 = {7/dias_periodo*31:.1f} vendas
         """)
     else:
         st.info("✅ Todos os meses do período estão completos. Não há projeções.")
@@ -651,6 +650,7 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
         dados_vendedor = vendas_mensais[vendas_mensais['vendedor'] == vendedor].sort_values('ano_mes_num')
         
         if len(dados_vendedor) < 2:
+            # Se tiver apenas 1 mês, não dá para calcular tendência
             continue
         
         # Usar vendas ajustadas para tendência
@@ -722,6 +722,35 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             'dias_periodo': dias_periodo,
             'variacao_ultimo_mes': variacao_ultimo
         })
+    
+    # Verificar se há dados de tendência
+    if not tendencias:
+        st.warning("⚠️ Não há dados suficientes para calcular a tendência (é necessário pelo menos 2 meses de dados).")
+        # Mostrar apenas a tabela de projeção se houver
+        if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty:
+            st.markdown("---")
+            st.markdown("### 🎯 Projeção para o Mês Parcial")
+            
+            df_projecao = vendas_mensais[vendas_mensais['is_mes_parcial']].copy()
+            df_projecao = df_projecao[['vendedor', 'total_vendas', 'dias_periodo', 'dias_mes', 'media_diaria', 'projecao_mes']]
+            df_projecao.columns = ['Vendedor', 'Vendas Realizadas', 'Dias no Período', 'Total Dias no Mês', 'Média Diária', 'Projeção Total']
+            df_projecao['% de Projeção'] = (df_projecao['Vendas Realizadas'] / df_projecao['Projeção Total'] * 100).round(1)
+            df_projecao = df_projecao.sort_values('Projeção Total', ascending=False)
+            
+            st.dataframe(
+                df_projecao,
+                use_container_width=True,
+                column_config={
+                    'Vendedor': 'Vendedor',
+                    'Vendas Realizadas': st.column_config.NumberColumn('Vendas no Período', format='%d'),
+                    'Dias no Período': st.column_config.NumberColumn('Dias no Período', format='%d'),
+                    'Total Dias no Mês': st.column_config.NumberColumn('Dias no Mês', format='%d'),
+                    'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
+                    'Projeção Total': st.column_config.NumberColumn('Projeção para Mês', format='%.1f'),
+                    '% de Projeção': st.column_config.NumberColumn('% da Projeção', format='%.1f%%')
+                }
+            )
+        return
     
     df_tendencias = pd.DataFrame(tendencias)
     df_tendencias = df_tendencias.sort_values('inclinacao', ascending=False)
