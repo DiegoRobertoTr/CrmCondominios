@@ -5,6 +5,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Upload com limpeza automática do MongoDB
 - Vendas por vendedor
 - Evolução semanal (com semana do MÊS)
+- Evolução mensal com seleção múltipla de vendedores
 - Indicador de evolução/piora semana a semana
 - Desempenho por condomínio (integrado com módulo condominios.py)
 - Filtro de período aplicado em TODAS as análises
@@ -336,6 +337,391 @@ def calcular_indicador_evolucao(vendas_semanais):
     
     return evolucao
 
+# ==================== NOVA FUNÇÃO: EVOLUÇÃO MENSAL ====================
+
+@st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
+def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados):
+    """
+    Calcula vendas mensais para vendedores selecionados
+    Retorna DataFrame com vendas por mês e vendedor
+    """
+    data_inicio = datetime.fromisoformat(data_inicio_str)
+    data_fim = datetime.fromisoformat(data_fim_str)
+    
+    df_filtrado = df_hash[
+        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
+        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
+    ].copy()
+    
+    if df_filtrado.empty:
+        return pd.DataFrame()
+    
+    # Filtrar vendedores selecionados
+    if vendedores_selecionados and "Todos" not in vendedores_selecionados:
+        df_filtrado = df_filtrado[df_filtrado['vendedor'].isin(vendedores_selecionados)]
+    
+    if df_filtrado.empty:
+        return pd.DataFrame()
+    
+    # Criar coluna de mês/ano
+    df_filtrado['mes_ano'] = df_filtrado['data_ativacao'].dt.to_period('M')
+    df_filtrado['mes_str'] = df_filtrado['data_ativacao'].dt.strftime('%b/%Y')
+    df_filtrado['ano_mes_num'] = df_filtrado['data_ativacao'].dt.year * 100 + df_filtrado['data_ativacao'].dt.month
+    
+    # Agrupar por vendedor e mês
+    vendas_mensais = df_filtrado.groupby(['vendedor', 'mes_ano', 'mes_str', 'ano_mes_num']).agg(
+        total_vendas=('cliente', 'count')
+    ).reset_index().sort_values(['vendedor', 'ano_mes_num'])
+    
+    # Calcular variação mensal (%)
+    vendas_mensais['variacao_mensal'] = 0.0
+    
+    for vendedor in vendas_mensais['vendedor'].unique():
+        mask = vendas_mensais['vendedor'] == vendedor
+        vendas = vendas_mensais.loc[mask, 'total_vendas'].values
+        
+        for i in range(1, len(vendas)):
+            if vendas[i-1] > 0:
+                variacao = ((vendas[i] - vendas[i-1]) / vendas[i-1]) * 100
+            else:
+                variacao = 100 if vendas[i] > 0 else 0
+            vendas_mensais.loc[mask & (vendas_mensais['ano_mes_num'] == vendas_mensais.loc[mask, 'ano_mes_num'].iloc[i]), 'variacao_mensal'] = variacao
+    
+    return vendas_mensais
+
+def calcular_tendencia_linear(df_vendas_mensais, vendedor):
+    """
+    Calcula a tendência linear para um vendedor específico
+    Retorna: inclinação (crescimento por mês) e R²
+    """
+    dados_vendedor = df_vendas_mensais[df_vendas_mensais['vendedor'] == vendedor].sort_values('ano_mes_num')
+    
+    if len(dados_vendedor) < 2:
+        return 0, 0
+    
+    x = np.arange(len(dados_vendedor))
+    y = dados_vendedor['total_vendas'].values
+    
+    if len(x) < 2 or y.sum() == 0:
+        return 0, 0
+    
+    # Regressão linear simples
+    n = len(x)
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    
+    # Inclinação (slope)
+    slope = np.sum((x - x_mean) * (y - y_mean)) / np.sum((x - x_mean) ** 2)
+    
+    # R²
+    y_pred = slope * (x - x_mean) + y_mean
+    ss_res = np.sum((y - y_pred) ** 2)
+    ss_tot = np.sum((y - y_mean) ** 2)
+    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+    
+    return slope, r2
+
+def render_evolucao_mensal(df, data_inicio, data_fim):
+    """Renderiza a aba de evolução mensal com seleção múltipla de vendedores"""
+    st.subheader("📈 Evolução Mensal por Vendedor")
+    
+    st.markdown(f"""
+    <div style="background-color:#e8f4f8; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
+    <strong>📅 Período analisado:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    df_filtrado = df[
+        (df['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
+        (df['data_ativacao'] <= pd.Timestamp(data_fim))
+    ].copy()
+    
+    if df_filtrado.empty:
+        st.warning("⚠️ Nenhum dado no período selecionado.")
+        return
+    
+    # ========== SELETOR DE VENDEDORES ==========
+    vendedores_disponiveis = sorted(df_filtrado['vendedor'].unique().tolist())
+    
+    st.markdown("### 👥 Selecione os Vendedores")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Opção "Todos" + lista de vendedores
+        opcoes_vendedores = ["👥 Todos"] + vendedores_disponiveis
+        
+        vendedores_selecionados = st.multiselect(
+            "Selecione um ou mais vendedores:",
+            options=opcoes_vendedores,
+            default=["👥 Todos"],
+            key="vendedores_mensais",
+            help="Selecione 'Todos' ou escolha vendedores específicos"
+        )
+    
+    with col2:
+        # Botão para limpar seleção
+        if st.button("🗑️ Limpar", key="limpar_vendedores"):
+            st.session_state.vendedores_mensais = ["👥 Todos"]
+            st.rerun()
+    
+    # Processar seleção
+    if not vendedores_selecionados:
+        st.warning("⚠️ Selecione pelo menos um vendedor.")
+        return
+    
+    if "👥 Todos" in vendedores_selecionados:
+        # Se "Todos" está selecionado, usa todos os vendedores disponíveis
+        vendedores_selecionados = vendedores_disponiveis
+        label_selecao = "Todos os Vendedores"
+    else:
+        label_selecao = f"{len(vendedores_selecionados)} vendedores selecionados"
+    
+    st.caption(f"📌 {label_selecao}")
+    
+    # ========== CALCULAR DADOS MENSAIS ==========
+    data_inicio_str = datetime.combine(data_inicio, datetime.min.time()).isoformat()
+    data_fim_str = datetime.combine(data_fim, datetime.min.time()).isoformat()
+    
+    with st.spinner("🔄 Calculando evolução mensal..."):
+        # Hash para cache
+        df_hash = df.copy()
+        vendas_mensais = calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados)
+    
+    if vendas_mensais.empty:
+        st.warning("⚠️ Nenhum dado mensal disponível para os vendedores selecionados.")
+        return
+    
+    # ========== MÉTRICAS ==========
+    total_vendas_periodo = vendas_mensais['total_vendas'].sum()
+    qtd_vendedores = vendas_mensais['vendedor'].nunique()
+    qtd_meses = vendas_mensais['mes_ano'].nunique()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("📊 Total de Vendas", f"{total_vendas_periodo:,}")
+    col2.metric("👤 Vendedores Analisados", qtd_vendedores)
+    col3.metric("📅 Meses Analisados", qtd_meses)
+    col4.metric("📈 Média por Mês", f"{total_vendas_periodo/qtd_meses:.1f}" if qtd_meses > 0 else "0")
+    
+    st.markdown("---")
+    
+    # ========== GRÁFICO DE EVOLUÇÃO MENSAL ==========
+    st.markdown("### 📊 Evolução Mensal de Vendas")
+    
+    # Pivot para gráfico
+    pivot_mensal = vendas_mensais.pivot_table(
+        index='mes_str',
+        columns='vendedor',
+        values='total_vendas',
+        fill_value=0
+    )
+    
+    # Ordenar por data
+    ordem_meses = vendas_mensais.groupby('mes_str')['ano_mes_num'].first().sort_values().index.tolist()
+    pivot_mensal = pivot_mensal.reindex(ordem_meses)
+    
+    if not pivot_mensal.empty:
+        # Gráfico de linhas
+        fig_linhas = px.line(
+            pivot_mensal,
+            title='📈 Evolução Mensal de Vendas por Vendedor',
+            labels={'value': 'Vendas', 'mes_str': 'Mês', 'variable': 'Vendedor'},
+            markers=True,
+            line_shape='linear'
+        )
+        fig_linhas.update_layout(
+            height=450,
+            hovermode='x unified',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
+        st.plotly_chart(fig_linhas, use_container_width=True, config={'displayModeBar': False})
+        
+        # Gráfico de barras empilhadas
+        fig_barras = px.bar(
+            pivot_mensal,
+            title='📊 Distribuição Mensal de Vendas por Vendedor',
+            labels={'value': 'Vendas', 'mes_str': 'Mês', 'variable': 'Vendedor'},
+            barmode='stack'
+        )
+        fig_barras.update_layout(
+            height=400,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
+        st.plotly_chart(fig_barras, use_container_width=True, config={'displayModeBar': False})
+    
+    st.markdown("---")
+    
+    # ========== ANÁLISE DE TENDÊNCIA ==========
+    st.markdown("### 📈 Análise de Tendência por Vendedor")
+    
+    # Calcular tendência para cada vendedor
+    tendencias = []
+    for vendedor in vendas_mensais['vendedor'].unique():
+        slope, r2 = calcular_tendencia_linear(vendas_mensais, vendedor)
+        
+        # Classificar tendência
+        if slope > 2:
+            tendencia = "🚀 Crescimento Forte"
+            cor = "#2ecc71"
+        elif slope > 0.5:
+            tendencia = "📈 Crescimento Moderado"
+            cor = "#27ae60"
+        elif slope > -0.5:
+            tendencia = "➡️ Estável"
+            cor = "#f39c12"
+        elif slope > -2:
+            tendencia = "📉 Declínio Moderado"
+            cor = "#e67e22"
+        else:
+            tendencia = "🔻 Declínio Forte"
+            cor = "#e74c3c"
+        
+        # Vendas totais e média do vendedor no período
+        dados_vendedor = vendas_mensais[vendas_mensais['vendedor'] == vendedor]
+        total_vendas = dados_vendedor['total_vendas'].sum()
+        media_mensal = dados_vendedor['total_vendas'].mean()
+        meses_analisados = len(dados_vendedor)
+        
+        tendencias.append({
+            'vendedor': vendedor,
+            'total_vendas': total_vendas,
+            'media_mensal': media_mensal,
+            'meses_analisados': meses_analisados,
+            'inclinacao': slope,
+            'r2': r2,
+            'tendencia': tendencia,
+            'cor': cor
+        })
+    
+    df_tendencias = pd.DataFrame(tendencias)
+    df_tendencias = df_tendencias.sort_values('inclinacao', ascending=False)
+    
+    # Cards de tendência
+    col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+    
+    cresc_forte = len(df_tendencias[df_tendencias['tendencia'] == '🚀 Crescimento Forte'])
+    cresc_mod = len(df_tendencias[df_tendencias['tendencia'] == '📈 Crescimento Moderado'])
+    estavel = len(df_tendencias[df_tendencias['tendencia'] == '➡️ Estável'])
+    declinio = len(df_tendencias[df_tendencias['tendencia'].str.contains('Declínio')])
+    
+    col_t1.metric("🚀 Crescimento Forte", cresc_forte)
+    col_t2.metric("📈 Crescimento Moderado", cresc_mod)
+    col_t3.metric("➡️ Estável", estavel)
+    col_t4.metric("📉 Em Declínio", declinio)
+    
+    st.markdown("---")
+    
+    # Gráfico de tendência
+    fig_tend = px.bar(
+        df_tendencias,
+        x='vendedor',
+        y='inclinacao',
+        color='tendencia',
+        title='📊 Tendência de Crescimento por Vendedor (Inclinação Mensal)',
+        text='inclinacao',
+        color_discrete_map={
+            '🚀 Crescimento Forte': '#2ecc71',
+            '📈 Crescimento Moderado': '#27ae60',
+            '➡️ Estável': '#f39c12',
+            '📉 Declínio Moderado': '#e67e22',
+            '🔻 Declínio Forte': '#e74c3c'
+        }
+    )
+    fig_tend.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+    fig_tend.update_layout(
+        height=400,
+        xaxis_title="Vendedor",
+        yaxis_title="Inclinação (vendas por mês)",
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
+        )
+    )
+    st.plotly_chart(fig_tend, use_container_width=True, config={'displayModeBar': False})
+    
+    # ========== TABELA DE DETALHES ==========
+    st.markdown("### 📋 Detalhamento Mensal")
+    
+    # Tabela pivô
+    pivot_detalhe = vendas_mensais.pivot_table(
+        index='vendedor',
+        columns='mes_str',
+        values='total_vendas',
+        fill_value=0
+    )
+    
+    # Reordenar colunas
+    ordem_colunas = vendas_mensais.groupby('mes_str')['ano_mes_num'].first().sort_values().index.tolist()
+    pivot_detalhe = pivot_detalhe.reindex(ordem_colunas, axis=1)
+    
+    # Adicionar coluna de total
+    pivot_detalhe['Total'] = pivot_detalhe.sum(axis=1)
+    pivot_detalhe['Média'] = pivot_detalhe.iloc[:, :-1].mean(axis=1)
+    
+    st.dataframe(
+        pivot_detalhe,
+        use_container_width=True,
+        height=300,
+        column_config={
+            'Total': st.column_config.NumberColumn('Total', format='%d'),
+            'Média': st.column_config.NumberColumn('Média', format='%.1f')
+        }
+    )
+    
+    st.caption(f"📌 Mostrando {len(pivot_detalhe)} vendedores e {len(ordem_colunas)} meses")
+    
+    # ========== EXPANDER COM DADOS COMPLETOS ==========
+    with st.expander("📋 Ver Dados Completos"):
+        st.dataframe(
+            vendas_mensais,
+            use_container_width=True,
+            column_config={
+                'vendedor': 'Vendedor',
+                'mes_str': 'Mês',
+                'total_vendas': st.column_config.NumberColumn('Vendas', format='%d'),
+                'variacao_mensal': st.column_config.NumberColumn('Variação %', format='%.1f%%')
+            }
+        )
+    
+    # ========== EXPORTAR ==========
+    st.markdown("---")
+    st.markdown("### 📤 Exportar Dados Mensais")
+    
+    if st.button("📥 Baixar Dados Mensais", key="exportar_mensal"):
+        try:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                vendas_mensais.to_excel(writer, sheet_name='Vendas Mensais', index=False)
+                df_tendencias.to_excel(writer, sheet_name='Tendências', index=False)
+                pivot_detalhe.to_excel(writer, sheet_name='Resumo Mensal', index=True)
+            
+            output.seek(0)
+            st.download_button(
+                label="⬇️ Baixar Excel",
+                data=output,
+                file_name=f"evolucao_mensal_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            st.success("✅ Arquivo gerado!")
+        except Exception as e:
+            st.error(f"❌ Erro: {str(e)}")
+
 # ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO ====================
 
 def render_desempenho_por_condominio(df, data_inicio, data_fim):
@@ -660,9 +1046,10 @@ def render_dashboard():
     st.markdown("---")
     
     # ========== ABAS ==========
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Vendas por Vendedor",
         "📈 Evolução Semanal",
+        "📈 Evolução Mensal",
         "🏢 Desempenho por Condomínio",
         "📤 Exportar"
     ])
@@ -834,15 +1221,20 @@ def render_dashboard():
         else:
             st.info("ℹ️ Nenhum dado semanal disponível para o período selecionado.")
     
+    # ========== NOVA ABA: EVOLUÇÃO MENSAL ==========
     with tab3:
-        render_desempenho_por_condominio(df, data_inicio, data_fim)
+        render_evolucao_mensal(df, data_inicio, data_fim)
     
     with tab4:
+        render_desempenho_por_condominio(df, data_inicio, data_fim)
+    
+    with tab5:
         st.subheader("📤 Exportar Dados")
         
         exportar_vendas_vendedor = st.checkbox("📊 Vendas por Vendedor", value=True)
-        exportar_evolucao = st.checkbox("📈 Indicador de Evolução", value=True)
+        exportar_evolucao = st.checkbox("📈 Indicador de Evolução Semanal", value=True)
         exportar_semanal = st.checkbox("📅 Dados Semanais", value=True)
+        exportar_mensal = st.checkbox("📈 Evolução Mensal", value=True)
         exportar_condominios = st.checkbox("🏢 Desempenho por Condomínio", value=True)
         
         if st.button("📥 Gerar Excel", type="primary"):
@@ -859,7 +1251,7 @@ def render_dashboard():
                             if not vendas_vendedor.empty:
                                 vendas_vendedor.to_excel(writer, sheet_name='Vendas por Vendedor', index=False)
                         
-                        # Evolução
+                        # Evolução semanal
                         if exportar_evolucao:
                             vendas_semanais, _ = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
                             if not vendas_semanais.empty:
@@ -874,6 +1266,13 @@ def render_dashboard():
                                 vendas_semanais.to_excel(writer, sheet_name='Vendas Semanais', index=False)
                             if not vendas_diarias.empty:
                                 vendas_diarias.to_excel(writer, sheet_name='Vendas Diárias', index=False)
+                        
+                        # Evolução mensal
+                        if exportar_mensal:
+                            todos_vendedores = df['vendedor'].unique().tolist()
+                            vendas_mensais = calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, todos_vendedores)
+                            if not vendas_mensais.empty:
+                                vendas_mensais.to_excel(writer, sheet_name='Evolução Mensal', index=False)
                         
                         # Condomínios
                         if exportar_condominios:
