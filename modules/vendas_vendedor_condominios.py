@@ -5,7 +5,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Upload com limpeza automática do MongoDB
 - Vendas por vendedor
 - Evolução semanal (com semana do MÊS)
-- Evolução mensal com seleção múltipla de vendedores e PROJEÇÃO para mês atual
+- Evolução mensal com seleção múltipla de vendedores e PROJEÇÃO baseada no período selecionado
 - Indicador de evolução/piora semana a semana
 - Desempenho por condomínio (integrado com módulo condominios.py)
 - Filtro de período aplicado em TODAS as análises
@@ -343,7 +343,7 @@ def calcular_indicador_evolucao(vendas_semanais):
 def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados):
     """
     Calcula vendas mensais para vendedores selecionados
-    COM PROJEÇÃO PARA MÊS ATUAL E COMPARAÇÃO JUSTA
+    COM PROJEÇÃO BASEADA NO PERÍODO SELECIONADO
     """
     data_inicio = datetime.fromisoformat(data_inicio_str)
     data_fim = datetime.fromisoformat(data_fim_str)
@@ -376,28 +376,32 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         dias_com_vendas=('dia', 'nunique')
     ).reset_index().sort_values(['vendedor', 'ano_mes_num'])
     
-    # ========== CALCULAR DIAS ÚTEIS POR MÊS PARA PROJEÇÃO ==========
-    def get_dias_uteis_mes(ano, mes, data_inicio_periodo=None, data_fim_periodo=None):
-        """Calcula dias úteis no mês considerando o período filtrado"""
+    # ========== CALCULAR DIAS DO PERÍODO POR MÊS ==========
+    def get_dias_no_periodo(ano, mes, data_inicio, data_fim):
+        """Calcula quantos dias do mês estão dentro do período selecionado"""
         import calendar
-        dias_uteis = 0
-        ultimo_dia = calendar.monthrange(ano, mes)[1]
+        ultimo_dia_mes = calendar.monthrange(ano, mes)[1]
         
-        for dia in range(1, ultimo_dia + 1):
-            data = datetime(ano, mes, dia)
-            # Verifica se está dentro do período filtrado
-            if data_inicio_periodo and data < data_inicio_periodo:
-                continue
-            if data_fim_periodo and data > data_fim_periodo:
-                break
-            # Sábado = 5, Domingo = 6
-            if data.weekday() < 5:  # Segunda a Sexta
-                dias_uteis += 1
-        return dias_uteis
+        # Primeiro dia do mês
+        primeiro_dia_mes = datetime(ano, mes, 1)
+        
+        # Último dia do mês
+        ultimo_dia_mes_dt = datetime(ano, mes, ultimo_dia_mes)
+        
+        # Ajustar para o período
+        inicio_periodo = max(primeiro_dia_mes, data_inicio)
+        fim_periodo = min(ultimo_dia_mes_dt, data_fim)
+        
+        if inicio_periodo > fim_periodo:
+            return 0
+        
+        # Calcular dias corridos no período
+        dias = (fim_periodo - inicio_periodo).days + 1
+        return dias
     
-    # Adicionar dias úteis por mês
-    vendas_mensais['dias_uteis'] = vendas_mensais.apply(
-        lambda row: get_dias_uteis_mes(
+    # Adicionar dias do período por mês
+    vendas_mensais['dias_periodo'] = vendas_mensais.apply(
+        lambda row: get_dias_no_periodo(
             row['mes_ano'].year, 
             row['mes_ano'].month,
             data_inicio,
@@ -406,47 +410,55 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         axis=1
     )
     
-    # ========== IDENTIFICAR MÊS ATUAL E PROJETAR ==========
-    mes_atual = hoje.month
-    ano_atual = hoje.year
-    dia_atual = hoje.day
+    # ========== IDENTIFICAR ÚLTIMO MÊS DO PERÍODO ==========
+    ultimo_mes_periodo = data_fim.month
+    ultimo_ano_periodo = data_fim.year
     
-    # Calcular projeção para o mês atual
-    vendas_mensais['dias_decorridos'] = vendas_mensais.apply(
-        lambda row: dia_atual if (row['mes_ano'].year == ano_atual and row['mes_ano'].month == mes_atual) else row['dias_uteis'],
+    # Verificar se o último mês é parcial (data_fim não é o último dia do mês)
+    ultimo_dia_mes = calendar.monthrange(data_fim.year, data_fim.month)[1]
+    is_mes_parcial = data_fim.day < ultimo_dia_mes
+    
+    vendas_mensais['is_ultimo_mes'] = (vendas_mensais['mes_ano'].dt.year == ultimo_ano_periodo) & (vendas_mensais['mes_ano'].dt.month == ultimo_mes_periodo)
+    
+    # Verificar se o mês é parcial (período não cobre o mês inteiro)
+    vendas_mensais['is_mes_parcial'] = vendas_mensais.apply(
+        lambda row: is_mes_parcial if row['is_ultimo_mes'] else False,
         axis=1
     )
     
-    # Média diária para meses completos
+    # ========== CALCULAR PROJEÇÃO PARA MÊS PARCIAL ==========
+    # Para o último mês se for parcial, calcular projeção baseada na média diária do período
     vendas_mensais['media_diaria'] = vendas_mensais.apply(
-        lambda row: row['total_vendas'] / row['dias_uteis'] if row['dias_uteis'] > 0 else 0,
+        lambda row: row['total_vendas'] / row['dias_periodo'] if row['dias_periodo'] > 0 else 0,
         axis=1
     )
     
-    # Projeção para o mês atual
+    # Calcular total de dias do mês (para projeção)
+    vendas_mensais['dias_mes'] = vendas_mensais.apply(
+        lambda row: calendar.monthrange(row['mes_ano'].year, row['mes_ano'].month)[1],
+        axis=1
+    )
+    
+    # Projeção para meses parciais: média diária * total de dias do mês
     vendas_mensais['projecao_mes'] = vendas_mensais.apply(
-        lambda row: row['media_diaria'] * row['dias_uteis'] if row['media_diaria'] > 0 else row['total_vendas'],
+        lambda row: row['media_diaria'] * row['dias_mes'] if row['media_diaria'] > 0 and row['is_mes_parcial'] else row['total_vendas'],
         axis=1
     )
     
-    # Determinar se é mês atual
-    vendas_mensais['is_mes_atual'] = (vendas_mensais['mes_ano'].dt.year == ano_atual) & (vendas_mensais['mes_ano'].dt.month == mes_atual)
-    
-    # ========== USAR PROJEÇÃO PARA MÊS ATUAL ==========
+    # ========== USAR PROJEÇÃO PARA MÊS PARCIAL ==========
     vendas_mensais['vendas_ajustadas'] = vendas_mensais.apply(
-        lambda row: row['projecao_mes'] if row['is_mes_atual'] else row['total_vendas'],
+        lambda row: row['projecao_mes'] if row['is_mes_parcial'] else row['total_vendas'],
         axis=1
     )
     
     # ========== CALCULAR VARIAÇÃO MENSAL (COM PROJEÇÃO) ==========
     vendas_mensais['variacao_mensal'] = 0.0
-    vendas_mensais['variacao_mensal_real'] = 0.0  # Variação com dados reais
+    vendas_mensais['variacao_mensal_real'] = 0.0
     
     for vendedor in vendas_mensais['vendedor'].unique():
         mask = vendas_mensais['vendedor'] == vendedor
         dados_vendedor = vendas_mensais.loc[mask].sort_values('ano_mes_num')
         
-        # Variação com dados ajustados (incluindo projeção)
         vendas_ajustadas = dados_vendedor['vendas_ajustadas'].values
         vendas_reais = dados_vendedor['total_vendas'].values
         
@@ -468,7 +480,7 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     return vendas_mensais
 
 def render_evolucao_mensal(df, data_inicio, data_fim):
-    """Renderiza a aba de evolução mensal com projeção para mês atual"""
+    """Renderiza a aba de evolução mensal com projeção baseada no período selecionado"""
     st.subheader("📈 Evolução Mensal por Vendedor")
     
     st.markdown(f"""
@@ -538,36 +550,42 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     total_vendas_periodo = vendas_mensais['vendas_ajustadas'].sum()
     qtd_vendedores = vendas_mensais['vendedor'].nunique()
     qtd_meses = vendas_mensais['mes_ano'].nunique()
-    mes_atual = vendas_mensais[vendas_mensais['is_mes_atual']]
-    mes_atual_nome = mes_atual['mes_str'].iloc[0] if not mes_atual.empty else "N/A"
+    
+    meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]
+    mes_parcial_nome = meses_parciais['mes_str'].iloc[0] if not meses_parciais.empty else "N/A"
     
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("📊 Total Projetado", f"{total_vendas_periodo:,.0f}")
     col2.metric("👤 Vendedores Analisados", qtd_vendedores)
     col3.metric("📅 Meses Analisados", qtd_meses)
-    col4.metric("📌 Mês Atual", mes_atual_nome)
+    col4.metric("📌 Mês Parcial", mes_parcial_nome if mes_parcial_nome != "N/A" else "Nenhum")
     
     st.markdown("---")
     
     # ========== AVISO SOBRE PROJEÇÃO ==========
-    st.info("""
-    💡 **Como funciona a projeção:**
-    - Para o mês atual, calculamos a **média diária** de vendas com base nos dias úteis já transcorridos
-    - Projetamos o total estimado para o mês completo
-    - A comparação entre meses considera a **projeção** para o mês atual, não os dados parciais
-    """)
+    if not meses_parciais.empty:
+        dias_periodo = int(meses_parciais['dias_periodo'].iloc[0])
+        st.info(f"""
+        💡 **Como funciona a projeção:**
+        - O último mês do período (**{mes_parcial_nome}**) é parcial (apenas {dias_periodo} dias)
+        - Calculamos a **média diária** baseada nos dias do período: vendas / dias no período
+        - Projetamos o total estimado multiplicando essa média pelo **total de dias do mês**
+        - Exemplo: Se vendeu 7 vendas em {dias_periodo} dias, média = {7/dias_periodo:.2f} vendas/dia → Projeção = {7/dias_periodo:.2f} × 31 = {7/dias_periodo*31:.1f} vendas
+        """)
+    else:
+        st.info("✅ Todos os meses do período estão completos. Não há projeções.")
     
     st.markdown("---")
     
     # ========== GRÁFICO DE EVOLUÇÃO MENSAL ==========
-    st.markdown("### 📊 Evolução Mensal (com Projeção para Mês Atual)")
+    st.markdown("### 📊 Evolução Mensal")
     
     # Preparar dados para o gráfico
     grafico_data = vendas_mensais.copy()
     
     # Separar dados reais e projetados
     grafico_data['tipo_dado'] = grafico_data.apply(
-        lambda row: '📊 Projetado' if row['is_mes_atual'] else '✅ Realizado',
+        lambda row: '📊 Projetado' if row['is_mes_parcial'] else '✅ Realizado',
         axis=1
     )
     
@@ -576,11 +594,6 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     
     for vendedor in grafico_data['vendedor'].unique():
         dados_vendedor = grafico_data[grafico_data['vendedor'] == vendedor].sort_values('ano_mes_num')
-        
-        # Dados reais (meses completos)
-        dados_reais = dados_vendedor[~dados_vendedor['is_mes_atual']]
-        # Dados do mês atual (projeção)
-        dados_projetados = dados_vendedor[dados_vendedor['is_mes_atual']]
         
         # Linha com todos os dados (conectando real + projeção)
         fig_evol.add_trace(go.Scatter(
@@ -591,11 +604,12 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             line=dict(width=2.5),
             marker=dict(
                 size=10,
-                symbol=['circle' if not row['is_mes_atual'] else 'star' for _, row in dados_vendedor.iterrows()]
+                symbol=['star' if row['is_mes_parcial'] else 'circle' for _, row in dados_vendedor.iterrows()]
             )
         ))
         
         # Adicionar barra para mostrar projeção destacada
+        dados_projetados = dados_vendedor[dados_vendedor['is_mes_parcial']]
         if not dados_projetados.empty:
             fig_evol.add_trace(go.Bar(
                 x=dados_projetados['mes_str'],
@@ -611,9 +625,9 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             ))
     
     fig_evol.update_layout(
-        title='📈 Evolução Mensal com Projeção para Mês Atual',
+        title='📈 Evolução Mensal (com Projeção para Mês Parcial)',
         xaxis_title='Mês',
-        yaxis_title='Vendas (projetadas para mês atual)',
+        yaxis_title='Vendas (projetadas para mês parcial)',
         height=450,
         hovermode='x unified',
         legend=dict(
@@ -629,7 +643,7 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     st.markdown("---")
     
     # ========== ANÁLISE DE TENDÊNCIA ==========
-    st.markdown("### 📈 Análise de Tendência (com Projeção)")
+    st.markdown("### 📈 Análise de Tendência")
     
     # Calcular tendência usando dados ajustados
     tendencias = []
@@ -657,13 +671,12 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
         ss_tot = np.sum((y - y_mean) ** 2)
         r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
         
-        # Verificar se é mês atual para mostrar status
-        tem_mes_atual = dados_vendedor['is_mes_atual'].any()
-        
-        # Dados do mês atual
-        mes_atual_info = dados_vendedor[dados_vendedor['is_mes_atual']]
-        projecao = mes_atual_info['projecao_mes'].iloc[0] if not mes_atual_info.empty else None
-        realizado = mes_atual_info['total_vendas'].iloc[0] if not mes_atual_info.empty else None
+        # Dados do mês parcial
+        mes_parcial_info = dados_vendedor[dados_vendedor['is_mes_parcial']]
+        projecao = mes_parcial_info['projecao_mes'].iloc[0] if not mes_parcial_info.empty else None
+        realizado = mes_parcial_info['total_vendas'].iloc[0] if not mes_parcial_info.empty else None
+        media_diaria = mes_parcial_info['media_diaria'].iloc[0] if not mes_parcial_info.empty else None
+        dias_periodo = mes_parcial_info['dias_periodo'].iloc[0] if not mes_parcial_info.empty else None
         
         # Classificar tendência
         if slope > 2:
@@ -702,9 +715,11 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             'r2': r2,
             'tendencia': tendencia,
             'cor': cor,
-            'tem_mes_atual': tem_mes_atual,
+            'tem_mes_parcial': dados_vendedor['is_mes_parcial'].any(),
             'projecao_mes': projecao,
             'realizado_mes': realizado,
+            'media_diaria': media_diaria,
+            'dias_periodo': dias_periodo,
             'variacao_ultimo_mes': variacao_ultimo
         })
     
@@ -726,7 +741,7 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     
     st.markdown("---")
     
-    # Gráfico de tendência com informações do mês atual
+    # Gráfico de tendência com informações do mês parcial
     fig_tend = px.bar(
         df_tendencias,
         x='vendedor',
@@ -745,7 +760,9 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             'vendedor': True,
             'inclinacao': ':.2f',
             'projecao_mes': ':.0f',
-            'realizado_mes': ':.0f'
+            'realizado_mes': ':.0f',
+            'media_diaria': ':.2f',
+            'dias_periodo': ':.0f'
         }
     )
     fig_tend.update_traces(texttemplate='%{text:.2f}', textposition='outside')
@@ -764,7 +781,7 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     st.plotly_chart(fig_tend, use_container_width=True, config={'displayModeBar': False})
     
     # ========== TABELA DE DETALHES ==========
-    st.markdown("### 📋 Detalhamento Mensal com Projeção")
+    st.markdown("### 📋 Detalhamento Mensal")
     
     # Pivot com valores ajustados
     pivot_detalhe = vendas_mensais.pivot_table(
@@ -782,10 +799,9 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     pivot_detalhe['Total'] = pivot_detalhe.sum(axis=1)
     pivot_detalhe['Média'] = pivot_detalhe.iloc[:, :-1].mean(axis=1)
     
-    # Destacar mês atual
-    mes_atual_str = vendas_mensais[vendas_mensais['is_mes_atual']]['mes_str'].iloc[0] if not vendas_mensais[vendas_mensais['is_mes_atual']].empty else None
+    # Destacar mês parcial
+    mes_parcial_str = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].iloc[0] if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty else None
     
-    # Preparar dados para tabela com destaque
     st.dataframe(
         pivot_detalhe,
         use_container_width=True,
@@ -796,17 +812,17 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
         }
     )
     
-    if mes_atual_str:
-        st.caption(f"⭐ **{mes_atual_str}** é o mês atual com valores **projetados** para o mês completo")
+    if mes_parcial_str:
+        st.caption(f"⭐ **{mes_parcial_str}** é o mês parcial com valores **projetados** para o mês completo")
     
-    # ========== TABELA DE PROJEÇÃO DO MÊS ATUAL ==========
-    if not vendas_mensais[vendas_mensais['is_mes_atual']].empty:
+    # ========== TABELA DE PROJEÇÃO DO MÊS PARCIAL ==========
+    if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty:
         st.markdown("---")
-        st.markdown("### 🎯 Projeção para o Mês Atual")
+        st.markdown("### 🎯 Projeção para o Mês Parcial")
         
-        df_projecao = vendas_mensais[vendas_mensais['is_mes_atual']].copy()
-        df_projecao = df_projecao[['vendedor', 'total_vendas', 'dias_uteis', 'media_diaria', 'projecao_mes']]
-        df_projecao.columns = ['Vendedor', 'Vendas Realizadas', 'Dias Úteis no Mês', 'Média Diária', 'Projeção Total']
+        df_projecao = vendas_mensais[vendas_mensais['is_mes_parcial']].copy()
+        df_projecao = df_projecao[['vendedor', 'total_vendas', 'dias_periodo', 'dias_mes', 'media_diaria', 'projecao_mes']]
+        df_projecao.columns = ['Vendedor', 'Vendas Realizadas', 'Dias no Período', 'Total Dias no Mês', 'Média Diária', 'Projeção Total']
         df_projecao['% de Projeção'] = (df_projecao['Vendas Realizadas'] / df_projecao['Projeção Total'] * 100).round(1)
         df_projecao = df_projecao.sort_values('Projeção Total', ascending=False)
         
@@ -815,15 +831,16 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             use_container_width=True,
             column_config={
                 'Vendedor': 'Vendedor',
-                'Vendas Realizadas': st.column_config.NumberColumn('Vendas Realizadas', format='%d'),
-                'Dias Úteis no Mês': st.column_config.NumberColumn('Dias Úteis', format='%d'),
+                'Vendas Realizadas': st.column_config.NumberColumn('Vendas no Período', format='%d'),
+                'Dias no Período': st.column_config.NumberColumn('Dias no Período', format='%d'),
+                'Total Dias no Mês': st.column_config.NumberColumn('Dias no Mês', format='%d'),
                 'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
-                'Projeção Total': st.column_config.NumberColumn('Projeção Total', format='%.1f'),
+                'Projeção Total': st.column_config.NumberColumn('Projeção para Mês', format='%.1f'),
                 '% de Projeção': st.column_config.NumberColumn('% da Projeção', format='%.1f%%')
             }
         )
         
-        # ========== ANÁLISE ESPECÍFICA PARA CADA VENDEDOR ==========
+        # ========== ANÁLISE INDIVIDUAL POR VENDEDOR ==========
         st.markdown("---")
         st.markdown("### 💡 Análise Individual por Vendedor")
         
@@ -833,6 +850,8 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             projecao = row['Projeção Total']
             perc = row['% de Projeção']
             media_diaria = row['Média Diária']
+            dias_periodo = row['Dias no Período']
+            dias_mes = row['Total Dias no Mês']
             
             # Determinar status
             if perc >= 80:
@@ -850,14 +869,14 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             
             # Projeção de vendas restantes
             restante = projecao - realizado
-            dias_restantes = row['Dias Úteis no Mês'] - (datetime.now().day if datetime.now().month == datetime.now().month else 0)
+            dias_restantes = dias_mes - dias_periodo
             meta_diaria_restante = restante / dias_restantes if dias_restantes > 0 else 0
             
             st.markdown(f"""
             <div style="background-color:#f8f9fa; padding:15px; border-radius:8px; margin-bottom:10px; border-left: 4px solid {cor};">
                 <strong>👤 {vendedor}</strong><br>
-                📊 Realizado: <strong>{realizado:.0f}</strong> vendas | 
-                🎯 Projeção: <strong>{projecao:.0f}</strong> vendas | 
+                📊 Realizado: <strong>{realizado:.0f}</strong> vendas em {dias_periodo:.0f} dias do período | 
+                🎯 Projeção: <strong>{projecao:.0f}</strong> vendas para o mês completo | 
                 📈 Progresso: <strong>{perc:.1f}%</strong><br>
                 📌 Status: {status}<br>
                 💪 Meta diária restante: <strong>{meta_diaria_restante:.2f}</strong> vendas/dia para atingir a projeção
@@ -866,7 +885,7 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     
     # ========== EXPANDER COM DADOS COMPLETOS ==========
     with st.expander("📋 Ver Dados Completos"):
-        colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_uteis', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_atual']
+        colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_periodo', 'dias_mes', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
         colunas_existentes = [c for c in colunas_display if c in vendas_mensais.columns]
         
         df_display = vendas_mensais[colunas_existentes].copy()
@@ -874,16 +893,17 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             'vendedor': 'Vendedor',
             'mes_str': 'Mês',
             'total_vendas': 'Vendas Reais',
-            'dias_uteis': 'Dias Úteis',
+            'dias_periodo': 'Dias no Período',
+            'dias_mes': 'Dias no Mês',
             'media_diaria': 'Média Diária',
             'projecao_mes': 'Projeção Mês',
             'vendas_ajustadas': 'Vendas Ajustadas',
             'variacao_mensal': 'Variação %',
-            'is_mes_atual': 'Mês Atual'
+            'is_mes_parcial': 'Mês Parcial'
         })
         
-        # Destacar mês atual com emoji
-        df_display['Mês Atual'] = df_display['Mês Atual'].apply(lambda x: '⭐ Sim' if x else '')
+        # Destacar mês parcial
+        df_display['Mês Parcial'] = df_display['Mês Parcial'].apply(lambda x: '⭐ Sim' if x else '')
         
         st.dataframe(
             df_display,
@@ -892,12 +912,13 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
                 'Vendedor': 'Vendedor',
                 'Mês': 'Mês',
                 'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
-                'Dias Úteis': st.column_config.NumberColumn('Dias Úteis', format='%d'),
+                'Dias no Período': st.column_config.NumberColumn('Dias no Período', format='%d'),
+                'Dias no Mês': st.column_config.NumberColumn('Dias no Mês', format='%d'),
                 'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
                 'Projeção Mês': st.column_config.NumberColumn('Projeção Mês', format='%.1f'),
                 'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
                 'Variação %': st.column_config.NumberColumn('Variação %', format='%.1f%%'),
-                'Mês Atual': 'Mês Atual'
+                'Mês Parcial': 'Mês Parcial'
             }
         )
 
