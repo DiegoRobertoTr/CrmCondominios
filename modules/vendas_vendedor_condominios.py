@@ -6,7 +6,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Vendas por vendedor
 - Evolução semanal (com semana do MÊS)
 - Evolução mensal com seleção múltipla de vendedores e PROJEÇÃO baseada no período selecionado
-- VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS (NOVO)
+- VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS (COM GRÁFICO DE BARRAS E ORDEM CRONOLÓGICA)
 - Metas configuráveis por vendedor
 - Ranking com posição, vendas, projeção, meta e % de alcance
 - Indicador de evolução/piora semana a semana
@@ -360,7 +360,7 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     """
     Calcula vendas mensais para vendedores selecionados
     COM PROJEÇÃO BASEADA NO PERÍODO SELECIONADO
-    Considera dias úteis de SEGUNDA a SÁBADO (6 dias por semana)
+    CORRIGIDO: Projeção considera apenas o período analisado para meses parciais
     """
     data_inicio = datetime.fromisoformat(data_inicio_str)
     data_fim = datetime.fromisoformat(data_fim_str)
@@ -465,16 +465,33 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         axis=1
     )
     
-    # ========== CALCULAR PROJEÇÃO PARA MÊS PARCIAL ==========
-    # Média diária baseada nos dias úteis do período
+    # ========== CALCULAR PROJEÇÃO CORRIGIDA ==========
+    # CORREÇÃO: A média diária deve considerar APENAS os dias úteis do período analisado
     vendas_mensais['media_diaria'] = vendas_mensais.apply(
         lambda row: row['total_vendas'] / row['dias_uteis_periodo'] if row['dias_uteis_periodo'] > 0 else 0,
         axis=1
     )
     
-    # Projeção para meses parciais: média diária * total de dias úteis do mês
+    # Calcular média por dia com vendas (mais conservadora)
+    vendas_mensais['media_por_dia_com_vendas'] = vendas_mensais.apply(
+        lambda row: row['total_vendas'] / row['dias_com_vendas'] if row['dias_com_vendas'] > 0 else 0,
+        axis=1
+    )
+    
+    # Usar a média mais conservadora (menor entre as duas)
+    vendas_mensais['media_diaria_final'] = vendas_mensais.apply(
+        lambda row: min(row['media_diaria'], row['media_por_dia_com_vendas']) 
+        if row['media_diaria'] > 0 and row['media_por_dia_com_vendas'] > 0 
+        else row['media_diaria'],
+        axis=1
+    )
+    
+    # CORREÇÃO: Projeção = média diária final × total de dias úteis do MÊS COMPLETO
+    # Mas apenas para o mês parcial (último mês)
     vendas_mensais['projecao_mes'] = vendas_mensais.apply(
-        lambda row: row['media_diaria'] * row['dias_uteis_mes'] if row['media_diaria'] > 0 and row['is_mes_parcial'] else row['total_vendas'],
+        lambda row: row['media_diaria_final'] * row['dias_uteis_mes'] 
+        if row['media_diaria_final'] > 0 and row['is_mes_parcial'] 
+        else row['total_vendas'],
         axis=1
     )
     
@@ -508,12 +525,12 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     
     return vendas_mensais
 
-# ==================== NOVA FUNÇÃO: VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ====================
+# ==================== FUNÇÃO: VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ====================
 
 def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim):
     """
     Renderiza a visualização evolutiva mês a mês para os vendedores selecionados
-    Exibe gráfico de linhas e tabela detalhada
+    Exibe gráfico de BARRAS e tabela detalhada em ordem cronológica
     """
     if vendas_mensais.empty:
         st.info("ℹ️ Nenhum dado mensal disponível para a visualização evolutiva.")
@@ -526,8 +543,13 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     </div>
     """, unsafe_allow_html=True)
     
+    # ========== ORDENAR DADOS CRONOLOGICAMENTE ==========
+    # Criar uma coluna de data para ordenação
+    vendas_mensais['data_ordem'] = pd.to_datetime(vendas_mensais['mes_str'], format='%b/%Y')
+    vendas_mensais = vendas_mensais.sort_values(['vendedor', 'data_ordem'])
+    
     # ========== PREPARAR DADOS PARA O GRÁFICO ==========
-    # Pivot para o gráfico de linhas
+    # Pivot para o gráfico
     df_pivot = vendas_mensais.pivot_table(
         index='mes_str',
         columns='vendedor',
@@ -535,84 +557,64 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         fill_value=0
     )
     
-    # Ordenar por data
-    ordem_meses = vendas_mensais.groupby('mes_str')['ano_mes_num'].first().sort_values().index.tolist()
+    # Ordenar por data (cronologicamente)
+    ordem_meses = vendas_mensais.groupby('mes_str')['data_ordem'].first().sort_values().index.tolist()
     df_pivot = df_pivot.reindex(ordem_meses, axis=0)
     
     # Identificar meses parciais
     meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].unique().tolist()
     
-    # ========== GRÁFICO DE LINHAS ==========
-    fig_evolutivo = go.Figure()
+    # ========== GRÁFICO DE BARRAS AGRUPADAS ==========
+    st.markdown("### 📊 Evolução Mensal por Vendedor")
     
-    # Adicionar linhas para cada vendedor
+    fig_barras = go.Figure()
+    
+    # Adicionar barras para cada vendedor
     for vendedor in df_pivot.columns:
-        fig_evolutivo.add_trace(go.Scatter(
+        fig_barras.add_trace(go.Bar(
             x=df_pivot.index,
             y=df_pivot[vendedor],
-            mode='lines+markers',
             name=vendedor,
-            line=dict(width=2.5),
-            marker=dict(size=8),
+            text=df_pivot[vendedor].apply(lambda x: f'{x:.1f}'),
+            textposition='outside',
             hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Vendas: %{{y:.1f}}<extra></extra>'
         ))
     
-    # ========== CORREÇÃO: Adicionar marcação para meses parciais ==========
-    # Em vez de usar add_vline com string, vamos adicionar anotações e shapes manualmente
+    # Adicionar linha de meta média
+    if metas and len(metas) > 0:
+        meta_media = sum(metas.values()) / len(metas)
+        if meta_media > 0:
+            fig_barras.add_hline(
+                y=meta_media,
+                line_dash="dot",
+                line_color="green",
+                opacity=0.7,
+                annotation_text=f"🎯 Meta Média: {meta_media:.0f}",
+                annotation_position="bottom right"
+            )
+    
+    # Adicionar marcações para meses parciais
     for mes in meses_parciais:
         if mes in df_pivot.index:
-            # Encontrar a posição numérica do mês no eixo X
-            posicao = list(df_pivot.index).index(mes)
-            
-            # Adicionar uma linha vertical usando shape com coordenadas numéricas
-            fig_evolutivo.add_shape(
-                type="line",
-                x0=posicao - 0.4,
-                y0=0,
-                x1=posicao - 0.4,
-                y1=1,
-                yref="paper",
-                line=dict(
-                    color="orange",
-                    width=2,
-                    dash="dash"
-                ),
-                opacity=0.6
-            )
-            
-            # Adicionar anotação
-            fig_evolutivo.add_annotation(
-                x=posicao - 0.4,
+            fig_barras.add_annotation(
+                x=mes,
                 y=0.95,
                 yref="paper",
                 text="📊 Projetado",
                 showarrow=False,
                 font=dict(color="orange", size=10),
-                bgcolor="rgba(255,255,255,0.8)",
+                bgcolor="rgba(255,255,255,0.9)",
                 bordercolor="orange",
                 borderwidth=1,
                 borderpad=4
             )
     
-    # Adicionar linha de meta (média dos vendedores selecionados)
-    if metas:
-        meta_media = sum(metas.values()) / len(metas) if metas else 0
-        if meta_media > 0:
-            fig_evolutivo.add_hline(
-                y=meta_media,
-                line_dash="dot",
-                line_color="green",
-                opacity=0.6,
-                annotation_text=f"🎯 Meta Média: {meta_media:.0f}",
-                annotation_position="bottom right"
-            )
-    
-    fig_evolutivo.update_layout(
+    fig_barras.update_layout(
         title='📊 Evolução Mensal de Vendas por Vendedor',
         xaxis_title='Mês',
         yaxis_title='Vendas',
         height=450,
-        hovermode='x unified',
+        barmode='group',
         legend=dict(
             orientation='h',
             yanchor='bottom',
@@ -622,16 +624,16 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         )
     )
     
-    st.plotly_chart(fig_evolutivo, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig_barras, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== TABELA DETALHADA ==========
+    # ========== TABELA DETALHADA EM ORDEM CRONOLÓGICA ==========
     st.markdown("### 📋 Detalhamento Mensal por Vendedor")
     
-    # Preparar tabela com valores
-    tabela_evolutiva = vendas_mensais[['vendedor', 'mes_str', 'vendas_ajustadas', 'total_vendas', 'variacao_mensal', 'is_mes_parcial']].copy()
+    # Preparar tabela com valores em ordem cronológica
+    tabela_evolutiva = vendas_mensais[['vendedor', 'mes_str', 'vendas_ajustadas', 'total_vendas', 'variacao_mensal', 'is_mes_parcial', 'data_ordem']].copy()
     
-    # Calcular média móvel (3 meses)
-    tabela_evolutiva = tabela_evolutiva.sort_values(['vendedor', 'mes_str'])
+    # Ordenar por vendedor e data
+    tabela_evolutiva = tabela_evolutiva.sort_values(['vendedor', 'data_ordem'])
     
     # Adicionar variação mensal formatada
     tabela_evolutiva['variacao_formatada'] = tabela_evolutiva['variacao_mensal'].apply(
@@ -1306,7 +1308,7 @@ def render_dashboard():
             
             if ultimo_mes['is_mes_parcial']:
                 projecao = ultimo_mes['projecao_mes']
-                media_diaria = ultimo_mes['media_diaria']
+                media_diaria = ultimo_mes['media_diaria_final']
                 dias_uteis_mes = ultimo_mes['dias_uteis_mes']
             else:
                 projecao = vendas_reais
@@ -1490,7 +1492,7 @@ def render_dashboard():
                 st.caption(f"⭐ **{mes_parcial_nome}** é o mês parcial com valores **projetados** para o mês completo")
         
         with st.expander("📋 Ver Dados Completos"):
-            colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_uteis_periodo', 'dias_uteis_mes', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
+            colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_uteis_periodo', 'dias_uteis_mes', 'media_diaria', 'media_diaria_final', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
             colunas_existentes = [c for c in colunas_display if c in vendas_mensais.columns]
             
             df_display = vendas_mensais[colunas_existentes].copy()
@@ -1500,7 +1502,8 @@ def render_dashboard():
                 'total_vendas': 'Vendas Reais',
                 'dias_uteis_periodo': 'Dias Úteis Período',
                 'dias_uteis_mes': 'Dias Úteis Mês',
-                'media_diaria': 'Média Diária',
+                'media_diaria': 'Média Diária (Período)',
+                'media_diaria_final': 'Média Diária (Conservadora)',
                 'projecao_mes': 'Projeção Mês',
                 'vendas_ajustadas': 'Vendas Ajustadas',
                 'variacao_mensal': 'Variação %',
@@ -1518,7 +1521,8 @@ def render_dashboard():
                     'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
                     'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis Período', format='%d'),
                     'Dias Úteis Mês': st.column_config.NumberColumn('Dias Úteis Mês', format='%d'),
-                    'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
+                    'Média Diária (Período)': st.column_config.NumberColumn('Média Diária (Período)', format='%.2f'),
+                    'Média Diária (Conservadora)': st.column_config.NumberColumn('Média Diária (Conservadora)', format='%.2f'),
                     'Projeção Mês': st.column_config.NumberColumn('Projeção Mês', format='%.1f'),
                     'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
                     'Variação %': st.column_config.NumberColumn('Variação %', format='%.1f%%'),
