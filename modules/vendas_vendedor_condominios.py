@@ -363,7 +363,6 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     """
     data_inicio = datetime.fromisoformat(data_inicio_str)
     data_fim = datetime.fromisoformat(data_fim_str)
-    hoje = datetime.now()
     
     df_filtrado = df_hash[
         (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
@@ -385,7 +384,7 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     df_filtrado['mes_str'] = df_filtrado['data_ativacao'].dt.strftime('%b/%Y')
     df_filtrado['ano_mes_num'] = df_filtrado['data_ativacao'].dt.year * 100 + df_filtrado['data_ativacao'].dt.month
     df_filtrado['dia'] = df_filtrado['data_ativacao'].dt.day
-    df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.weekday()  # 0=Segunda, 6=Domingo
+    df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.dayofweek  # 0=Segunda, 6=Domingo
     
     # ========== DADOS REAIS POR MÊS ==========
     vendas_mensais = df_filtrado.groupby(['vendedor', 'mes_ano', 'mes_str', 'ano_mes_num']).agg(
@@ -537,10 +536,13 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     with col1:
         opcoes_vendedores = ["👥 Todos"] + vendedores_disponiveis
         
+        # Garantir que o default seja válido
+        default_value = ["👥 Todos"] if "👥 Todos" in opcoes_vendedores else [opcoes_vendedores[0]]
+        
         vendedores_selecionados = st.multiselect(
             "Selecione um ou mais vendedores:",
             options=opcoes_vendedores,
-            default=["👥 Todos"],
+            default=default_value,
             key="vendedores_mensais",
             help="Selecione 'Todos' ou escolha vendedores específicos"
         )
@@ -571,10 +573,11 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
         st.info("💡 Defina a meta mensal de vendas para cada vendedor. A meta diária será calculada automaticamente.")
         
         metas = {}
-        cols_meta = st.columns(3)
+        # Usar 2 colunas para melhor visualização
+        cols_meta = st.columns(2)
         
         for i, vendedor in enumerate(vendedores_selecionados):
-            col = cols_meta[i % 3]
+            col = cols_meta[i % 2]
             valor_padrao = METAS_PADRAO.get(vendedor, 20)
             metas[vendedor] = col.number_input(
                 f"Meta {vendedor}",
@@ -582,7 +585,7 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
                 max_value=1000,
                 value=valor_padrao,
                 step=5,
-                key=f"meta_{vendedor}"
+                key=f"meta_{vendedor}_{i}"
             )
         
         if st.button("📊 Aplicar Metas", key="aplicar_metas"):
@@ -690,17 +693,6 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     {f' (parcial - com projeção)' if mes_parcial_nome else ''}
     </div>
     """, unsafe_allow_html=True)
-    
-    # Configurar cores para o percentual da meta
-    def color_percentual(val):
-        if val >= 100:
-            return 'background-color: #90EE90'
-        elif val >= 80:
-            return 'background-color: #FFD700'
-        elif val >= 50:
-            return 'background-color: #FFA500'
-        else:
-            return 'background-color: #FF6B6B'
     
     # Exibir ranking como tabela estilizada
     st.dataframe(
