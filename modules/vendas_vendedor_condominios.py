@@ -6,7 +6,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Vendas por vendedor
 - Evolução semanal (com semana do MÊS)
 - Evolução mensal com seleção múltipla de vendedores e PROJEÇÃO baseada no período selecionado
-- VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS (COM GRÁFICO DE BARRAS E ORDEM CRONOLÓGICA)
+- VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS (COM VENDAS REAIS E PROJEÇÃO COMO REFERÊNCIA)
 - Metas configuráveis por vendedor
 - Ranking com posição, vendas, projeção, meta e % de alcance
 - Indicador de evolução/piora semana a semana
@@ -530,7 +530,7 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
 def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim):
     """
     Renderiza a visualização evolutiva mês a mês para os vendedores selecionados
-    Exibe gráfico de BARRAS e tabela detalhada em ordem cronológica
+    Exibe gráfico de BARRAS com VENDAS REAIS e linha de PROJEÇÃO para o mês parcial
     """
     if vendas_mensais.empty:
         st.info("ℹ️ Nenhum dado mensal disponível para a visualização evolutiva.")
@@ -549,36 +549,69 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     vendas_mensais = vendas_mensais.sort_values(['vendedor', 'data_ordem'])
     
     # ========== PREPARAR DADOS PARA O GRÁFICO ==========
-    # Pivot para o gráfico
-    df_pivot = vendas_mensais.pivot_table(
+    # Pivot para o gráfico com VENDAS REAIS (total_vendas)
+    df_pivot_real = vendas_mensais.pivot_table(
         index='mes_str',
         columns='vendedor',
-        values='vendas_ajustadas',
+        values='total_vendas',
+        fill_value=0
+    )
+    
+    # Pivot para a projeção (apenas meses parciais)
+    df_pivot_projecao = vendas_mensais.pivot_table(
+        index='mes_str',
+        columns='vendedor',
+        values='projecao_mes',
         fill_value=0
     )
     
     # Ordenar por data (cronologicamente)
     ordem_meses = vendas_mensais.groupby('mes_str')['data_ordem'].first().sort_values().index.tolist()
-    df_pivot = df_pivot.reindex(ordem_meses, axis=0)
+    df_pivot_real = df_pivot_real.reindex(ordem_meses, axis=0)
+    df_pivot_projecao = df_pivot_projecao.reindex(ordem_meses, axis=0)
     
     # Identificar meses parciais
     meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].unique().tolist()
     
     # ========== GRÁFICO DE BARRAS AGRUPADAS ==========
-    st.markdown("### 📊 Evolução Mensal por Vendedor")
+    st.markdown("### 📊 Evolução Mensal de Vendas Reais")
     
     fig_barras = go.Figure()
     
-    # Adicionar barras para cada vendedor
-    for vendedor in df_pivot.columns:
+    # Adicionar barras para cada vendedor (VENDAS REAIS)
+    for vendedor in df_pivot_real.columns:
         fig_barras.add_trace(go.Bar(
-            x=df_pivot.index,
-            y=df_pivot[vendedor],
+            x=df_pivot_real.index,
+            y=df_pivot_real[vendedor],
             name=vendedor,
-            text=df_pivot[vendedor].apply(lambda x: f'{x:.1f}'),
+            text=df_pivot_real[vendedor].apply(lambda x: f'{int(x)}' if x > 0 else ''),
             textposition='outside',
-            hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Vendas: %{{y:.1f}}<extra></extra>'
+            hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Vendas Reais: %{{y:.0f}}<extra></extra>'
         ))
+    
+    # Adicionar linha de projeção para meses parciais (tracejada)
+    for vendedor in df_pivot_projecao.columns:
+        # Filtrar apenas meses parciais com projeção > 0
+        meses_com_projecao = []
+        valores_projecao = []
+        
+        for mes in meses_parciais:
+            if mes in df_pivot_projecao.index:
+                valor = df_pivot_projecao.loc[mes, vendedor]
+                if valor > 0:
+                    meses_com_projecao.append(mes)
+                    valores_projecao.append(valor)
+        
+        if meses_com_projecao:
+            fig_barras.add_trace(go.Scatter(
+                x=meses_com_projecao,
+                y=valores_projecao,
+                mode='markers+lines',
+                name=f'{vendedor} (Projeção)',
+                line=dict(dash='dash', width=2, color='orange'),
+                marker=dict(symbol='diamond', size=10, color='orange'),
+                hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Projeção: %{{y:.1f}}<extra></extra>'
+            ))
     
     # Adicionar linha de meta média
     if metas and len(metas) > 0:
@@ -595,7 +628,7 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     
     # Adicionar marcações para meses parciais
     for mes in meses_parciais:
-        if mes in df_pivot.index:
+        if mes in df_pivot_real.index:
             fig_barras.add_annotation(
                 x=mes,
                 y=0.95,
@@ -610,9 +643,9 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
             )
     
     fig_barras.update_layout(
-        title='📊 Evolução Mensal de Vendas por Vendedor',
+        title='📊 Evolução Mensal de Vendas Reais por Vendedor',
         xaxis_title='Mês',
-        yaxis_title='Vendas',
+        yaxis_title='Vendas Reais',
         height=450,
         barmode='group',
         legend=dict(
@@ -630,7 +663,7 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     st.markdown("### 📋 Detalhamento Mensal por Vendedor")
     
     # Preparar tabela com valores em ordem cronológica
-    tabela_evolutiva = vendas_mensais[['vendedor', 'mes_str', 'vendas_ajustadas', 'total_vendas', 'variacao_mensal', 'is_mes_parcial', 'data_ordem']].copy()
+    tabela_evolutiva = vendas_mensais[['vendedor', 'mes_str', 'total_vendas', 'projecao_mes', 'variacao_mensal', 'is_mes_parcial', 'data_ordem']].copy()
     
     # Ordenar por vendedor e data
     tabela_evolutiva = tabela_evolutiva.sort_values(['vendedor', 'data_ordem'])
@@ -640,18 +673,24 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         lambda x: f"{x:+.1f}%" if x != 0 else "0%"
     )
     
-    # Marcar meses parciais
+    # Marcar meses parciais e mostrar projeção
     tabela_evolutiva['status'] = tabela_evolutiva['is_mes_parcial'].apply(
         lambda x: "⭐ Projetado" if x else "✅ Realizado"
     )
     
+    # Criar coluna com projeção apenas para meses parciais
+    tabela_evolutiva['projecao_display'] = tabela_evolutiva.apply(
+        lambda row: f"{row['projecao_mes']:.1f}" if row['is_mes_parcial'] and row['projecao_mes'] > 0 else "-",
+        axis=1
+    )
+    
     # Ordenar e exibir
-    tabela_display = tabela_evolutiva[['vendedor', 'mes_str', 'vendas_ajustadas', 'total_vendas', 'variacao_formatada', 'status']]
+    tabela_display = tabela_evolutiva[['vendedor', 'mes_str', 'total_vendas', 'projecao_display', 'variacao_formatada', 'status']]
     tabela_display = tabela_display.rename(columns={
         'vendedor': 'Vendedor',
         'mes_str': 'Mês',
-        'vendas_ajustadas': 'Vendas Ajustadas',
         'total_vendas': 'Vendas Reais',
+        'projecao_display': 'Projeção',
         'variacao_formatada': 'Variação Mensal',
         'status': 'Status'
     })
@@ -663,8 +702,8 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         column_config={
             'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
             'Mês': st.column_config.TextColumn('Mês', width='small'),
-            'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
             'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
+            'Projeção': st.column_config.TextColumn('Projeção', width='small'),
             'Variação Mensal': st.column_config.TextColumn('Variação %', width='small'),
             'Status': st.column_config.TextColumn('Status', width='small')
         }
@@ -675,9 +714,9 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     
     resumo_vendedor = vendas_mensais.groupby('vendedor').agg(
         total_vendas_periodo=('total_vendas', 'sum'),
-        media_mensal=('vendas_ajustadas', 'mean'),
-        max_mensal=('vendas_ajustadas', 'max'),
-        min_mensal=('vendas_ajustadas', 'min'),
+        media_mensal_real=('total_vendas', 'mean'),
+        max_mensal=('total_vendas', 'max'),
+        min_mensal=('total_vendas', 'min'),
         meses_ativos=('mes_str', 'nunique')
     ).reset_index()
     
@@ -687,13 +726,13 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     )
     
     # Calcular % da meta (média mensal vs meta)
-    resumo_vendedor['percentual_meta'] = (resumo_vendedor['media_mensal'] / resumo_vendedor['meta'] * 100).fillna(0)
+    resumo_vendedor['percentual_meta'] = (resumo_vendedor['media_mensal_real'] / resumo_vendedor['meta'] * 100).fillna(0)
     
-    resumo_display = resumo_vendedor[['vendedor', 'total_vendas_periodo', 'media_mensal', 'meta', 'percentual_meta', 'meses_ativos']]
+    resumo_display = resumo_vendedor[['vendedor', 'total_vendas_periodo', 'media_mensal_real', 'meta', 'percentual_meta', 'meses_ativos']]
     resumo_display = resumo_display.rename(columns={
         'vendedor': 'Vendedor',
         'total_vendas_periodo': 'Total Período',
-        'media_mensal': 'Média Mensal',
+        'media_mensal_real': 'Média Mensal',
         'meta': 'Meta Mensal',
         'percentual_meta': '% da Meta',
         'meses_ativos': 'Meses Ativos'
