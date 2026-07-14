@@ -557,16 +557,41 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
             hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Vendas: %{{y:.1f}}<extra></extra>'
         ))
     
-    # Adicionar marcação para meses parciais
+    # ========== CORREÇÃO: Adicionar marcação para meses parciais ==========
+    # Em vez de usar add_vline com string, vamos adicionar anotações e shapes manualmente
     for mes in meses_parciais:
         if mes in df_pivot.index:
-            fig_evolutivo.add_vline(
-                x=mes,
-                line_dash="dash",
-                line_color="orange",
-                opacity=0.5,
-                annotation_text="📊 Projetado",
-                annotation_position="top"
+            # Encontrar a posição numérica do mês no eixo X
+            posicao = list(df_pivot.index).index(mes)
+            
+            # Adicionar uma linha vertical usando shape com coordenadas numéricas
+            fig_evolutivo.add_shape(
+                type="line",
+                x0=posicao - 0.4,
+                y0=0,
+                x1=posicao - 0.4,
+                y1=1,
+                yref="paper",
+                line=dict(
+                    color="orange",
+                    width=2,
+                    dash="dash"
+                ),
+                opacity=0.6
+            )
+            
+            # Adicionar anotação
+            fig_evolutivo.add_annotation(
+                x=posicao - 0.4,
+                y=0.95,
+                yref="paper",
+                text="📊 Projetado",
+                showarrow=False,
+                font=dict(color="orange", size=10),
+                bgcolor="rgba(255,255,255,0.8)",
+                bordercolor="orange",
+                borderwidth=1,
+                borderpad=4
             )
     
     # Adicionar linha de meta (média dos vendedores selecionados)
@@ -1259,7 +1284,7 @@ def render_dashboard():
             st.warning("⚠️ Nenhum dado mensal disponível para os vendedores selecionados.")
             return
         
-        # ========== NOVO: VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ==========
+        # ========== VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ==========
         render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim)
         
         st.markdown("---")
