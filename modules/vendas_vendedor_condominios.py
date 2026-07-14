@@ -6,6 +6,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Vendas por vendedor
 - Evolução semanal (com semana do MÊS)
 - Evolução mensal com seleção múltipla de vendedores e PROJEÇÃO baseada no período selecionado
+- VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS (NOVO)
 - Metas configuráveis por vendedor
 - Ranking com posição, vendas, projeção, meta e % de alcance
 - Indicador de evolução/piora semana a semana
@@ -507,255 +508,86 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     
     return vendas_mensais
 
-def render_evolucao_mensal(df, data_inicio, data_fim):
-    """Renderiza a aba de evolução mensal com projeção, metas e ranking"""
-    st.subheader("📈 Evolução Mensal por Vendedor")
-    
-    st.markdown(f"""
-    <div style="background-color:#e8f4f8; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
-    <strong>📅 Período analisado:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}
-    </div>
-    """, unsafe_allow_html=True)
-    
-    df_filtrado = df[
-        (df['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-        (df['data_ativacao'] <= pd.Timestamp(data_fim))
-    ].copy()
-    
-    if df_filtrado.empty:
-        st.warning("⚠️ Nenhum dado no período selecionado.")
-        return
-    
-    # ========== SELETOR DE VENDEDORES ==========
-    vendedores_disponiveis = sorted(df_filtrado['vendedor'].unique().tolist())
-    
-    st.markdown("### 👥 Selecione os Vendedores")
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        opcoes_vendedores = ["👥 Todos"] + vendedores_disponiveis
-        
-        # Garantir que o default seja válido
-        default_value = ["👥 Todos"] if "👥 Todos" in opcoes_vendedores else [opcoes_vendedores[0]]
-        
-        vendedores_selecionados = st.multiselect(
-            "Selecione um ou mais vendedores:",
-            options=opcoes_vendedores,
-            default=default_value,
-            key="vendedores_mensais",
-            help="Selecione 'Todos' ou escolha vendedores específicos"
-        )
-    
-    with col2:
-        if st.button("🗑️ Limpar", key="limpar_vendedores"):
-            st.session_state.vendedores_mensais = ["👥 Todos"]
-            st.rerun()
-    
-    # Processar seleção
-    if not vendedores_selecionados:
-        st.warning("⚠️ Selecione pelo menos um vendedor.")
-        return
-    
-    if "👥 Todos" in vendedores_selecionados:
-        vendedores_selecionados = vendedores_disponiveis
-        label_selecao = "Todos os Vendedores"
-    else:
-        label_selecao = f"{len(vendedores_selecionados)} vendedores selecionados"
-    
-    st.caption(f"📌 {label_selecao}")
-    
-    # ========== CONFIGURAR METAS ==========
-    st.markdown("---")
-    st.markdown("### 🎯 Configurar Metas")
-    
-    with st.expander("📝 Definir Metas Mensais por Vendedor"):
-        st.info("💡 Defina a meta mensal de vendas para cada vendedor. A meta diária será calculada automaticamente.")
-        
-        metas = {}
-        # Usar 2 colunas para melhor visualização
-        cols_meta = st.columns(2)
-        
-        for i, vendedor in enumerate(vendedores_selecionados):
-            col = cols_meta[i % 2]
-            valor_padrao = METAS_PADRAO.get(vendedor, 20)
-            metas[vendedor] = col.number_input(
-                f"Meta {vendedor}",
-                min_value=1,
-                max_value=1000,
-                value=valor_padrao,
-                step=5,
-                key=f"meta_{vendedor}_{i}"
-            )
-        
-        if st.button("📊 Aplicar Metas", key="aplicar_metas"):
-            st.success("✅ Metas aplicadas com sucesso!")
-    
-    # ========== CALCULAR DADOS MENSAIS ==========
-    data_inicio_str = datetime.combine(data_inicio, datetime.min.time()).isoformat()
-    data_fim_str = datetime.combine(data_fim, datetime.min.time()).isoformat()
-    
-    with st.spinner("🔄 Calculando evolução mensal com projeção..."):
-        df_hash = df.copy()
-        vendas_mensais = calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados)
-    
+# ==================== NOVA FUNÇÃO: VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ====================
+
+def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim):
+    """
+    Renderiza a visualização evolutiva mês a mês para os vendedores selecionados
+    Exibe gráfico de linhas e tabela detalhada
+    """
     if vendas_mensais.empty:
-        st.warning("⚠️ Nenhum dado mensal disponível para os vendedores selecionados.")
+        st.info("ℹ️ Nenhum dado mensal disponível para a visualização evolutiva.")
         return
     
-    # ========== IDENTIFICAR MÊS PARCIAL ==========
-    meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]
-    mes_parcial_nome = meses_parciais['mes_str'].iloc[0] if not meses_parciais.empty else None
-    
-    # ========== CRIAR RANKING ==========
-    st.markdown("---")
-    st.markdown("### 🏆 Ranking de Desempenho")
-    
-    # Preparar dados do ranking
-    ranking_data = []
-    
-    for vendedor in vendedores_selecionados:
-        dados_vendedor = vendas_mensais[vendas_mensais['vendedor'] == vendedor]
-        
-        if dados_vendedor.empty:
-            continue
-        
-        # Ordenar por mês
-        dados_vendedor = dados_vendedor.sort_values('ano_mes_num')
-        
-        # Último mês (pode ser parcial ou completo)
-        ultimo_mes = dados_vendedor.iloc[-1]
-        
-        # Vendas reais
-        vendas_reais = ultimo_mes['total_vendas']
-        
-        # Projeção (se for parcial, senão usa o real)
-        if ultimo_mes['is_mes_parcial']:
-            projecao = ultimo_mes['projecao_mes']
-            media_diaria = ultimo_mes['media_diaria']
-            dias_uteis_mes = ultimo_mes['dias_uteis_mes']
-        else:
-            projecao = vendas_reais
-            media_diaria = ultimo_mes['total_vendas'] / ultimo_mes['dias_uteis_mes'] if ultimo_mes['dias_uteis_mes'] > 0 else 0
-            dias_uteis_mes = ultimo_mes['dias_uteis_mes']
-        
-        # Meta
-        meta = metas.get(vendedor, METAS_PADRAO.get(vendedor, 20))
-        
-        # Percentual da meta
-        percentual_meta = (projecao / meta * 100) if meta > 0 else 0
-        
-        # Dias úteis no período
-        dias_uteis_periodo = ultimo_mes['dias_uteis_periodo']
-        
-        ranking_data.append({
-            'Vendedor': vendedor,
-            'Vendas Realizadas': int(vendas_reais),
-            'Projeção': int(projecao),
-            'Meta': int(meta),
-            '% da Meta': min(percentual_meta, 200),  # Cap em 200%
-            'Média Diária': media_diaria,
-            'Dias Úteis Período': int(dias_uteis_periodo),
-            'Dias Úteis Mês': int(dias_uteis_mes),
-            'Status': '📊 Projetado' if ultimo_mes['is_mes_parcial'] else '✅ Realizado'
-        })
-    
-    if not ranking_data:
-        st.warning("⚠️ Nenhum dado disponível para o ranking.")
-        return
-    
-    df_ranking = pd.DataFrame(ranking_data)
-    
-    # Ordenar por Projeção (decrescente) para o ranking
-    df_ranking = df_ranking.sort_values('Projeção', ascending=False).reset_index(drop=True)
-    
-    # Adicionar coluna de posição
-    df_ranking.index = df_ranking.index + 1
-    df_ranking.insert(0, 'Posição', df_ranking.index)
-    
-    # Adicionar emojis para as posições
-    def get_posicao_emoji(pos):
-        if pos == 1:
-            return "🥇"
-        elif pos == 2:
-            return "🥈"
-        elif pos == 3:
-            return "🥉"
-        else:
-            return f"{pos}º"
-    
-    df_ranking['Posição'] = df_ranking['Posição'].apply(get_posicao_emoji)
-    
-    # ========== EXIBIR RANKING ==========
+    st.markdown("### 📈 Evolução Mensal - Mês a Mês")
     st.markdown(f"""
-    <div style="background-color:#f0f8ff; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
-    <strong>📌 Mês analisado:</strong> {mes_parcial_nome if mes_parcial_nome else 'Último mês do período'}
-    {f' (parcial - com projeção)' if mes_parcial_nome else ''}
+    <div style="background-color:#f0f8ff; padding:12px; border-radius:8px; margin-bottom:15px; font-size:13px;">
+    <strong>📅 Período:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}
     </div>
     """, unsafe_allow_html=True)
     
-    # Exibir ranking como tabela estilizada
-    st.dataframe(
-        df_ranking,
-        use_container_width=True,
-        height=400,
-        column_config={
-            'Posição': st.column_config.TextColumn('🏆', width='small'),
-            'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
-            'Vendas Realizadas': st.column_config.NumberColumn('Vendido', format='%d'),
-            'Projeção': st.column_config.NumberColumn('Projeção', format='%d'),
-            'Meta': st.column_config.NumberColumn('Meta', format='%d'),
-            '% da Meta': st.column_config.NumberColumn('% Meta', format='%.1f%%'),
-            'Média Diária': st.column_config.NumberColumn('Média/dia', format='%.2f'),
-            'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis', format='%d'),
-            'Status': st.column_config.TextColumn('Status', width='small')
-        }
+    # ========== PREPARAR DADOS PARA O GRÁFICO ==========
+    # Pivot para o gráfico de linhas
+    df_pivot = vendas_mensais.pivot_table(
+        index='mes_str',
+        columns='vendedor',
+        values='vendas_ajustadas',
+        fill_value=0
     )
     
-    # ========== GRÁFICO DE BARRAS COMPARATIVO ==========
-    st.markdown("---")
-    st.markdown("### 📊 Comparativo de Vendas")
+    # Ordenar por data
+    ordem_meses = vendas_mensais.groupby('mes_str')['ano_mes_num'].first().sort_values().index.tolist()
+    df_pivot = df_pivot.reindex(ordem_meses, axis=0)
     
-    # Gráfico de barras comparando Realizado vs Projeção
-    fig_compare = go.Figure()
+    # Identificar meses parciais
+    meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].unique().tolist()
     
-    # Barras para Vendas Realizadas
-    fig_compare.add_trace(go.Bar(
-        x=df_ranking['Vendedor'],
-        y=df_ranking['Vendas Realizadas'],
-        name='Vendas Realizadas',
-        marker_color='#3498db',
-        text=df_ranking['Vendas Realizadas'],
-        textposition='outside'
-    ))
+    # ========== GRÁFICO DE LINHAS ==========
+    fig_evolutivo = go.Figure()
     
-    # Barras para Projeção
-    fig_compare.add_trace(go.Bar(
-        x=df_ranking['Vendedor'],
-        y=df_ranking['Projeção'],
-        name='Projeção',
-        marker_color='#e67e22',
-        text=df_ranking['Projeção'],
-        textposition='outside'
-    ))
+    # Adicionar linhas para cada vendedor
+    for vendedor in df_pivot.columns:
+        fig_evolutivo.add_trace(go.Scatter(
+            x=df_pivot.index,
+            y=df_pivot[vendedor],
+            mode='lines+markers',
+            name=vendedor,
+            line=dict(width=2.5),
+            marker=dict(size=8),
+            hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Vendas: %{{y:.1f}}<extra></extra>'
+        ))
     
-    # Barras para Meta
-    fig_compare.add_trace(go.Bar(
-        x=df_ranking['Vendedor'],
-        y=df_ranking['Meta'],
-        name='Meta',
-        marker_color='#2ecc71',
-        text=df_ranking['Meta'],
-        textposition='outside',
-        opacity=0.7
-    ))
+    # Adicionar marcação para meses parciais
+    for mes in meses_parciais:
+        if mes in df_pivot.index:
+            fig_evolutivo.add_vline(
+                x=mes,
+                line_dash="dash",
+                line_color="orange",
+                opacity=0.5,
+                annotation_text="📊 Projetado",
+                annotation_position="top"
+            )
     
-    fig_compare.update_layout(
-        title='📊 Comparativo: Realizado vs Projeção vs Meta',
-        xaxis_title='Vendedor',
+    # Adicionar linha de meta (média dos vendedores selecionados)
+    if metas:
+        meta_media = sum(metas.values()) / len(metas) if metas else 0
+        if meta_media > 0:
+            fig_evolutivo.add_hline(
+                y=meta_media,
+                line_dash="dot",
+                line_color="green",
+                opacity=0.6,
+                annotation_text=f"🎯 Meta Média: {meta_media:.0f}",
+                annotation_position="bottom right"
+            )
+    
+    fig_evolutivo.update_layout(
+        title='📊 Evolução Mensal de Vendas por Vendedor',
+        xaxis_title='Mês',
         yaxis_title='Vendas',
-        height=400,
-        barmode='group',
+        height=450,
+        hovermode='x unified',
         legend=dict(
             orientation='h',
             yanchor='bottom',
@@ -764,119 +596,94 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             x=1
         )
     )
-    st.plotly_chart(fig_compare, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== GRÁFICO DE BARRAS: % DA META ==========
-    st.markdown("### 🎯 Percentual de Alcance da Meta")
+    st.plotly_chart(fig_evolutivo, use_container_width=True, config={'displayModeBar': False})
     
-    # Ordenar por % da Meta
-    df_percentual = df_ranking.sort_values('% da Meta', ascending=True)
+    # ========== TABELA DETALHADA ==========
+    st.markdown("### 📋 Detalhamento Mensal por Vendedor")
     
-    colors = ['#FF6B6B' if x < 50 else '#FFA500' if x < 80 else '#FFD700' if x < 100 else '#90EE90' for x in df_percentual['% da Meta']]
+    # Preparar tabela com valores
+    tabela_evolutiva = vendas_mensais[['vendedor', 'mes_str', 'vendas_ajustadas', 'total_vendas', 'variacao_mensal', 'is_mes_parcial']].copy()
     
-    fig_percent = go.Figure()
+    # Calcular média móvel (3 meses)
+    tabela_evolutiva = tabela_evolutiva.sort_values(['vendedor', 'mes_str'])
     
-    fig_percent.add_trace(go.Bar(
-        x=df_percentual['% da Meta'],
-        y=df_percentual['Vendedor'],
-        orientation='h',
-        marker_color=colors,
-        text=[f"{x:.1f}%" for x in df_percentual['% da Meta']],
-        textposition='outside'
-    ))
-    
-    # Linha de 100%
-    fig_percent.add_vline(
-        x=100, 
-        line_dash="dash", 
-        line_color="green",
-        annotation_text="Meta 100%",
-        annotation_position="top"
+    # Adicionar variação mensal formatada
+    tabela_evolutiva['variacao_formatada'] = tabela_evolutiva['variacao_mensal'].apply(
+        lambda x: f"{x:+.1f}%" if x != 0 else "0%"
     )
     
-    fig_percent.update_layout(
-        title='🎯 Percentual da Meta Alcançado',
-        xaxis_title='% da Meta',
-        yaxis_title='Vendedor',
-        height=350,
-        xaxis=dict(range=[0, max(df_percentual['% da Meta'].max() + 20, 120)])
-    )
-    st.plotly_chart(fig_percent, use_container_width=True, config={'displayModeBar': False})
-    
-    # ========== TABELA DE DETALHES ==========
-    st.markdown("---")
-    st.markdown("### 📋 Detalhamento Mensal")
-    
-    # Pivot com valores ajustados
-    pivot_detalhe = vendas_mensais.pivot_table(
-        index='vendedor',
-        columns='mes_str',
-        values='vendas_ajustadas',
-        fill_value=0
+    # Marcar meses parciais
+    tabela_evolutiva['status'] = tabela_evolutiva['is_mes_parcial'].apply(
+        lambda x: "⭐ Projetado" if x else "✅ Realizado"
     )
     
-    # Reordenar colunas
-    ordem_colunas = vendas_mensais.groupby('mes_str')['ano_mes_num'].first().sort_values().index.tolist()
-    pivot_detalhe = pivot_detalhe.reindex(ordem_colunas, axis=1)
-    
-    # Adicionar colunas
-    pivot_detalhe['Total'] = pivot_detalhe.sum(axis=1)
-    pivot_detalhe['Média'] = pivot_detalhe.iloc[:, :-1].mean(axis=1)
-    
-    # Destacar mês parcial
-    mes_parcial_str = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].iloc[0] if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty else None
+    # Ordenar e exibir
+    tabela_display = tabela_evolutiva[['vendedor', 'mes_str', 'vendas_ajustadas', 'total_vendas', 'variacao_formatada', 'status']]
+    tabela_display = tabela_display.rename(columns={
+        'vendedor': 'Vendedor',
+        'mes_str': 'Mês',
+        'vendas_ajustadas': 'Vendas Ajustadas',
+        'total_vendas': 'Vendas Reais',
+        'variacao_formatada': 'Variação Mensal',
+        'status': 'Status'
+    })
     
     st.dataframe(
-        pivot_detalhe,
+        tabela_display,
         use_container_width=True,
         height=300,
         column_config={
-            'Total': st.column_config.NumberColumn('Total', format='%d'),
-            'Média': st.column_config.NumberColumn('Média', format='%.1f')
+            'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
+            'Mês': st.column_config.TextColumn('Mês', width='small'),
+            'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
+            'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
+            'Variação Mensal': st.column_config.TextColumn('Variação %', width='small'),
+            'Status': st.column_config.TextColumn('Status', width='small')
         }
     )
     
-    if mes_parcial_str:
-        st.caption(f"⭐ **{mes_parcial_str}** é o mês parcial com valores **projetados** para o mês completo")
+    # ========== RESUMO POR VENDEDOR ==========
+    st.markdown("### 📊 Resumo por Vendedor")
     
-    # ========== EXPANDER COM DADOS COMPLETOS ==========
-    with st.expander("📋 Ver Dados Completos"):
-        colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_uteis_periodo', 'dias_uteis_mes', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
-        colunas_existentes = [c for c in colunas_display if c in vendas_mensais.columns]
-        
-        df_display = vendas_mensais[colunas_existentes].copy()
-        df_display = df_display.rename(columns={
-            'vendedor': 'Vendedor',
-            'mes_str': 'Mês',
-            'total_vendas': 'Vendas Reais',
-            'dias_uteis_periodo': 'Dias Úteis Período',
-            'dias_uteis_mes': 'Dias Úteis Mês',
-            'media_diaria': 'Média Diária',
-            'projecao_mes': 'Projeção Mês',
-            'vendas_ajustadas': 'Vendas Ajustadas',
-            'variacao_mensal': 'Variação %',
-            'is_mes_parcial': 'Mês Parcial'
-        })
-        
-        # Destacar mês parcial
-        df_display['Mês Parcial'] = df_display['Mês Parcial'].apply(lambda x: '⭐ Sim' if x else '')
-        
-        st.dataframe(
-            df_display,
-            use_container_width=True,
-            column_config={
-                'Vendedor': 'Vendedor',
-                'Mês': 'Mês',
-                'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
-                'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis Período', format='%d'),
-                'Dias Úteis Mês': st.column_config.NumberColumn('Dias Úteis Mês', format='%d'),
-                'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
-                'Projeção Mês': st.column_config.NumberColumn('Projeção Mês', format='%.1f'),
-                'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
-                'Variação %': st.column_config.NumberColumn('Variação %', format='%.1f%%'),
-                'Mês Parcial': 'Mês Parcial'
-            }
-        )
+    resumo_vendedor = vendas_mensais.groupby('vendedor').agg(
+        total_vendas_periodo=('total_vendas', 'sum'),
+        media_mensal=('vendas_ajustadas', 'mean'),
+        max_mensal=('vendas_ajustadas', 'max'),
+        min_mensal=('vendas_ajustadas', 'min'),
+        meses_ativos=('mes_str', 'nunique')
+    ).reset_index()
+    
+    # Adicionar meta
+    resumo_vendedor['meta'] = resumo_vendedor['vendedor'].apply(
+        lambda x: metas.get(x, METAS_PADRAO.get(x, 20))
+    )
+    
+    # Calcular % da meta (média mensal vs meta)
+    resumo_vendedor['percentual_meta'] = (resumo_vendedor['media_mensal'] / resumo_vendedor['meta'] * 100).fillna(0)
+    
+    resumo_display = resumo_vendedor[['vendedor', 'total_vendas_periodo', 'media_mensal', 'meta', 'percentual_meta', 'meses_ativos']]
+    resumo_display = resumo_display.rename(columns={
+        'vendedor': 'Vendedor',
+        'total_vendas_periodo': 'Total Período',
+        'media_mensal': 'Média Mensal',
+        'meta': 'Meta Mensal',
+        'percentual_meta': '% da Meta',
+        'meses_ativos': 'Meses Ativos'
+    })
+    
+    st.dataframe(
+        resumo_display,
+        use_container_width=True,
+        column_config={
+            'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
+            'Total Período': st.column_config.NumberColumn('Total Período', format='%d'),
+            'Média Mensal': st.column_config.NumberColumn('Média Mensal', format='%.1f'),
+            'Meta Mensal': st.column_config.NumberColumn('Meta Mensal', format='%d'),
+            '% da Meta': st.column_config.NumberColumn('% da Meta', format='%.1f%%'),
+            'Meses Ativos': st.column_config.NumberColumn('Meses Ativos', format='%d')
+        }
+    )
 
 # ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO ====================
 
@@ -1377,9 +1184,322 @@ def render_dashboard():
         else:
             st.info("ℹ️ Nenhum dado semanal disponível para o período selecionado.")
     
-    # ========== NOVA ABA: EVOLUÇÃO MENSAL ==========
+    # ========== ABA: EVOLUÇÃO MENSAL ==========
     with tab3:
-        render_evolucao_mensal(df, data_inicio, data_fim)
+        st.subheader("📈 Evolução Mensal")
+        
+        # ========== SELETOR DE VENDEDORES ==========
+        vendedores_disponiveis = sorted(df_filtrado['vendedor'].unique().tolist())
+        
+        st.markdown("### 👥 Selecione os Vendedores")
+        
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            opcoes_vendedores = ["👥 Todos"] + vendedores_disponiveis
+            
+            default_value = ["👥 Todos"] if "👥 Todos" in opcoes_vendedores else [opcoes_vendedores[0]]
+            
+            vendedores_selecionados = st.multiselect(
+                "Selecione um ou mais vendedores:",
+                options=opcoes_vendedores,
+                default=default_value,
+                key="vendedores_mensais",
+                help="Selecione 'Todos' ou escolha vendedores específicos"
+            )
+        
+        with col2:
+            if st.button("🗑️ Limpar", key="limpar_vendedores"):
+                st.session_state.vendedores_mensais = ["👥 Todos"]
+                st.rerun()
+        
+        # Processar seleção
+        if not vendedores_selecionados:
+            st.warning("⚠️ Selecione pelo menos um vendedor.")
+            return
+        
+        if "👥 Todos" in vendedores_selecionados:
+            vendedores_selecionados = vendedores_disponiveis
+            label_selecao = "Todos os Vendedores"
+        else:
+            label_selecao = f"{len(vendedores_selecionados)} vendedores selecionados"
+        
+        st.caption(f"📌 {label_selecao}")
+        
+        # ========== CONFIGURAR METAS ==========
+        st.markdown("---")
+        st.markdown("### 🎯 Configurar Metas")
+        
+        with st.expander("📝 Definir Metas Mensais por Vendedor"):
+            st.info("💡 Defina a meta mensal de vendas para cada vendedor.")
+            
+            metas = {}
+            cols_meta = st.columns(2)
+            
+            for i, vendedor in enumerate(vendedores_selecionados):
+                col = cols_meta[i % 2]
+                valor_padrao = METAS_PADRAO.get(vendedor, 20)
+                metas[vendedor] = col.number_input(
+                    f"Meta {vendedor}",
+                    min_value=1,
+                    max_value=1000,
+                    value=valor_padrao,
+                    step=5,
+                    key=f"meta_{vendedor}_{i}"
+                )
+            
+            if st.button("📊 Aplicar Metas", key="aplicar_metas"):
+                st.success("✅ Metas aplicadas com sucesso!")
+        
+        # ========== CALCULAR DADOS MENSAIS ==========
+        with st.spinner("🔄 Calculando evolução mensal..."):
+            vendas_mensais = calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados)
+        
+        if vendas_mensais.empty:
+            st.warning("⚠️ Nenhum dado mensal disponível para os vendedores selecionados.")
+            return
+        
+        # ========== NOVO: VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ==========
+        render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim)
+        
+        st.markdown("---")
+        st.markdown("### 🏆 Ranking de Desempenho")
+        
+        # ========== CRIAR RANKING ==========
+        ranking_data = []
+        
+        for vendedor in vendedores_selecionados:
+            dados_vendedor = vendas_mensais[vendas_mensais['vendedor'] == vendedor]
+            
+            if dados_vendedor.empty:
+                continue
+            
+            dados_vendedor = dados_vendedor.sort_values('ano_mes_num')
+            ultimo_mes = dados_vendedor.iloc[-1]
+            
+            vendas_reais = ultimo_mes['total_vendas']
+            
+            if ultimo_mes['is_mes_parcial']:
+                projecao = ultimo_mes['projecao_mes']
+                media_diaria = ultimo_mes['media_diaria']
+                dias_uteis_mes = ultimo_mes['dias_uteis_mes']
+            else:
+                projecao = vendas_reais
+                media_diaria = ultimo_mes['total_vendas'] / ultimo_mes['dias_uteis_mes'] if ultimo_mes['dias_uteis_mes'] > 0 else 0
+                dias_uteis_mes = ultimo_mes['dias_uteis_mes']
+            
+            meta = metas.get(vendedor, METAS_PADRAO.get(vendedor, 20))
+            percentual_meta = (projecao / meta * 100) if meta > 0 else 0
+            dias_uteis_periodo = ultimo_mes['dias_uteis_periodo']
+            
+            ranking_data.append({
+                'Vendedor': vendedor,
+                'Vendas Realizadas': int(vendas_reais),
+                'Projeção': int(projecao),
+                'Meta': int(meta),
+                '% da Meta': min(percentual_meta, 200),
+                'Média Diária': media_diaria,
+                'Dias Úteis Período': int(dias_uteis_periodo),
+                'Dias Úteis Mês': int(dias_uteis_mes),
+                'Status': '📊 Projetado' if ultimo_mes['is_mes_parcial'] else '✅ Realizado'
+            })
+        
+        if ranking_data:
+            df_ranking = pd.DataFrame(ranking_data)
+            df_ranking = df_ranking.sort_values('Projeção', ascending=False).reset_index(drop=True)
+            df_ranking.index = df_ranking.index + 1
+            
+            def get_posicao_emoji(pos):
+                if pos == 1:
+                    return "🥇"
+                elif pos == 2:
+                    return "🥈"
+                elif pos == 3:
+                    return "🥉"
+                else:
+                    return f"{pos}º"
+            
+            df_ranking['Posição'] = df_ranking.index
+            df_ranking['Posição'] = df_ranking['Posição'].apply(get_posicao_emoji)
+            
+            # Identificar mês parcial
+            mes_parcial_nome = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].iloc[0] if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty else None
+            
+            st.markdown(f"""
+            <div style="background-color:#f0f8ff; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
+            <strong>📌 Mês analisado:</strong> {mes_parcial_nome if mes_parcial_nome else 'Último mês do período'}
+            {f' (parcial - com projeção)' if mes_parcial_nome else ''}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.dataframe(
+                df_ranking,
+                use_container_width=True,
+                height=400,
+                column_config={
+                    'Posição': st.column_config.TextColumn('🏆', width='small'),
+                    'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
+                    'Vendas Realizadas': st.column_config.NumberColumn('Vendido', format='%d'),
+                    'Projeção': st.column_config.NumberColumn('Projeção', format='%d'),
+                    'Meta': st.column_config.NumberColumn('Meta', format='%d'),
+                    '% da Meta': st.column_config.NumberColumn('% Meta', format='%.1f%%'),
+                    'Média Diária': st.column_config.NumberColumn('Média/dia', format='%.2f'),
+                    'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis', format='%d'),
+                    'Status': st.column_config.TextColumn('Status', width='small')
+                }
+            )
+            
+            # ========== GRÁFICO DE BARRAS COMPARATIVO ==========
+            st.markdown("---")
+            st.markdown("### 📊 Comparativo de Vendas")
+            
+            fig_compare = go.Figure()
+            
+            fig_compare.add_trace(go.Bar(
+                x=df_ranking['Vendedor'],
+                y=df_ranking['Vendas Realizadas'],
+                name='Vendas Realizadas',
+                marker_color='#3498db',
+                text=df_ranking['Vendas Realizadas'],
+                textposition='outside'
+            ))
+            
+            fig_compare.add_trace(go.Bar(
+                x=df_ranking['Vendedor'],
+                y=df_ranking['Projeção'],
+                name='Projeção',
+                marker_color='#e67e22',
+                text=df_ranking['Projeção'],
+                textposition='outside'
+            ))
+            
+            fig_compare.add_trace(go.Bar(
+                x=df_ranking['Vendedor'],
+                y=df_ranking['Meta'],
+                name='Meta',
+                marker_color='#2ecc71',
+                text=df_ranking['Meta'],
+                textposition='outside',
+                opacity=0.7
+            ))
+            
+            fig_compare.update_layout(
+                title='📊 Comparativo: Realizado vs Projeção vs Meta',
+                xaxis_title='Vendedor',
+                yaxis_title='Vendas',
+                height=400,
+                barmode='group',
+                legend=dict(
+                    orientation='h',
+                    yanchor='bottom',
+                    y=1.02,
+                    xanchor='right',
+                    x=1
+                )
+            )
+            st.plotly_chart(fig_compare, use_container_width=True, config={'displayModeBar': False})
+            
+            # ========== GRÁFICO DE BARRAS: % DA META ==========
+            st.markdown("### 🎯 Percentual de Alcance da Meta")
+            
+            df_percentual = df_ranking.sort_values('% da Meta', ascending=True)
+            
+            colors = ['#FF6B6B' if x < 50 else '#FFA500' if x < 80 else '#FFD700' if x < 100 else '#90EE90' for x in df_percentual['% da Meta']]
+            
+            fig_percent = go.Figure()
+            
+            fig_percent.add_trace(go.Bar(
+                x=df_percentual['% da Meta'],
+                y=df_percentual['Vendedor'],
+                orientation='h',
+                marker_color=colors,
+                text=[f"{x:.1f}%" for x in df_percentual['% da Meta']],
+                textposition='outside'
+            ))
+            
+            fig_percent.add_vline(
+                x=100, 
+                line_dash="dash", 
+                line_color="green",
+                annotation_text="Meta 100%",
+                annotation_position="top"
+            )
+            
+            fig_percent.update_layout(
+                title='🎯 Percentual da Meta Alcançado',
+                xaxis_title='% da Meta',
+                yaxis_title='Vendedor',
+                height=350,
+                xaxis=dict(range=[0, max(df_percentual['% da Meta'].max() + 20, 120)])
+            )
+            st.plotly_chart(fig_percent, use_container_width=True, config={'displayModeBar': False})
+            
+            # ========== TABELA DE DETALHES ==========
+            st.markdown("---")
+            st.markdown("### 📋 Detalhamento Mensal")
+            
+            pivot_detalhe = vendas_mensais.pivot_table(
+                index='vendedor',
+                columns='mes_str',
+                values='vendas_ajustadas',
+                fill_value=0
+            )
+            
+            ordem_colunas = vendas_mensais.groupby('mes_str')['ano_mes_num'].first().sort_values().index.tolist()
+            pivot_detalhe = pivot_detalhe.reindex(ordem_colunas, axis=1)
+            
+            pivot_detalhe['Total'] = pivot_detalhe.sum(axis=1)
+            pivot_detalhe['Média'] = pivot_detalhe.iloc[:, :-1].mean(axis=1)
+            
+            st.dataframe(
+                pivot_detalhe,
+                use_container_width=True,
+                height=300,
+                column_config={
+                    'Total': st.column_config.NumberColumn('Total', format='%d'),
+                    'Média': st.column_config.NumberColumn('Média', format='%.1f')
+                }
+            )
+            
+            if mes_parcial_nome:
+                st.caption(f"⭐ **{mes_parcial_nome}** é o mês parcial com valores **projetados** para o mês completo")
+        
+        with st.expander("📋 Ver Dados Completos"):
+            colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_uteis_periodo', 'dias_uteis_mes', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
+            colunas_existentes = [c for c in colunas_display if c in vendas_mensais.columns]
+            
+            df_display = vendas_mensais[colunas_existentes].copy()
+            df_display = df_display.rename(columns={
+                'vendedor': 'Vendedor',
+                'mes_str': 'Mês',
+                'total_vendas': 'Vendas Reais',
+                'dias_uteis_periodo': 'Dias Úteis Período',
+                'dias_uteis_mes': 'Dias Úteis Mês',
+                'media_diaria': 'Média Diária',
+                'projecao_mes': 'Projeção Mês',
+                'vendas_ajustadas': 'Vendas Ajustadas',
+                'variacao_mensal': 'Variação %',
+                'is_mes_parcial': 'Mês Parcial'
+            })
+            
+            df_display['Mês Parcial'] = df_display['Mês Parcial'].apply(lambda x: '⭐ Sim' if x else '')
+            
+            st.dataframe(
+                df_display,
+                use_container_width=True,
+                column_config={
+                    'Vendedor': 'Vendedor',
+                    'Mês': 'Mês',
+                    'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
+                    'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis Período', format='%d'),
+                    'Dias Úteis Mês': st.column_config.NumberColumn('Dias Úteis Mês', format='%d'),
+                    'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
+                    'Projeção Mês': st.column_config.NumberColumn('Projeção Mês', format='%.1f'),
+                    'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
+                    'Variação %': st.column_config.NumberColumn('Variação %', format='%.1f%%'),
+                    'Mês Parcial': 'Mês Parcial'
+                }
+            )
     
     with tab4:
         render_desempenho_por_condominio(df, data_inicio, data_fim)
@@ -1398,16 +1518,13 @@ def render_dashboard():
                 try:
                     output = BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        # Dados filtrados
                         df_filtrado.to_excel(writer, sheet_name='Dados Filtrados', index=False)
                         
-                        # Vendas por vendedor
                         if exportar_vendas_vendedor:
                             vendas_vendedor = calcular_vendas_vendedor_cached(df_hash, data_inicio_str, data_fim_str)
                             if not vendas_vendedor.empty:
                                 vendas_vendedor.to_excel(writer, sheet_name='Vendas por Vendedor', index=False)
                         
-                        # Evolução semanal
                         if exportar_evolucao:
                             vendas_semanais, _ = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
                             if not vendas_semanais.empty:
@@ -1415,7 +1532,6 @@ def render_dashboard():
                                 if not evolucao_df.empty:
                                     evolucao_df.reset_index().to_excel(writer, sheet_name='Evolução Vendedores', index=False)
                         
-                        # Dados semanais
                         if exportar_semanal:
                             vendas_semanais, vendas_diarias = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
                             if not vendas_semanais.empty:
@@ -1423,14 +1539,12 @@ def render_dashboard():
                             if not vendas_diarias.empty:
                                 vendas_diarias.to_excel(writer, sheet_name='Vendas Diárias', index=False)
                         
-                        # Evolução mensal
                         if exportar_mensal:
                             todos_vendedores = df['vendedor'].unique().tolist()
                             vendas_mensais = calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, todos_vendedores)
                             if not vendas_mensais.empty:
                                 vendas_mensais.to_excel(writer, sheet_name='Evolução Mensal', index=False)
                         
-                        # Condomínios
                         if exportar_condominios:
                             df_cond = get_condominios_crm_cached()
                             if not df_cond.empty:
