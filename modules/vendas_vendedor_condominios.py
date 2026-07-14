@@ -6,6 +6,8 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Vendas por vendedor
 - Evolução semanal (com semana do MÊS)
 - Evolução mensal com seleção múltipla de vendedores e PROJEÇÃO baseada no período selecionado
+- Metas configuráveis por vendedor
+- Ranking com posição, vendas, projeção, meta e % de alcance
 - Indicador de evolução/piora semana a semana
 - Desempenho por condomínio (integrado com módulo condominios.py)
 - Filtro de período aplicado em TODAS as análises
@@ -51,6 +53,19 @@ CONFIG = {
     'cache_ttl': 300,  # 5 minutos de cache
     'limite_grafico': 50,  # Máximo de barras em gráficos
     'limite_tabela': 500  # Máximo de linhas em tabelas
+}
+
+# ==================== METAS DOS VENDEDORES ====================
+# Metas padrão - podem ser ajustadas pelo usuário
+METAS_PADRAO = {
+    'Larissa Oliveira dos Santos': 200,
+    'Leandro Monteiro': 120,
+    'Kessia Priscila da Conceição Silva': 80,
+    'Laryssa Medeiros': 25,
+    'Estephani Marcolino': 15,
+    'Erick Eduardo Lombardi': 30,
+    'RETORNO FINANCEIRO': 10,
+    'Vendedor padrão': 20
 }
 
 # ==================== CONEXÃO MONGODB ====================
@@ -337,13 +352,14 @@ def calcular_indicador_evolucao(vendas_semanais):
     
     return evolucao
 
-# ==================== FUNÇÃO: EVOLUÇÃO MENSAL COM PROJEÇÃO ====================
+# ==================== FUNÇÃO: EVOLUÇÃO MENSAL COM PROJEÇÃO E METAS ====================
 
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados):
     """
     Calcula vendas mensais para vendedores selecionados
     COM PROJEÇÃO BASEADA NO PERÍODO SELECIONADO
+    Considera dias úteis de SEGUNDA a SÁBADO (6 dias por semana)
     """
     data_inicio = datetime.fromisoformat(data_inicio_str)
     data_fim = datetime.fromisoformat(data_fim_str)
@@ -369,6 +385,7 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     df_filtrado['mes_str'] = df_filtrado['data_ativacao'].dt.strftime('%b/%Y')
     df_filtrado['ano_mes_num'] = df_filtrado['data_ativacao'].dt.year * 100 + df_filtrado['data_ativacao'].dt.month
     df_filtrado['dia'] = df_filtrado['data_ativacao'].dt.day
+    df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.weekday()  # 0=Segunda, 6=Domingo
     
     # ========== DADOS REAIS POR MÊS ==========
     vendas_mensais = df_filtrado.groupby(['vendedor', 'mes_ano', 'mes_str', 'ano_mes_num']).agg(
@@ -376,16 +393,15 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         dias_com_vendas=('dia', 'nunique')
     ).reset_index().sort_values(['vendedor', 'ano_mes_num'])
     
-    # ========== CALCULAR DIAS DO PERÍODO POR MÊS ==========
-    def get_dias_no_periodo(ano, mes, data_inicio, data_fim):
-        """Calcula quantos dias do mês estão dentro do período selecionado"""
+    # ========== CALCULAR DIAS ÚTEIS (SEGUNDA A SÁBADO) ==========
+    def get_dias_uteis_seg_sab(ano, mes, data_inicio, data_fim):
+        """Calcula quantos dias úteis (Segunda a Sábado) no período"""
         import calendar
-        ultimo_dia_mes = calendar.monthrange(ano, mes)[1]
+        dias_uteis = 0
         
         # Primeiro dia do mês
         primeiro_dia_mes = datetime(ano, mes, 1)
-        
-        # Último dia do mês
+        ultimo_dia_mes = calendar.monthrange(ano, mes)[1]
         ultimo_dia_mes_dt = datetime(ano, mes, ultimo_dia_mes)
         
         # Ajustar para o período
@@ -395,18 +411,41 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         if inicio_periodo > fim_periodo:
             return 0
         
-        # Calcular dias corridos no período
-        dias = (fim_periodo - inicio_periodo).days + 1
-        return dias
+        # Contar dias de Segunda a Sábado (0=Segunda, 5=Sábado, 6=Domingo)
+        data_atual = inicio_periodo
+        while data_atual <= fim_periodo:
+            if data_atual.weekday() < 6:  # Segunda a Sábado
+                dias_uteis += 1
+            data_atual += timedelta(days=1)
+        
+        return dias_uteis
     
-    # Adicionar dias do período por mês
-    vendas_mensais['dias_periodo'] = vendas_mensais.apply(
-        lambda row: get_dias_no_periodo(
+    # Adicionar dias úteis do período por mês
+    vendas_mensais['dias_uteis_periodo'] = vendas_mensais.apply(
+        lambda row: get_dias_uteis_seg_sab(
             row['mes_ano'].year, 
             row['mes_ano'].month,
             data_inicio,
             data_fim
         ),
+        axis=1
+    )
+    
+    # Calcular total de dias úteis no mês (Segunda a Sábado)
+    def get_total_dias_uteis_seg_sab(ano, mes):
+        """Calcula total de dias úteis (Segunda a Sábado) no mês"""
+        import calendar
+        dias_uteis = 0
+        ultimo_dia = calendar.monthrange(ano, mes)[1]
+        
+        for dia in range(1, ultimo_dia + 1):
+            data = datetime(ano, mes, dia)
+            if data.weekday() < 6:  # Segunda a Sábado
+                dias_uteis += 1
+        return dias_uteis
+    
+    vendas_mensais['dias_uteis_mes'] = vendas_mensais.apply(
+        lambda row: get_total_dias_uteis_seg_sab(row['mes_ano'].year, row['mes_ano'].month),
         axis=1
     )
     
@@ -420,28 +459,22 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     
     vendas_mensais['is_ultimo_mes'] = (vendas_mensais['mes_ano'].dt.year == ultimo_ano_periodo) & (vendas_mensais['mes_ano'].dt.month == ultimo_mes_periodo)
     
-    # Verificar se o mês é parcial (período não cobre o mês inteiro)
+    # Verificar se o mês é parcial
     vendas_mensais['is_mes_parcial'] = vendas_mensais.apply(
         lambda row: is_mes_parcial if row['is_ultimo_mes'] else False,
         axis=1
     )
     
     # ========== CALCULAR PROJEÇÃO PARA MÊS PARCIAL ==========
-    # Para o último mês se for parcial, calcular projeção baseada na média diária do período
+    # Média diária baseada nos dias úteis do período
     vendas_mensais['media_diaria'] = vendas_mensais.apply(
-        lambda row: row['total_vendas'] / row['dias_periodo'] if row['dias_periodo'] > 0 else 0,
+        lambda row: row['total_vendas'] / row['dias_uteis_periodo'] if row['dias_uteis_periodo'] > 0 else 0,
         axis=1
     )
     
-    # Calcular total de dias do mês (para projeção)
-    vendas_mensais['dias_mes'] = vendas_mensais.apply(
-        lambda row: calendar.monthrange(row['mes_ano'].year, row['mes_ano'].month)[1],
-        axis=1
-    )
-    
-    # Projeção para meses parciais: média diária * total de dias do mês
+    # Projeção para meses parciais: média diária * total de dias úteis do mês
     vendas_mensais['projecao_mes'] = vendas_mensais.apply(
-        lambda row: row['media_diaria'] * row['dias_mes'] if row['media_diaria'] > 0 and row['is_mes_parcial'] else row['total_vendas'],
+        lambda row: row['media_diaria'] * row['dias_uteis_mes'] if row['media_diaria'] > 0 and row['is_mes_parcial'] else row['total_vendas'],
         axis=1
     )
     
@@ -451,36 +484,32 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         axis=1
     )
     
-    # ========== CALCULAR VARIAÇÃO MENSAL (COM PROJEÇÃO) ==========
+    # ========== CALCULAR MÉDIA DIÁRIA PROJETADA ==========
+    vendas_mensais['media_diaria_projetada'] = vendas_mensais.apply(
+        lambda row: row['vendas_ajustadas'] / row['dias_uteis_mes'] if row['dias_uteis_mes'] > 0 else 0,
+        axis=1
+    )
+    
+    # ========== CALCULAR VARIAÇÃO MENSAL ==========
     vendas_mensais['variacao_mensal'] = 0.0
-    vendas_mensais['variacao_mensal_real'] = 0.0
     
     for vendedor in vendas_mensais['vendedor'].unique():
         mask = vendas_mensais['vendedor'] == vendedor
         dados_vendedor = vendas_mensais.loc[mask].sort_values('ano_mes_num')
         
         vendas_ajustadas = dados_vendedor['vendas_ajustadas'].values
-        vendas_reais = dados_vendedor['total_vendas'].values
         
         for i in range(1, len(vendas_ajustadas)):
-            # Com projeção
             if vendas_ajustadas[i-1] > 0:
                 variacao_ajustada = ((vendas_ajustadas[i] - vendas_ajustadas[i-1]) / vendas_ajustadas[i-1]) * 100
             else:
                 variacao_ajustada = 100 if vendas_ajustadas[i] > 0 else 0
             vendas_mensais.loc[mask & (vendas_mensais['ano_mes_num'] == dados_vendedor['ano_mes_num'].iloc[i]), 'variacao_mensal'] = variacao_ajustada
-            
-            # Com dados reais (para referência)
-            if vendas_reais[i-1] > 0:
-                variacao_real = ((vendas_reais[i] - vendas_reais[i-1]) / vendas_reais[i-1]) * 100
-            else:
-                variacao_real = 100 if vendas_reais[i] > 0 else 0
-            vendas_mensais.loc[mask & (vendas_mensais['ano_mes_num'] == dados_vendedor['ano_mes_num'].iloc[i]), 'variacao_mensal_real'] = variacao_real
     
     return vendas_mensais
 
 def render_evolucao_mensal(df, data_inicio, data_fim):
-    """Renderiza a aba de evolução mensal com projeção baseada no período selecionado"""
+    """Renderiza a aba de evolução mensal com projeção, metas e ranking"""
     st.subheader("📈 Evolução Mensal por Vendedor")
     
     st.markdown(f"""
@@ -534,6 +563,31 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     
     st.caption(f"📌 {label_selecao}")
     
+    # ========== CONFIGURAR METAS ==========
+    st.markdown("---")
+    st.markdown("### 🎯 Configurar Metas")
+    
+    with st.expander("📝 Definir Metas Mensais por Vendedor"):
+        st.info("💡 Defina a meta mensal de vendas para cada vendedor. A meta diária será calculada automaticamente.")
+        
+        metas = {}
+        cols_meta = st.columns(3)
+        
+        for i, vendedor in enumerate(vendedores_selecionados):
+            col = cols_meta[i % 3]
+            valor_padrao = METAS_PADRAO.get(vendedor, 20)
+            metas[vendedor] = col.number_input(
+                f"Meta {vendedor}",
+                min_value=1,
+                max_value=1000,
+                value=valor_padrao,
+                step=5,
+                key=f"meta_{vendedor}"
+            )
+        
+        if st.button("📊 Aplicar Metas", key="aplicar_metas"):
+            st.success("✅ Metas aplicadas com sucesso!")
+    
     # ========== CALCULAR DADOS MENSAIS ==========
     data_inicio_str = datetime.combine(data_inicio, datetime.min.time()).isoformat()
     data_fim_str = datetime.combine(data_fim, datetime.min.time()).isoformat()
@@ -546,259 +600,170 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
         st.warning("⚠️ Nenhum dado mensal disponível para os vendedores selecionados.")
         return
     
-    # ========== MÉTRICAS ==========
-    total_vendas_periodo = vendas_mensais['vendas_ajustadas'].sum()
-    qtd_vendedores = vendas_mensais['vendedor'].nunique()
-    qtd_meses = vendas_mensais['mes_ano'].nunique()
-    
+    # ========== IDENTIFICAR MÊS PARCIAL ==========
     meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]
-    mes_parcial_nome = meses_parciais['mes_str'].iloc[0] if not meses_parciais.empty else "N/A"
+    mes_parcial_nome = meses_parciais['mes_str'].iloc[0] if not meses_parciais.empty else None
     
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📊 Total Projetado", f"{total_vendas_periodo:,.0f}")
-    col2.metric("👤 Vendedores Analisados", qtd_vendedores)
-    col3.metric("📅 Meses Analisados", qtd_meses)
-    col4.metric("📌 Mês Parcial", mes_parcial_nome if mes_parcial_nome != "N/A" else "Nenhum")
-    
+    # ========== CRIAR RANKING ==========
     st.markdown("---")
+    st.markdown("### 🏆 Ranking de Desempenho")
     
-    # ========== AVISO SOBRE PROJEÇÃO ==========
-    if not meses_parciais.empty:
-        dias_periodo = int(meses_parciais['dias_periodo'].iloc[0])
-        st.info(f"""
-        💡 **Como funciona a projeção:**
-        - O último mês do período (**{mes_parcial_nome}**) é parcial (apenas {dias_periodo} dias)
-        - Calculamos a **média diária** baseada nos dias do período: vendas / dias no período
-        - Projetamos o total estimado multiplicando essa média pelo **total de dias do mês**
-        """)
-    else:
-        st.info("✅ Todos os meses do período estão completos. Não há projeções.")
+    # Preparar dados do ranking
+    ranking_data = []
     
-    st.markdown("---")
-    
-    # ========== GRÁFICO DE EVOLUÇÃO MENSAL ==========
-    st.markdown("### 📊 Evolução Mensal")
-    
-    # Preparar dados para o gráfico
-    grafico_data = vendas_mensais.copy()
-    
-    # Separar dados reais e projetados
-    grafico_data['tipo_dado'] = grafico_data.apply(
-        lambda row: '📊 Projetado' if row['is_mes_parcial'] else '✅ Realizado',
-        axis=1
-    )
-    
-    # Criar gráfico com cores diferenciadas
-    fig_evol = go.Figure()
-    
-    for vendedor in grafico_data['vendedor'].unique():
-        dados_vendedor = grafico_data[grafico_data['vendedor'] == vendedor].sort_values('ano_mes_num')
+    for vendedor in vendedores_selecionados:
+        dados_vendedor = vendas_mensais[vendas_mensais['vendedor'] == vendedor]
         
-        # Linha com todos os dados (conectando real + projeção)
-        fig_evol.add_trace(go.Scatter(
-            x=dados_vendedor['mes_str'],
-            y=dados_vendedor['vendas_ajustadas'],
-            mode='lines+markers',
-            name=vendedor,
-            line=dict(width=2.5),
-            marker=dict(
-                size=10,
-                symbol=['star' if row['is_mes_parcial'] else 'circle' for _, row in dados_vendedor.iterrows()]
-            )
-        ))
-        
-        # Adicionar barra para mostrar projeção destacada
-        dados_projetados = dados_vendedor[dados_vendedor['is_mes_parcial']]
-        if not dados_projetados.empty:
-            fig_evol.add_trace(go.Bar(
-                x=dados_projetados['mes_str'],
-                y=dados_projetados['vendas_ajustadas'],
-                name=f'{vendedor} (Projeção)',
-                marker=dict(
-                    color='rgba(255, 165, 0, 0.6)',
-                    line=dict(color='orange', width=2)
-                ),
-                text=[f"Projetado: {v:.0f}" for v in dados_projetados['vendas_ajustadas']],
-                textposition='outside',
-                showlegend=False
-            ))
-    
-    fig_evol.update_layout(
-        title='📈 Evolução Mensal (com Projeção para Mês Parcial)',
-        xaxis_title='Mês',
-        yaxis_title='Vendas (projetadas para mês parcial)',
-        height=450,
-        hovermode='x unified',
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.02,
-            xanchor='right',
-            x=1
-        )
-    )
-    st.plotly_chart(fig_evol, use_container_width=True, config={'displayModeBar': False})
-    
-    st.markdown("---")
-    
-    # ========== ANÁLISE DE TENDÊNCIA ==========
-    st.markdown("### 📈 Análise de Tendência")
-    
-    # Calcular tendência usando dados ajustados
-    tendencias = []
-    for vendedor in vendas_mensais['vendedor'].unique():
-        dados_vendedor = vendas_mensais[vendas_mensais['vendedor'] == vendedor].sort_values('ano_mes_num')
-        
-        if len(dados_vendedor) < 2:
-            # Se tiver apenas 1 mês, não dá para calcular tendência
+        if dados_vendedor.empty:
             continue
         
-        # Usar vendas ajustadas para tendência
-        x = np.arange(len(dados_vendedor))
-        y = dados_vendedor['vendas_ajustadas'].values
+        # Ordenar por mês
+        dados_vendedor = dados_vendedor.sort_values('ano_mes_num')
         
-        if len(x) < 2 or y.sum() == 0:
-            continue
+        # Último mês (pode ser parcial ou completo)
+        ultimo_mes = dados_vendedor.iloc[-1]
         
-        # Regressão linear
-        x_mean = np.mean(x)
-        y_mean = np.mean(y)
-        slope = np.sum((x - x_mean) * (y - y_mean)) / np.sum((x - x_mean) ** 2)
+        # Vendas reais
+        vendas_reais = ultimo_mes['total_vendas']
         
-        # R²
-        y_pred = slope * (x - x_mean) + y_mean
-        ss_res = np.sum((y - y_pred) ** 2)
-        ss_tot = np.sum((y - y_mean) ** 2)
-        r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-        
-        # Dados do mês parcial
-        mes_parcial_info = dados_vendedor[dados_vendedor['is_mes_parcial']]
-        projecao = mes_parcial_info['projecao_mes'].iloc[0] if not mes_parcial_info.empty else None
-        realizado = mes_parcial_info['total_vendas'].iloc[0] if not mes_parcial_info.empty else None
-        media_diaria = mes_parcial_info['media_diaria'].iloc[0] if not mes_parcial_info.empty else None
-        dias_periodo = mes_parcial_info['dias_periodo'].iloc[0] if not mes_parcial_info.empty else None
-        
-        # Classificar tendência
-        if slope > 2:
-            tendencia = "🚀 Crescimento Forte"
-            cor = "#2ecc71"
-        elif slope > 0.5:
-            tendencia = "📈 Crescimento Moderado"
-            cor = "#27ae60"
-        elif slope > -0.5:
-            tendencia = "➡️ Estável"
-            cor = "#f39c12"
-        elif slope > -2:
-            tendencia = "📉 Declínio Moderado"
-            cor = "#e67e22"
+        # Projeção (se for parcial, senão usa o real)
+        if ultimo_mes['is_mes_parcial']:
+            projecao = ultimo_mes['projecao_mes']
+            media_diaria = ultimo_mes['media_diaria']
+            dias_uteis_mes = ultimo_mes['dias_uteis_mes']
         else:
-            tendencia = "🔻 Declínio Forte"
-            cor = "#e74c3c"
+            projecao = vendas_reais
+            media_diaria = ultimo_mes['total_vendas'] / ultimo_mes['dias_uteis_mes'] if ultimo_mes['dias_uteis_mes'] > 0 else 0
+            dias_uteis_mes = ultimo_mes['dias_uteis_mes']
         
-        # Vendas totais
-        total_vendas = dados_vendedor['vendas_ajustadas'].sum()
-        media_mensal = dados_vendedor['vendas_ajustadas'].mean()
+        # Meta
+        meta = metas.get(vendedor, METAS_PADRAO.get(vendedor, 20))
         
-        # Calcular variação do último mês
-        ultimos_meses = dados_vendedor.tail(2)
-        if len(ultimos_meses) == 2:
-            variacao_ultimo = ((ultimos_meses.iloc[-1]['vendas_ajustadas'] - ultimos_meses.iloc[-2]['vendas_ajustadas']) / ultimos_meses.iloc[-2]['vendas_ajustadas']) * 100
-        else:
-            variacao_ultimo = 0
+        # Percentual da meta
+        percentual_meta = (projecao / meta * 100) if meta > 0 else 0
         
-        tendencias.append({
-            'vendedor': vendedor,
-            'total_vendas': total_vendas,
-            'media_mensal': media_mensal,
-            'meses_analisados': len(dados_vendedor),
-            'inclinacao': slope,
-            'r2': r2,
-            'tendencia': tendencia,
-            'cor': cor,
-            'tem_mes_parcial': dados_vendedor['is_mes_parcial'].any(),
-            'projecao_mes': projecao,
-            'realizado_mes': realizado,
-            'media_diaria': media_diaria,
-            'dias_periodo': dias_periodo,
-            'variacao_ultimo_mes': variacao_ultimo
+        # Dias úteis no período
+        dias_uteis_periodo = ultimo_mes['dias_uteis_periodo']
+        
+        ranking_data.append({
+            'Vendedor': vendedor,
+            'Vendas Realizadas': int(vendas_reais),
+            'Projeção': int(projecao),
+            'Meta': int(meta),
+            '% da Meta': min(percentual_meta, 200),  # Cap em 200%
+            'Média Diária': media_diaria,
+            'Dias Úteis Período': int(dias_uteis_periodo),
+            'Dias Úteis Mês': int(dias_uteis_mes),
+            'Status': '📊 Projetado' if ultimo_mes['is_mes_parcial'] else '✅ Realizado'
         })
     
-    # Verificar se há dados de tendência
-    if not tendencias:
-        st.warning("⚠️ Não há dados suficientes para calcular a tendência (é necessário pelo menos 2 meses de dados).")
-        # Mostrar apenas a tabela de projeção se houver
-        if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty:
-            st.markdown("---")
-            st.markdown("### 🎯 Projeção para o Mês Parcial")
-            
-            df_projecao = vendas_mensais[vendas_mensais['is_mes_parcial']].copy()
-            df_projecao = df_projecao[['vendedor', 'total_vendas', 'dias_periodo', 'dias_mes', 'media_diaria', 'projecao_mes']]
-            df_projecao.columns = ['Vendedor', 'Vendas Realizadas', 'Dias no Período', 'Total Dias no Mês', 'Média Diária', 'Projeção Total']
-            df_projecao['% de Projeção'] = (df_projecao['Vendas Realizadas'] / df_projecao['Projeção Total'] * 100).round(1)
-            df_projecao = df_projecao.sort_values('Projeção Total', ascending=False)
-            
-            st.dataframe(
-                df_projecao,
-                use_container_width=True,
-                column_config={
-                    'Vendedor': 'Vendedor',
-                    'Vendas Realizadas': st.column_config.NumberColumn('Vendas no Período', format='%d'),
-                    'Dias no Período': st.column_config.NumberColumn('Dias no Período', format='%d'),
-                    'Total Dias no Mês': st.column_config.NumberColumn('Dias no Mês', format='%d'),
-                    'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
-                    'Projeção Total': st.column_config.NumberColumn('Projeção para Mês', format='%.1f'),
-                    '% de Projeção': st.column_config.NumberColumn('% da Projeção', format='%.1f%%')
-                }
-            )
+    if not ranking_data:
+        st.warning("⚠️ Nenhum dado disponível para o ranking.")
         return
     
-    df_tendencias = pd.DataFrame(tendencias)
-    df_tendencias = df_tendencias.sort_values('inclinacao', ascending=False)
+    df_ranking = pd.DataFrame(ranking_data)
     
-    # Cards de tendência
-    col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+    # Ordenar por Projeção (decrescente) para o ranking
+    df_ranking = df_ranking.sort_values('Projeção', ascending=False).reset_index(drop=True)
     
-    cresc_forte = len(df_tendencias[df_tendencias['tendencia'] == '🚀 Crescimento Forte'])
-    cresc_mod = len(df_tendencias[df_tendencias['tendencia'] == '📈 Crescimento Moderado'])
-    estavel = len(df_tendencias[df_tendencias['tendencia'] == '➡️ Estável'])
-    declinio = len(df_tendencias[df_tendencias['tendencia'].str.contains('Declínio')])
+    # Adicionar coluna de posição
+    df_ranking.index = df_ranking.index + 1
+    df_ranking.insert(0, 'Posição', df_ranking.index)
     
-    col_t1.metric("🚀 Crescimento Forte", cresc_forte)
-    col_t2.metric("📈 Crescimento Moderado", cresc_mod)
-    col_t3.metric("➡️ Estável", estavel)
-    col_t4.metric("📉 Em Declínio", declinio)
+    # Adicionar emojis para as posições
+    def get_posicao_emoji(pos):
+        if pos == 1:
+            return "🥇"
+        elif pos == 2:
+            return "🥈"
+        elif pos == 3:
+            return "🥉"
+        else:
+            return f"{pos}º"
     
-    st.markdown("---")
+    df_ranking['Posição'] = df_ranking['Posição'].apply(get_posicao_emoji)
     
-    # Gráfico de tendência com informações do mês parcial
-    fig_tend = px.bar(
-        df_tendencias,
-        x='vendedor',
-        y='inclinacao',
-        color='tendencia',
-        title='📊 Tendência de Crescimento por Vendedor (Inclinação Mensal)',
-        text='inclinacao',
-        color_discrete_map={
-            '🚀 Crescimento Forte': '#2ecc71',
-            '📈 Crescimento Moderado': '#27ae60',
-            '➡️ Estável': '#f39c12',
-            '📉 Declínio Moderado': '#e67e22',
-            '🔻 Declínio Forte': '#e74c3c'
-        },
-        hover_data={
-            'vendedor': True,
-            'inclinacao': ':.2f',
-            'projecao_mes': ':.0f',
-            'realizado_mes': ':.0f',
-            'media_diaria': ':.2f',
-            'dias_periodo': ':.0f'
+    # ========== EXIBIR RANKING ==========
+    st.markdown(f"""
+    <div style="background-color:#f0f8ff; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
+    <strong>📌 Mês analisado:</strong> {mes_parcial_nome if mes_parcial_nome else 'Último mês do período'}
+    {f' (parcial - com projeção)' if mes_parcial_nome else ''}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Configurar cores para o percentual da meta
+    def color_percentual(val):
+        if val >= 100:
+            return 'background-color: #90EE90'
+        elif val >= 80:
+            return 'background-color: #FFD700'
+        elif val >= 50:
+            return 'background-color: #FFA500'
+        else:
+            return 'background-color: #FF6B6B'
+    
+    # Exibir ranking como tabela estilizada
+    st.dataframe(
+        df_ranking,
+        use_container_width=True,
+        height=400,
+        column_config={
+            'Posição': st.column_config.TextColumn('🏆', width='small'),
+            'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
+            'Vendas Realizadas': st.column_config.NumberColumn('Vendido', format='%d'),
+            'Projeção': st.column_config.NumberColumn('Projeção', format='%d'),
+            'Meta': st.column_config.NumberColumn('Meta', format='%d'),
+            '% da Meta': st.column_config.NumberColumn('% Meta', format='%.1f%%'),
+            'Média Diária': st.column_config.NumberColumn('Média/dia', format='%.2f'),
+            'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis', format='%d'),
+            'Status': st.column_config.TextColumn('Status', width='small')
         }
     )
-    fig_tend.update_traces(texttemplate='%{text:.2f}', textposition='outside')
-    fig_tend.update_layout(
+    
+    # ========== GRÁFICO DE BARRAS COMPARATIVO ==========
+    st.markdown("---")
+    st.markdown("### 📊 Comparativo de Vendas")
+    
+    # Gráfico de barras comparando Realizado vs Projeção
+    fig_compare = go.Figure()
+    
+    # Barras para Vendas Realizadas
+    fig_compare.add_trace(go.Bar(
+        x=df_ranking['Vendedor'],
+        y=df_ranking['Vendas Realizadas'],
+        name='Vendas Realizadas',
+        marker_color='#3498db',
+        text=df_ranking['Vendas Realizadas'],
+        textposition='outside'
+    ))
+    
+    # Barras para Projeção
+    fig_compare.add_trace(go.Bar(
+        x=df_ranking['Vendedor'],
+        y=df_ranking['Projeção'],
+        name='Projeção',
+        marker_color='#e67e22',
+        text=df_ranking['Projeção'],
+        textposition='outside'
+    ))
+    
+    # Barras para Meta
+    fig_compare.add_trace(go.Bar(
+        x=df_ranking['Vendedor'],
+        y=df_ranking['Meta'],
+        name='Meta',
+        marker_color='#2ecc71',
+        text=df_ranking['Meta'],
+        textposition='outside',
+        opacity=0.7
+    ))
+    
+    fig_compare.update_layout(
+        title='📊 Comparativo: Realizado vs Projeção vs Meta',
+        xaxis_title='Vendedor',
+        yaxis_title='Vendas',
         height=400,
-        xaxis_title="Vendedor",
-        yaxis_title="Inclinação (vendas por mês)",
+        barmode='group',
         legend=dict(
             orientation='h',
             yanchor='bottom',
@@ -807,9 +772,47 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             x=1
         )
     )
-    st.plotly_chart(fig_tend, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig_compare, use_container_width=True, config={'displayModeBar': False})
+    
+    # ========== GRÁFICO DE BARRAS: % DA META ==========
+    st.markdown("### 🎯 Percentual de Alcance da Meta")
+    
+    # Ordenar por % da Meta
+    df_percentual = df_ranking.sort_values('% da Meta', ascending=True)
+    
+    colors = ['#FF6B6B' if x < 50 else '#FFA500' if x < 80 else '#FFD700' if x < 100 else '#90EE90' for x in df_percentual['% da Meta']]
+    
+    fig_percent = go.Figure()
+    
+    fig_percent.add_trace(go.Bar(
+        x=df_percentual['% da Meta'],
+        y=df_percentual['Vendedor'],
+        orientation='h',
+        marker_color=colors,
+        text=[f"{x:.1f}%" for x in df_percentual['% da Meta']],
+        textposition='outside'
+    ))
+    
+    # Linha de 100%
+    fig_percent.add_vline(
+        x=100, 
+        line_dash="dash", 
+        line_color="green",
+        annotation_text="Meta 100%",
+        annotation_position="top"
+    )
+    
+    fig_percent.update_layout(
+        title='🎯 Percentual da Meta Alcançado',
+        xaxis_title='% da Meta',
+        yaxis_title='Vendedor',
+        height=350,
+        xaxis=dict(range=[0, max(df_percentual['% da Meta'].max() + 20, 120)])
+    )
+    st.plotly_chart(fig_percent, use_container_width=True, config={'displayModeBar': False})
     
     # ========== TABELA DE DETALHES ==========
+    st.markdown("---")
     st.markdown("### 📋 Detalhamento Mensal")
     
     # Pivot com valores ajustados
@@ -844,77 +847,9 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
     if mes_parcial_str:
         st.caption(f"⭐ **{mes_parcial_str}** é o mês parcial com valores **projetados** para o mês completo")
     
-    # ========== TABELA DE PROJEÇÃO DO MÊS PARCIAL ==========
-    if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty:
-        st.markdown("---")
-        st.markdown("### 🎯 Projeção para o Mês Parcial")
-        
-        df_projecao = vendas_mensais[vendas_mensais['is_mes_parcial']].copy()
-        df_projecao = df_projecao[['vendedor', 'total_vendas', 'dias_periodo', 'dias_mes', 'media_diaria', 'projecao_mes']]
-        df_projecao.columns = ['Vendedor', 'Vendas Realizadas', 'Dias no Período', 'Total Dias no Mês', 'Média Diária', 'Projeção Total']
-        df_projecao['% de Projeção'] = (df_projecao['Vendas Realizadas'] / df_projecao['Projeção Total'] * 100).round(1)
-        df_projecao = df_projecao.sort_values('Projeção Total', ascending=False)
-        
-        st.dataframe(
-            df_projecao,
-            use_container_width=True,
-            column_config={
-                'Vendedor': 'Vendedor',
-                'Vendas Realizadas': st.column_config.NumberColumn('Vendas no Período', format='%d'),
-                'Dias no Período': st.column_config.NumberColumn('Dias no Período', format='%d'),
-                'Total Dias no Mês': st.column_config.NumberColumn('Dias no Mês', format='%d'),
-                'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
-                'Projeção Total': st.column_config.NumberColumn('Projeção para Mês', format='%.1f'),
-                '% de Projeção': st.column_config.NumberColumn('% da Projeção', format='%.1f%%')
-            }
-        )
-        
-        # ========== ANÁLISE INDIVIDUAL POR VENDEDOR ==========
-        st.markdown("---")
-        st.markdown("### 💡 Análise Individual por Vendedor")
-        
-        for _, row in df_projecao.iterrows():
-            vendedor = row['Vendedor']
-            realizado = row['Vendas Realizadas']
-            projecao = row['Projeção Total']
-            perc = row['% de Projeção']
-            media_diaria = row['Média Diária']
-            dias_periodo = row['Dias no Período']
-            dias_mes = row['Total Dias no Mês']
-            
-            # Determinar status
-            if perc >= 80:
-                status = "✅ Excelente! Já atingiu grande parte da projeção"
-                cor = "#27ae60"
-            elif perc >= 50:
-                status = "📈 Bom progresso, caminhando para meta"
-                cor = "#f39c12"
-            elif perc >= 30:
-                status = "📊 Ritmo moderado, precisa acelerar"
-                cor = "#e67e22"
-            else:
-                status = "⚠️ Ritmo lento, é necessário intensificar esforços"
-                cor = "#e74c3c"
-            
-            # Projeção de vendas restantes
-            restante = projecao - realizado
-            dias_restantes = dias_mes - dias_periodo
-            meta_diaria_restante = restante / dias_restantes if dias_restantes > 0 else 0
-            
-            st.markdown(f"""
-            <div style="background-color:#f8f9fa; padding:15px; border-radius:8px; margin-bottom:10px; border-left: 4px solid {cor};">
-                <strong>👤 {vendedor}</strong><br>
-                📊 Realizado: <strong>{realizado:.0f}</strong> vendas em {dias_periodo:.0f} dias do período | 
-                🎯 Projeção: <strong>{projecao:.0f}</strong> vendas para o mês completo | 
-                📈 Progresso: <strong>{perc:.1f}%</strong><br>
-                📌 Status: {status}<br>
-                💪 Meta diária restante: <strong>{meta_diaria_restante:.2f}</strong> vendas/dia para atingir a projeção
-            </div>
-            """, unsafe_allow_html=True)
-    
     # ========== EXPANDER COM DADOS COMPLETOS ==========
     with st.expander("📋 Ver Dados Completos"):
-        colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_periodo', 'dias_mes', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
+        colunas_display = ['vendedor', 'mes_str', 'total_vendas', 'dias_uteis_periodo', 'dias_uteis_mes', 'media_diaria', 'projecao_mes', 'vendas_ajustadas', 'variacao_mensal', 'is_mes_parcial']
         colunas_existentes = [c for c in colunas_display if c in vendas_mensais.columns]
         
         df_display = vendas_mensais[colunas_existentes].copy()
@@ -922,8 +857,8 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
             'vendedor': 'Vendedor',
             'mes_str': 'Mês',
             'total_vendas': 'Vendas Reais',
-            'dias_periodo': 'Dias no Período',
-            'dias_mes': 'Dias no Mês',
+            'dias_uteis_periodo': 'Dias Úteis Período',
+            'dias_uteis_mes': 'Dias Úteis Mês',
             'media_diaria': 'Média Diária',
             'projecao_mes': 'Projeção Mês',
             'vendas_ajustadas': 'Vendas Ajustadas',
@@ -941,8 +876,8 @@ def render_evolucao_mensal(df, data_inicio, data_fim):
                 'Vendedor': 'Vendedor',
                 'Mês': 'Mês',
                 'Vendas Reais': st.column_config.NumberColumn('Vendas Reais', format='%d'),
-                'Dias no Período': st.column_config.NumberColumn('Dias no Período', format='%d'),
-                'Dias no Mês': st.column_config.NumberColumn('Dias no Mês', format='%d'),
+                'Dias Úteis Período': st.column_config.NumberColumn('Dias Úteis Período', format='%d'),
+                'Dias Úteis Mês': st.column_config.NumberColumn('Dias Úteis Mês', format='%d'),
                 'Média Diária': st.column_config.NumberColumn('Média Diária', format='%.2f'),
                 'Projeção Mês': st.column_config.NumberColumn('Projeção Mês', format='%.1f'),
                 'Vendas Ajustadas': st.column_config.NumberColumn('Vendas Ajustadas', format='%.1f'),
