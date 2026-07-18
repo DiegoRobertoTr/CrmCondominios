@@ -5,7 +5,7 @@
 # ✅ Adicionado módulo Vendas por Vendedor - Condomínios
 import streamlit as st
 from modules import auth, cadastro, followup, agendamentos, leads_eventos, pendencias
-from modules import vendas_vendedor_condominios  # <-- NOVO
+from modules import vendas_vendedor_condominios
 from pymongo import MongoClient
 import urllib.parse
 from datetime import datetime
@@ -17,6 +17,7 @@ import base64
 # ============================================================================
 # 🏢 CONFIGURAÇÃO DE IMAGEM DE FUNDO COM OVERLAY
 # ============================================================================
+
 def get_base64_image(image_path):
     """Converte imagem local para base64 para usar como background."""
     try:
@@ -26,7 +27,7 @@ def get_base64_image(image_path):
         st.warning(f"⚠️ Não foi possível carregar a imagem de fundo: {e}")
         return None
 
-# Carrega a imagem de fundo (ajuste o caminho conforme necessário)
+# Carrega a imagem de fundo
 img_base64 = get_base64_image("assets/condominio.jpg")
 
 # CSS personalizado com imagem de fundo e overlay
@@ -41,7 +42,6 @@ if img_base64:
         background-attachment: fixed;
         position: relative;
     }}
-    /* Overlay branco semi-transparente para melhorar legibilidade */
     .main::before {{
         content: "";
         position: fixed;
@@ -52,29 +52,24 @@ if img_base64:
         background: rgba(255, 255, 255, 0.88);
         z-index: -1;
     }}
-    /* Sidebar com leve transparência */
     [data-testid="stSidebar"] {{
         background: rgba(255, 255, 255, 0.95);
         backdrop-filter: blur(10px);
     }}
-    /* Melhorar contraste dos elementos principais */
     .stTextInput, .stSelectbox, .stNumberInput, .stTextArea {{
         background-color: rgba(255, 255, 255, 0.95);
         border-radius: 8px;
     }}
-    /* Cards e containers com fundo mais sólido */
     .stExpander, .stContainer {{
         background-color: rgba(255, 255, 255, 0.9);
         border-radius: 10px;
     }}
-    /* Títulos com mais destaque */
     h1, h2, h3 {{
         text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
     }}
     </style>
     """, unsafe_allow_html=True)
 else:
-    # Fallback sem imagem
     st.markdown("""
     <style>
     .main {
@@ -87,8 +82,9 @@ else:
     """, unsafe_allow_html=True)
 
 # ============================================================================
-# ⭐ Configuração da página
+# ⭐ CONFIGURAÇÃO DA PÁGINA
 # ============================================================================
+
 st.set_page_config(
     page_title="Condominios Tracecom",
     page_icon="🏢",
@@ -99,9 +95,10 @@ st.set_page_config(
 # ============================================================================
 # 🔹 ROTAS PÚBLICAS — DEVEM VIR PRIMEIRO, ANTES DE TUDO
 # ============================================================================
+
 query_params = st.query_params.to_dict()
 
-# ✅ Rota para pesquisa de satisfação
+# Rota para pesquisa de satisfação
 if query_params.get("page") == ["satisfacao"]:
     id_cliente = query_params.get("id", [""])[0]
     tipo = query_params.get("tipo", [""])[0]
@@ -123,7 +120,7 @@ if query_params.get("page") == ["satisfacao"]:
     ''', unsafe_allow_html=True)
     st.stop()
 
-# ✅ HotSpots WiFi — ROTA PÚBLICA (portal captive)
+# HotSpots WiFi — ROTA PÚBLICA (portal captive)
 if query_params.get("page") == ["hotspots/captive"]:
     try:
         from modules.hotspots.captive_portal import render_captive_portal
@@ -133,7 +130,7 @@ if query_params.get("page") == ["hotspots/captive"]:
         st.exception(e)
     st.stop()
 
-# ✅ HotSpots — Confirmação de acesso (pública)
+# HotSpots — Confirmação de acesso (pública)
 if query_params.get("page") == ["hotspots/confirmar"]:
     try:
         from modules.hotspots.confirmar_acesso import confirmar_acesso
@@ -176,17 +173,19 @@ try:
     clientes_collection.create_index("celular", unique=True)
     clientes_collection.create_index("nome_completo")
 except Exception:
-    pass  # Índices já podem existir
+    pass
 
 # ============================================================================
-# --- 🔐 Verificação automática de login (AGORA SIM, DEPOIS DAS ROTAS PÚBLICAS) ---
+# --- 🔐 VERIFICAÇÃO AUTOMÁTICA DE LOGIN (USANDO auth.validar_token) ---
 # ============================================================================
+
 if "logado" not in st.session_state:
     st.session_state["logado"] = False
 
 if not st.session_state["logado"]:
     token = None
     try:
+        # Tenta ler o token do localStorage
         token = streamlit_js_eval(
             js_expressions="localStorage.getItem('crm_auth_token')",
             key="auto_login_token_check"
@@ -195,53 +194,50 @@ if not st.session_state["logado"]:
         pass
 
     if token:
-        try:
-            usuarios_coll = get_usuarios_collection()
-            usuario = usuarios_coll.find_one({
-                "token_autologin": token,
-                "token_expira_em": {"$gt": datetime.utcnow()}
+        # ✅ Usa a nova função de validação do auth.py
+        from modules.auth import validar_token
+        usuario = validar_token(token)
+        
+        if usuario:
+            perfil = usuario["perfil"]
+            st.session_state.update({
+                "logado": True,
+                "perfil": perfil,
+                "nome_usuario": usuario["nome_exibicao"]
             })
             
-            if usuario:
-                perfil = usuario["perfil"]
-                st.session_state.update({
-                    "logado": True,
-                    "perfil": perfil,
-                    "nome_usuario": usuario["nome_exibicao"]
-                })
-                
-                if perfil == "embaixador":
-                    st.session_state["codigo_embaixador"] = usuario["codigo_embaixador"]
-                elif perfil == "tecnico":
-                    st.session_state["login_tecnico"] = usuario["login"]
-                elif perfil == "revenda":
-                    st.session_state["codigo_revenda"] = usuario["codigo_revenda"]
-                elif perfil == "vendedora":
-                    st.session_state["nome_vendedora"] = usuario["nome_exibicao"]
-                
-                st.toast("✅ Sessão restaurada automaticamente.", icon="🔓")
-                st.rerun()
-            else:
-                auth.remove_local_storage_token()
-                st.warning("⚠️ Sessão expirada. Faça login novamente.")
-        except Exception as e:
-            st.warning("⚠️ Erro ao validar sessão. Faça login novamente.")
+            if perfil == "embaixador":
+                st.session_state["codigo_embaixador"] = usuario.get("codigo_embaixador")
+            elif perfil == "tecnico":
+                st.session_state["login_tecnico"] = usuario.get("login")
+            elif perfil == "revenda":
+                st.session_state["codigo_revenda"] = usuario.get("codigo_revenda")
+            elif perfil == "vendedora":
+                st.session_state["nome_vendedora"] = usuario.get("nome_exibicao")
+            
+            st.toast("✅ Sessão restaurada automaticamente.", icon="🔓")
+            st.rerun()
+        else:
+            # Token inválido ou expirado
             auth.remove_local_storage_token()
+            st.warning("⚠️ Sessão expirada. Faça login novamente.")
 
 # ============================================================================
-# --- 🚪 Redireciona para login se não autenticado ---
+# --- 🚪 REDIRECIONA PARA LOGIN SE NÃO AUTENTICADO ---
 # ============================================================================
+
 if not st.session_state["logado"]:
     st.title("🔐 Condomínios Tracecom - Login")
     auth.login()
     st.stop()
 
 # ============================================================================
-# --- ✅ Interface principal ---
+# --- ✅ INTERFACE PRINCIPAL ---
 # ============================================================================
+
 st.sidebar.success(f"✅ Logado como: {st.session_state['perfil'].title()}")
 
-# --- 🎯 Badge de pendências no menu lateral ---
+# --- Badge de pendências no menu lateral ---
 perfil = st.session_state["perfil"]
 try:
     from modules.permissoes import get_perfis_pendencias
@@ -256,7 +252,7 @@ try:
         if count_pendencias > 0:
             st.sidebar.warning(f"📋 Você tem {count_pendencias} pendência(s) ativa(s)!")
 except Exception:
-    pass  # Coleção ainda não existe ou erro de conexão
+    pass
 
 if st.sidebar.button("🔄 Reiniciar Sistema", key="reiniciar_sistema_sidebar"):
     chaves_para_deletar = [k for k in st.session_state.keys() if not k.startswith("__")]
@@ -272,6 +268,7 @@ st.sidebar.header("📋 Módulos")
 # ============================================================================
 # --- 🎯 SISTEMA DE PERMISSÕES DINÂMICAS ---
 # ============================================================================
+
 try:
     from modules.permissoes import get_modulos_permitidos
     opcoes_modulos = get_modulos_permitidos(perfil)
@@ -292,7 +289,7 @@ except ImportError:
             "Roteiro de Vendas", "Endereços Bloqueados",
             "Marketing Condomínios", "Leads & Eventos",
             "Visitas Vendedoras",
-            "Vendas por Vendedor - Condomínios"  # <-- NOVO
+            "Vendas por Vendedor - Condomínios"
         ],
         "recepcao": [
             "Cadastro", "Follow-up", "Agendamentos", "Pendências",
@@ -328,17 +325,17 @@ except ImportError:
         "diretoria": [
             "Relatórios Condomínios", "Prospecção Condomínios",
             "Visitas Vendedoras",
-            "Vendas por Vendedor - Condomínios"  # <-- NOVO
+            "Vendas por Vendedor - Condomínios"
         ],
     }
     opcoes_modulos = modulo_map.get(perfil, [])
 
-# ✅ Adiciona módulos extras para admin (caso precise de ajustes finos no fallback)
+# Adiciona módulos extras para admin
 if perfil == "admin":
     extras_admin = [
         "Admin Funcionários", "Condomínios", "Informações Condomínios", 
         "Relatórios Condomínios", "Prospecção Condomínios", "Marketing Condomínios",
-        "Visitas Vendedoras", "Vendas por Vendedor - Condomínios"  # <-- NOVO
+        "Visitas Vendedoras", "Vendas por Vendedor - Condomínios"
     ]
     for mod in extras_admin:
         if mod not in opcoes_modulos:
@@ -347,8 +344,9 @@ if perfil == "admin":
 modulo = st.sidebar.radio("Selecione o módulo:", opcoes_modulos, index=0, key="modulo_selecionado")
 
 # ============================================================================
-# --- 🔒 Logout ---
+# --- 🔒 LOGOUT ---
 # ============================================================================
+
 if st.sidebar.button("🚪 Logout"):
     auth.remove_local_storage_token()
     for k in list(st.session_state.keys()):
@@ -358,8 +356,9 @@ if st.sidebar.button("🚪 Logout"):
     st.rerun()
 
 # ============================================================================
-# --- 🏢 Cabeçalho ---
+# --- 🏢 CABEÇALHO ---
 # ============================================================================
+
 col1, col2 = st.columns([1, 5])
 with col1:
     st.image("logo.png", width=80)
@@ -367,8 +366,9 @@ with col2:
     st.title("🏢 Condomínios Tracecom")
 
 # ============================================================================
-# --- 📦 Carregamento de módulos ---
+# --- 📦 CARREGAMENTO DE MÓDULOS ---
 # ============================================================================
+
 try:
     if modulo == "Cadastro":
         cadastro.render_cadastro(clientes_collection)
@@ -379,16 +379,13 @@ try:
     elif modulo == "Agendamentos":
         agendamentos.render_agendamentos(clientes_collection)
         
-    # ✅ Módulo de Pendências
     elif modulo == "Pendências":
         pendencias.render_pendencias(clientes_collection)
         
-    # ✅ Módulo de Marketing Condomínios
     elif modulo == "Marketing Condomínios" and perfil in ["admin", "supervisao_n1", "supervisao_n2", "supervisao_n3"]:
         from modules import admin_condominios_marketing
         admin_condominios_marketing.render_admin_marketing()
         
-    # ✅ Módulo de Visitas Vendedoras
     elif modulo == "Visitas Vendedoras":
         from modules.visitas_vendedoras import render_visitas_vendedoras
         render_visitas_vendedoras(clientes_collection)
@@ -397,12 +394,10 @@ try:
         from modules import relatorios
         relatorios.render_relatorios(clientes_collection)
         
-    # ✅ Módulo de Condomínios (Cadastro base)
     elif modulo == "Condomínios" and perfil == "admin":
         from modules import condominios
         condominios.render_cadastro_condominio()
     
-    # ✅ NOVO MÓDULO - Informações Condomínios
     elif modulo == "Informações Condomínios" and perfil == "admin":
         from modules.informacoes_condominios import render_informacoes_condominios
         render_informacoes_condominios()
@@ -415,7 +410,6 @@ try:
         from modules.prospeccao_condominios import render_prospeccao_condominios
         render_prospeccao_condominios()
         
-    # ✅ NOVO MÓDULO - Vendas por Vendedor - Condomínios
     elif modulo == "Vendas por Vendedor - Condomínios" and perfil in ["admin", "diretoria"]:
         from modules.vendas_vendedor_condominios import render_vendas_vendedor_condominios
         render_vendas_vendedor_condominios()
@@ -465,7 +459,6 @@ try:
         from modules import roteiro_vendas
         roteiro_vendas.render_roteiro_vendas(clientes_collection)
         
-    # ✅ LEADS & EVENTOS (COM ABAS INTEGRADAS)
     elif modulo == "Leads & Eventos":
         st.title("📋 Gestão de Leads & Eventos")
         
