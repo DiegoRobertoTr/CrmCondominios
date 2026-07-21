@@ -678,7 +678,9 @@ def _leads_por_vendedora_followup(collection, inicio, fim, modo_delegacao_ativo=
                 "retorno_agendado": "$retorno_agendado",
                 "condominio_nome": "$condominio_nome",
                 "bloco": "$bloco",
-                "apartamento": "$apartamento"
+                "apartamento": "$apartamento",
+                "observacao": "$observacao",
+                "observacoes": "$observacoes"
             }}
         }},
         {"$project": {
@@ -963,14 +965,15 @@ def render_relatorios_followup(clientes_collection):
             with st.expander(f"📋 Ver leads de {vendedora_selecionada}"):
                 clientes = dados_vendedora["clientes"]
                 if clientes:
-                    # CORREÇÃO: Criar DataFrame com colunas específicas e tratar casos onde faltam campos
+                    # Criar DataFrame com colunas específicas e tratar casos onde faltam campos
                     df_clientes = pd.DataFrame(clientes)
                     
                     # Mapear colunas existentes
-                    colunas_esperadas = ["nome", "celular", "touch_count", "retorno_agendado", "condominio_nome", "bloco", "apartamento"]
+                    colunas_esperadas = ["nome", "celular", "touch_count", "retorno_agendado", 
+                                        "condominio_nome", "bloco", "apartamento", "observacao", "observacoes"]
                     colunas_existentes = [col for col in colunas_esperadas if col in df_clientes.columns]
                     
-                    # Se não houver colunas esperadas, criar DataFrame vazio
+                    # Se não houver colunas esperadas
                     if not colunas_existentes:
                         st.info("Nenhum dado disponível para este vendedor.")
                         return
@@ -986,7 +989,9 @@ def render_relatorios_followup(clientes_collection):
                         "retorno_agendado": "Retorno",
                         "condominio_nome": "Condomínio",
                         "bloco": "Bloco",
-                        "apartamento": "Apartamento"
+                        "apartamento": "Apartamento",
+                        "observacao": "Observação",
+                        "observacoes": "Observação"
                     }
                     
                     # Renomear apenas colunas que existem
@@ -998,6 +1003,12 @@ def render_relatorios_followup(clientes_collection):
                     if "Retorno" in df_clientes.columns:
                         df_clientes["Retorno"] = df_clientes["Retorno"].apply(
                             lambda x: x if x and x != "" and x != " " else "Imediato"
+                        )
+                    
+                    # Tratar campo Observação - substituir None/NaN por vazio
+                    if "Observação" in df_clientes.columns:
+                        df_clientes["Observação"] = df_clientes["Observação"].apply(
+                            lambda x: x if x and x != "" and x != " " and pd.notna(x) else ""
                         )
                     
                     # Criar coluna Unidade
@@ -1017,15 +1028,31 @@ def render_relatorios_followup(clientes_collection):
                         df_clientes["Unidade"] = ""
                     
                     # Definir colunas para exibição
-                    colunas_exibicao = ["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Unidade"]
+                    colunas_exibicao = ["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Unidade", "Observação"]
                     colunas_existentes_exibicao = [col for col in colunas_exibicao if col in df_clientes.columns]
                     
                     if colunas_existentes_exibicao:
                         df_exibicao = df_clientes[colunas_existentes_exibicao].copy()
+                        
+                        # Configurar largura das colunas para melhor visualização
+                        column_config = {
+                            "Nome": st.column_config.TextColumn("Nome", width="medium"),
+                            "Celular": st.column_config.TextColumn("Celular", width="small"),
+                            "Toques": st.column_config.NumberColumn("Toques", format="%d", width="small"),
+                            "Retorno": st.column_config.TextColumn("Retorno", width="medium"),
+                            "Condomínio": st.column_config.TextColumn("Condomínio", width="large"),
+                            "Unidade": st.column_config.TextColumn("Unidade", width="small"),
+                        }
+                        
+                        # Adicionar configuração para Observação se existir
+                        if "Observação" in df_exibicao.columns:
+                            column_config["Observação"] = st.column_config.TextColumn("Observação", width="large")
+                        
                         st.dataframe(
                             df_exibicao,
                             use_container_width=True,
-                            hide_index=True
+                            hide_index=True,
+                            column_config=column_config
                         )
                     else:
                         st.info("Nenhum dado disponível para exibição.")
