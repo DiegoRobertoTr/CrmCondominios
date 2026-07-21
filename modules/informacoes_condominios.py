@@ -55,6 +55,48 @@ FORMAS_PAGAMENTO = ["Pix", "Cartão", "Boleto", "Transferência", "Dinheiro", "O
 FUNCOES_CONTATO = ["Síndico", "Subsíndico", "Administrador", "Preposto", "Porteiro", "Zelador", "Outro"]
 
 # ============================================================================
+# FUNÇÕES DE CACHE PARA PERFORMANCE
+# ============================================================================
+
+@st.cache_data(ttl=300)  # Cache por 5 minutos
+def get_all_condominios_com_info():
+    """Busca todos os condomínios com suas informações de forma otimizada"""
+    collection = get_condominios_collection()
+    return list(collection.find().sort("nome", 1))
+
+@st.cache_data(ttl=300)
+def get_condominios_filtrados(zona=None, status=None):
+    """Busca condomínios com filtros aplicados"""
+    collection = get_condominios_collection()
+    query = {}
+    if zona and zona != "Todas":
+        query["zona"] = zona
+    if status == "Com Informações":
+        query["informacoes_detalhadas"] = {"$exists": True}
+    elif status == "Sem Informações":
+        query["informacoes_detalhadas"] = {"$exists": False}
+    return list(collection.find(query).sort("nome", 1))
+
+@st.cache_data(ttl=300)
+def get_dashboard_stats():
+    """Busca estatísticas para o dashboard"""
+    collection = get_condominios_collection()
+    total = collection.count_documents({})
+    com_info = collection.count_documents({"informacoes_detalhadas": {"$exists": True}})
+    
+    zonas = list(collection.aggregate([
+        {"$group": {"_id": "$zona", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]))
+    
+    return {
+        "total": total,
+        "com_info": com_info,
+        "sem_info": total - com_info,
+        "zonas": zonas
+    }
+
+# ============================================================================
 # FUNÇÕES DE NORMALIZAÇÃO E MATCHING
 # ============================================================================
 
@@ -508,28 +550,25 @@ def render_informacoes_condominios():
         render_lista_edicao_condominios()
 
 def render_dashboard():
-    """Dashboard com visão geral das informações"""
+    """Dashboard com visão geral das informações - SEM BOTÕES DE EDIÇÃO"""
     collection = get_condominios_collection()
     
-    total_condominios = collection.count_documents({})
-    com_informacoes = collection.count_documents({"informacoes_detalhadas": {"$exists": True}})
-    sem_informacoes = total_condominios - com_informacoes
+    # Usar cache para estatísticas
+    stats = get_dashboard_stats()
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("📊 Total de Condomínios", total_condominios)
+        st.metric("📊 Total de Condomínios", stats['total'])
     with col2:
-        st.metric("✅ Com Informações", com_informacoes)
+        st.metric("✅ Com Informações", stats['com_info'])
     with col3:
-        st.metric("⚠️ Sem Informações", sem_informacoes, 
-                 delta="⚠️ Pendente" if sem_informacoes > 0 else None)
+        st.metric("⚠️ Sem Informações", stats['sem_info'], 
+                 delta="⚠️ Pendente" if stats['sem_info'] > 0 else None)
     with col4:
-        zonas = list(collection.aggregate([
-            {"$group": {"_id": "$zona", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}}
-        ]))
-        if zonas:
-            st.metric("🏙️ Principal Zona", zonas[0]["_id"])
+        if stats['zonas'] and len(stats['zonas']) > 0:
+            st.metric("🏙️ Principal Zona", stats['zonas'][0]['_id'])
+        else:
+            st.metric("🏙️ Principal Zona", "N/A")
     
     st.subheader("🔍 Filtros")
     col1, col2 = st.columns(2)
@@ -586,10 +625,8 @@ def render_dashboard():
                 else:
                     st.warning("⚠️ Sem informações detalhadas")
                 
-                # Link para editar na aba de edição
-                if st.button("✏️ Editar", key=f"edit_{cond['_id']}"):
-                    st.session_state['cond_info_edit'] = str(cond['_id'])
-                    st.rerun()
+                # Link visual para editar (navegação para aba de edição)
+                st.caption("💡 Edite na aba 'Editar Informações'")
 
 def render_importacao_informacoes():
     """Importa informações da planilha usando matching inteligente"""
@@ -738,18 +775,15 @@ def render_importacao_informacoes():
             st.code(traceback.format_exc())
 
 def render_lista_edicao_condominios():
-    """Lista todos os condomínios com expanders para edição"""
+    """Lista todos os condomínios com expanders para edição - COM PAGINAÇÃO E BOTÕES CORRIGIDOS"""
     st.subheader("✏️ Editar Informações dos Condomínios")
     
-    collection = get_condominios_collection()
-    condominios = list(collection.find().sort("nome", 1))
+    st.info("💡 Clique no nome do condomínio para expandir e editar as informações.")
     
-    if not condominios:
-        st.info("Nenhum condomínio cadastrado.")
-        return
+    collection = get_condominios_collection()
     
     # Filtros
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
         zona_filter = st.selectbox(
             "Filtrar por Zona",
@@ -762,25 +796,54 @@ def render_lista_edicao_condominios():
             ["Todos", "Com Informações", "Sem Informações"],
             key="filtro_status_edicao"
         )
+    with col3:
+        # Botão para limpar cache
+        if st.button("🔄 Recarregar", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
     
-    # Aplicar filtros
-    condominios_filtrados = condominios.copy()
-    if zona_filter != "Todas":
-        condominios_filtrados = [c for c in condominios_filtrados if c.get("zona") == zona_filter]
+    # Buscar dados com cache
+    if zona_filter == "Todas" and status_filter == "Todos":
+        condominios = get_all_condominios_com_info()
+    else:
+        condominios = get_condominios_filtrados(zona_filter, status_filter)
     
-    if status_filter == "Com Informações":
-        condominios_filtrados = [c for c in condominios_filtrados if c.get("informacoes_detalhadas")]
-    elif status_filter == "Sem Informações":
-        condominios_filtrados = [c for c in condominios_filtrados if not c.get("informacoes_detalhadas")]
+    if not condominios:
+        st.info("Nenhum condomínio encontrado com os filtros selecionados.")
+        return
     
-    # Estatísticas
-    st.caption(f"📌 {len(condominios_filtrados)} condomínios encontrados")
+    # Paginação
+    ITENS_POR_PAGINA = 10
+    total_condominios = len(condominios)
+    total_paginas = (total_condominios + ITENS_POR_PAGINA - 1) // ITENS_POR_PAGINA
+    
+    col1, col2, col3 = st.columns([2, 3, 2])
+    with col1:
+        st.caption(f"📌 {total_condominios} condomínios encontrados")
+    with col2:
+        if total_paginas > 1:
+            pagina_atual = st.selectbox(
+                "Página",
+                range(1, total_paginas + 1),
+                key="pagina_edicao"
+            )
+        else:
+            pagina_atual = 1
+            st.caption("Página 1 de 1")
+    with col3:
+        st.caption(f"Mostrando {ITENS_POR_PAGINA} por página")
+    
+    # Calcular índices
+    inicio = (pagina_atual - 1) * ITENS_POR_PAGINA
+    fim = min(inicio + ITENS_POR_PAGINA, total_condominios)
+    
+    condominios_pagina = condominios[inicio:fim]
     
     # Verificar se veio de um clique em "Editar" no dashboard
     cond_selecionado_id = st.session_state.get('cond_info_edit', None)
     
     # Lista com expanders
-    for idx, cond in enumerate(condominios_filtrados):
+    for cond in condominios_pagina:
         # Determinar status
         info = cond.get("informacoes_detalhadas", {})
         has_info = bool(info)
@@ -813,6 +876,8 @@ def render_lista_edicao_condominios():
                         for key in [f'itens_placas_{cond["_id"]}', f'itens_doacoes_{cond["_id"]}', f'contatos_{cond["_id"]}']:
                             if key in st.session_state:
                                 del st.session_state[key]
+                        # Limpar cache
+                        st.cache_data.clear()
                         st.success("Informações removidas!")
                         st.rerun()
             with col3:
@@ -989,7 +1054,8 @@ def render_lista_edicao_condominios():
                             )
                         
                         with col4:
-                            if st.button("🗑️", key=f"del_placa_{cond['_id']}_{idx_item}"):
+                            # CORREÇÃO: substituído st.button por st.form_submit_button
+                            if st.form_submit_button("🗑️", key=f"del_placa_{cond['_id']}_{idx_item}"):
                                 itens_atuais.pop(idx_item)
                                 st.session_state[f'itens_placas_{cond["_id"]}'] = itens_atuais
                                 st.rerun()
@@ -1039,7 +1105,8 @@ def render_lista_edicao_condominios():
                             )
                         
                         with col4:
-                            if st.button("🗑️", key=f"del_doacao_{cond['_id']}_{idx_item}"):
+                            # CORREÇÃO: substituído st.button por st.form_submit_button
+                            if st.form_submit_button("🗑️", key=f"del_doacao_{cond['_id']}_{idx_item}"):
                                 itens_doacoes_atuais.pop(idx_item)
                                 st.session_state[f'itens_doacoes_{cond["_id"]}'] = itens_doacoes_atuais
                                 st.rerun()
@@ -1105,7 +1172,8 @@ def render_lista_edicao_condominios():
                             )
                         
                         with col4:
-                            if st.button("🗑️", key=f"del_contato_{cond['_id']}_{idx_item}"):
+                            # CORREÇÃO: substituído st.button por st.form_submit_button
+                            if st.form_submit_button("🗑️", key=f"del_contato_{cond['_id']}_{idx_item}"):
                                 contatos_atuais.pop(idx_item)
                                 st.session_state[f'contatos_{cond["_id"]}'] = contatos_atuais
                                 st.rerun()
@@ -1134,6 +1202,7 @@ def render_lista_edicao_condominios():
                 
                 st.divider()
                 
+                # Botão de salvar
                 if st.form_submit_button("💾 Salvar Informações", type="primary"):
                     # Montar dados
                     nova_info = {
@@ -1174,6 +1243,9 @@ def render_lista_edicao_condominios():
                     # Remover flag de edição
                     if 'cond_info_edit' in st.session_state:
                         del st.session_state['cond_info_edit']
+                    
+                    # Limpar cache
+                    st.cache_data.clear()
                     
                     st.success(f"✅ Informações de '{cond['nome']}' atualizadas com sucesso!")
                     st.balloons()
