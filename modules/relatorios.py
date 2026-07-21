@@ -963,29 +963,72 @@ def render_relatorios_followup(clientes_collection):
             with st.expander(f"📋 Ver leads de {vendedora_selecionada}"):
                 clientes = dados_vendedora["clientes"]
                 if clientes:
+                    # CORREÇÃO: Criar DataFrame com colunas específicas e tratar casos onde faltam campos
                     df_clientes = pd.DataFrame(clientes)
-                    df_clientes.columns = ["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Bloco", "Apartamento"]
                     
-                    df_clientes["Retorno"] = df_clientes["Retorno"].apply(
-                        lambda x: x if x and x != "" and x != " " else "Imediato"
-                    )
+                    # Mapear colunas existentes
+                    colunas_esperadas = ["nome", "celular", "touch_count", "retorno_agendado", "condominio_nome", "bloco", "apartamento"]
+                    colunas_existentes = [col for col in colunas_esperadas if col in df_clientes.columns]
                     
-                    df_clientes["Unidade"] = df_clientes.apply(
-                        lambda row: f"{row['Bloco']} - {row['Apartamento']}" if row['Bloco'] and row['Apartamento'] 
-                        else row['Bloco'] if row['Bloco'] 
-                        else row['Apartamento'] if row['Apartamento'] 
-                        else "",
-                        axis=1
-                    )
+                    # Se não houver colunas esperadas, criar DataFrame vazio
+                    if not colunas_existentes:
+                        st.info("Nenhum dado disponível para este vendedor.")
+                        return
                     
-                    df_exibicao = df_clientes[["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Unidade"]]
-                    df_exibicao.columns = ["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Unidade"]
+                    # Selecionar apenas colunas existentes
+                    df_clientes = df_clientes[colunas_existentes].copy()
                     
-                    st.dataframe(
-                        df_exibicao,
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                    # Renomear colunas
+                    mapa_renomeacao = {
+                        "nome": "Nome",
+                        "celular": "Celular",
+                        "touch_count": "Toques",
+                        "retorno_agendado": "Retorno",
+                        "condominio_nome": "Condomínio",
+                        "bloco": "Bloco",
+                        "apartamento": "Apartamento"
+                    }
+                    
+                    # Renomear apenas colunas que existem
+                    for col_orig, col_dest in mapa_renomeacao.items():
+                        if col_orig in df_clientes.columns:
+                            df_clientes.rename(columns={col_orig: col_dest}, inplace=True)
+                    
+                    # Tratar campo Retorno
+                    if "Retorno" in df_clientes.columns:
+                        df_clientes["Retorno"] = df_clientes["Retorno"].apply(
+                            lambda x: x if x and x != "" and x != " " else "Imediato"
+                        )
+                    
+                    # Criar coluna Unidade
+                    if "Bloco" in df_clientes.columns and "Apartamento" in df_clientes.columns:
+                        df_clientes["Unidade"] = df_clientes.apply(
+                            lambda row: f"{row['Bloco']} - {row['Apartamento']}" if row['Bloco'] and row['Apartamento'] 
+                            else row['Bloco'] if row['Bloco'] 
+                            else row['Apartamento'] if row['Apartamento'] 
+                            else "",
+                            axis=1
+                        )
+                    elif "Bloco" in df_clientes.columns:
+                        df_clientes["Unidade"] = df_clientes["Bloco"]
+                    elif "Apartamento" in df_clientes.columns:
+                        df_clientes["Unidade"] = df_clientes["Apartamento"]
+                    else:
+                        df_clientes["Unidade"] = ""
+                    
+                    # Definir colunas para exibição
+                    colunas_exibicao = ["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Unidade"]
+                    colunas_existentes_exibicao = [col for col in colunas_exibicao if col in df_clientes.columns]
+                    
+                    if colunas_existentes_exibicao:
+                        df_exibicao = df_clientes[colunas_existentes_exibicao].copy()
+                        st.dataframe(
+                            df_exibicao,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("Nenhum dado disponível para exibição.")
         else:
             st.info(f"📭 {vendedora_selecionada} não possui leads em follow-up no período selecionado.")
 
