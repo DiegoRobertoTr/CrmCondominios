@@ -679,8 +679,7 @@ def _leads_por_vendedora_followup(collection, inicio, fim, modo_delegacao_ativo=
                 "condominio_nome": "$condominio_nome",
                 "bloco": "$bloco",
                 "apartamento": "$apartamento",
-                "observacao": "$observacao",
-                "observacoes": "$observacoes"
+                "observacoes_followup": "$observacoes_followup"  # <-- CAMPO CORRETO
             }}
         }},
         {"$project": {
@@ -955,7 +954,6 @@ def render_relatorios_followup(clientes_collection):
         col2.metric("Com Data Definida", dados_vendedora["com_data_definida"])
         col3.metric("Sem Data Definida", dados_vendedora["sem_data_definida"])
         
-        # CORREÇÃO: Verificar se media_touches é None ou NaN
         media_valor = dados_vendedora.get("media_touches", 0)
         if pd.isna(media_valor) or media_valor is None:
             media_valor = 0
@@ -965,20 +963,17 @@ def render_relatorios_followup(clientes_collection):
             with st.expander(f"📋 Ver leads de {vendedora_selecionada}"):
                 clientes = dados_vendedora["clientes"]
                 if clientes:
-                    # Criar DataFrame com colunas específicas e tratar casos onde faltam campos
                     df_clientes = pd.DataFrame(clientes)
                     
                     # Mapear colunas existentes
                     colunas_esperadas = ["nome", "celular", "touch_count", "retorno_agendado", 
-                                        "condominio_nome", "bloco", "apartamento", "observacao", "observacoes"]
+                                        "condominio_nome", "bloco", "apartamento", "observacoes_followup"]
                     colunas_existentes = [col for col in colunas_esperadas if col in df_clientes.columns]
                     
-                    # Se não houver colunas esperadas
                     if not colunas_existentes:
                         st.info("Nenhum dado disponível para este vendedor.")
                         return
                     
-                    # Selecionar apenas colunas existentes
                     df_clientes = df_clientes[colunas_existentes].copy()
                     
                     # Renomear colunas
@@ -990,28 +985,23 @@ def render_relatorios_followup(clientes_collection):
                         "condominio_nome": "Condomínio",
                         "bloco": "Bloco",
                         "apartamento": "Apartamento",
-                        "observacao": "Observação",
-                        "observacoes": "Observação"
+                        "observacoes_followup": "Observação"
                     }
                     
-                    # Renomear apenas colunas que existem
                     for col_orig, col_dest in mapa_renomeacao.items():
                         if col_orig in df_clientes.columns:
                             df_clientes.rename(columns={col_orig: col_dest}, inplace=True)
                     
-                    # Tratar campo Retorno
                     if "Retorno" in df_clientes.columns:
                         df_clientes["Retorno"] = df_clientes["Retorno"].apply(
                             lambda x: x if x and x != "" and x != " " else "Imediato"
                         )
                     
-                    # Tratar campo Observação - substituir None/NaN por vazio
                     if "Observação" in df_clientes.columns:
                         df_clientes["Observação"] = df_clientes["Observação"].apply(
                             lambda x: x if x and x != "" and x != " " and pd.notna(x) else ""
                         )
                     
-                    # Criar coluna Unidade
                     if "Bloco" in df_clientes.columns and "Apartamento" in df_clientes.columns:
                         df_clientes["Unidade"] = df_clientes.apply(
                             lambda row: f"{row['Bloco']} - {row['Apartamento']}" if row['Bloco'] and row['Apartamento'] 
@@ -1027,14 +1017,12 @@ def render_relatorios_followup(clientes_collection):
                     else:
                         df_clientes["Unidade"] = ""
                     
-                    # Definir colunas para exibição
                     colunas_exibicao = ["Nome", "Celular", "Toques", "Retorno", "Condomínio", "Unidade", "Observação"]
                     colunas_existentes_exibicao = [col for col in colunas_exibicao if col in df_clientes.columns]
                     
                     if colunas_existentes_exibicao:
                         df_exibicao = df_clientes[colunas_existentes_exibicao].copy()
                         
-                        # Configurar largura das colunas para melhor visualização
                         column_config = {
                             "Nome": st.column_config.TextColumn("Nome", width="medium"),
                             "Celular": st.column_config.TextColumn("Celular", width="small"),
@@ -1044,7 +1032,6 @@ def render_relatorios_followup(clientes_collection):
                             "Unidade": st.column_config.TextColumn("Unidade", width="small"),
                         }
                         
-                        # Adicionar configuração para Observação se existir
                         if "Observação" in df_exibicao.columns:
                             column_config["Observação"] = st.column_config.TextColumn("Observação", width="large")
                         
