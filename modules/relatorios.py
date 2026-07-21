@@ -687,7 +687,7 @@ def _leads_por_vendedora_followup(collection, inicio, fim, modo_delegacao_ativo=
             "com_data_definida": 1,
             "sem_data_definida": 1,
             "total_touches": 1,
-            "media_touches": {"$round": ["$media_touches", 2]},
+            "media_touches": {"$ifNull": [{"$round": ["$media_touches", 2]}, 0]},
             "clientes": 1,
             "percentual_com_data": {
                 "$cond": [
@@ -952,7 +952,12 @@ def render_relatorios_followup(clientes_collection):
         col1.metric("Total Leads", dados_vendedora["total_leads"])
         col2.metric("Com Data Definida", dados_vendedora["com_data_definida"])
         col3.metric("Sem Data Definida", dados_vendedora["sem_data_definida"])
-        col4.metric("Média Toques", f"{dados_vendedora['media_touches']:.2f}")
+        
+        # CORREÇÃO: Verificar se media_touches é None ou NaN
+        media_valor = dados_vendedora.get("media_touches", 0)
+        if pd.isna(media_valor) or media_valor is None:
+            media_valor = 0
+        col4.metric("Média Toques", f"{media_valor:.2f}")
         
         if dados_vendedora["total_leads"] > 0:
             with st.expander(f"📋 Ver leads de {vendedora_selecionada}"):
