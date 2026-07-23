@@ -1,6 +1,7 @@
 # modules/integracao_ixc.py - CORREÇÃO PARA BUSCA DE DADOS COM SINCRONIZAÇÃO DE CONDOMÍNIOS
 # ALTERAÇÃO 1: Quando tem condomínio, NÃO envia endereço
 # ALTERAÇÃO 4: Endereço só é enviado se NÃO tiver condomínio
+# DIAGNÓSTICO: Logs detalhados para identificar o problema
 
 import requests
 import re
@@ -625,7 +626,7 @@ def verificar_cliente_existente_ixc(cpf: str, config: Dict) -> Dict:
     return resultado
 
 # ============================================================================
-# CONSTRUÇÃO DO PAYLOAD - VERSÃO CORRIGIDA (ALTERAÇÕES 1 E 4)
+# CONSTRUÇÃO DO PAYLOAD - VERSÃO COM DIAGNÓSTICO COMPLETO
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str]]:
     """
@@ -633,6 +634,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     
     🔑 ALTERAÇÃO 1: Quando tem condomínio, NÃO envia campos de endereço
     🔑 ALTERAÇÃO 4: Endereço só é enviado se NÃO tiver condomínio
+    🔍 DIAGNÓSTICO: Logs detalhados para identificar o problema
     """
     def safe(val) -> str:
         return str(val).strip() if val is not None else ""
@@ -667,7 +669,25 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     host_limpo = _sanitizar_host(config["host"])
     auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
 
-    # ========== 3. DADOS DO CONDOMÍNIO ==========
+    # ========== 3. DIAGNÓSTICO - VERIFICAR TODOS OS DADOS DO CLIENTE ==========
+    print("\n" + "=" * 70)
+    print("🔍 DIAGNÓSTICO - DADOS RECEBIDOS DO CRM:")
+    print("=" * 70)
+    
+    # Campos importantes para diagnóstico
+    campos_importantes = [
+        "condominio_id", "condominio_nome", "condominio_id_ixc",
+        "bloco", "apartamento",
+        "endereco", "numero", "bairro", "cidade", "cep"
+    ]
+    
+    for campo in campos_importantes:
+        valor = cliente_data.get(campo)
+        print(f"   {campo}: '{valor}' (tipo: {type(valor).__name__})")
+    
+    print("=" * 70)
+    
+    # ========== 4. DADOS DO CONDOMÍNIO ==========
     cond_bloco = safe(cliente_data.get("bloco"))
     cond_apto = safe(cliente_data.get("apartamento"))
     cond_nome = safe(cliente_data.get("condominio_nome"))
@@ -679,36 +699,53 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     id_condominio_para_enviar = None
     
     print(f"\n🔍 PROCESSANDO CONDOMÍNIO:")
-    print(f"   cond_id_ixc: {cond_id_ixc}")
-    print(f"   cond_id_crm: {cond_id_crm}")
+    print(f"   cond_id_ixc: {cond_id_ixc} (tipo: {type(cond_id_ixc).__name__})")
+    print(f"   cond_id_crm: {cond_id_crm} (tipo: {type(cond_id_crm).__name__})")
     print(f"   cond_nome: '{cond_nome}'")
     print(f"   cond_bloco: '{cond_bloco}'")
     print(f"   cond_apto: '{cond_apto}'")
     
+    # VERIFICAÇÃO CRÍTICA: O cond_id_ixc está sendo passado?
+    if cond_id_ixc is None or cond_id_ixc == "" or cond_id_ixc == "None":
+        print(f"\n⚠️ ATENÇÃO: condominio_id_ixc está vazio ou None!")
+        print(f"   Isso significa que o CRM não tem o ID do IXC para este condomínio.")
+        print(f"   Vamos tentar buscar pelo nome ou ID do CRM...")
+    
     # PRIORIDADE 1: Usar ID do IXC se disponível (já sincronizado)
-    if cond_id_ixc:
+    if cond_id_ixc and str(cond_id_ixc).strip() and str(cond_id_ixc) != "None":
         id_condominio_para_enviar = str(cond_id_ixc)
         condominio_adicionado = True
         print(f"✅ Usando ID IXC do condomínio: {cond_id_ixc}")
     
     # PRIORIDADE 2: Se tem ID do CRM, buscar/sincronizar
-    elif cond_id_crm:
+    elif cond_id_crm and str(cond_id_crm).strip() and str(cond_id_crm) != "None":
+        print(f"🔄 Tentando sincronizar condomínio pelo ID CRM: {cond_id_crm}")
         try:
             # Tenta sincronizar para obter o ID do IXC
-            resultado_sinc = sincronizar_condominio_crm_com_ixc(cond_id_crm, config)
+            resultado_sinc = sincronizar_condominio_crm_com_ixc(str(cond_id_crm), config)
+            
+            print(f"   Resultado sincronização: {resultado_sinc}")
+            
             if resultado_sinc["sucesso"] and resultado_sinc.get("id_ixc"):
                 id_condominio_para_enviar = str(resultado_sinc["id_ixc"])
                 condominio_adicionado = True
                 print(f"✅ Condomínio sincronizado: ID IXC = {resultado_sinc['id_ixc']}")
             else:
                 print(f"⚠️ Condomínio não encontrado no IXC (ID CRM: {cond_id_crm})")
+                print(f"   Erro: {resultado_sinc.get('erro', 'Erro desconhecido')}")
         except Exception as e:
             print(f"⚠️ Erro ao sincronizar condomínio: {e}")
+            import traceback
+            traceback.print_exc()
     
     # PRIORIDADE 3: Se tem nome, buscar pelo nome
-    elif cond_nome:
+    elif cond_nome and cond_nome != "None" and cond_nome.strip():
+        print(f"🔍 Tentando buscar condomínio pelo nome: '{cond_nome}'")
         try:
             dados_ixc = buscar_condominio_completo_ixc(host_limpo, auth_string, cond_nome)
+            
+            print(f"   Resultado busca: {dados_ixc}")
+            
             if dados_ixc and dados_ixc.get("id_ixc"):
                 id_condominio_para_enviar = str(dados_ixc["id_ixc"])
                 condominio_adicionado = True
@@ -726,8 +763,15 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
                 print(f"⚠️ Condomínio não encontrado pelo nome: '{cond_nome}'")
         except Exception as e:
             print(f"⚠️ Erro ao buscar condomínio pelo nome: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"⚠️ Nenhuma informação de condomínio disponível para busca")
+        print(f"   cond_nome: '{cond_nome}'")
+        print(f"   cond_id_crm: '{cond_id_crm}'")
+        print(f"   cond_id_ixc: '{cond_id_ixc}'")
 
-    # ========== 4. ENDEREÇO - SÓ ENVIA SE NÃO TIVER CONDOMÍNIO (ALTERAÇÃO 4) ==========
+    # ========== 5. ENDEREÇO - SÓ ENVIA SE NÃO TIVER CONDOMÍNIO (ALTERAÇÃO 4) ==========
     cep = None
     endereco = None
     numero = None
@@ -736,12 +780,12 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     cidade_id = ID_CIDADE_RJ
     uf_id = ID_UF_RJ
 
-    if condominio_adicionado:
+    if condominio_adicionado and id_condominio_para_enviar:
         # 🔴 TEM CONDOMÍNIO - NÃO ENVIA ENDEREÇO (ALTERAÇÃO 1)
         print(f"\n🏢 USANDO CONDOMÍNIO - Endereço NÃO será enviado")
         print(f"   ID Condomínio: {id_condominio_para_enviar}")
-        print(f"   Bloco: {cond_bloco}")
-        print(f"   Apartamento: {cond_apto}")
+        print(f"   Bloco: {cond_bloco if cond_bloco else '(vazio)'}")
+        print(f"   Apartamento: {cond_apto if cond_apto else '(vazio)'}")
         
         # 🔴 IMPORTANTE: NÃO preencher campos de endereço
         # Eles serão ignorados no payload
@@ -771,7 +815,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         print(f"   Cidade: {cidade_nome} (ID: {cidade_id})")
         print(f"   CEP: {cep}")
 
-    # ========== 5. DATA DE NASCIMENTO ==========
+    # ========== 6. DATA DE NASCIMENTO ==========
     data_nasc = ""
     raw_nasc = cliente_data.get("data_nascimento")
     if raw_nasc:
@@ -783,7 +827,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
             except ValueError:
                 continue
 
-    # ========== 6. PAYLOAD FINAL ==========
+    # ========== 7. PAYLOAD FINAL ==========
     payload = {
         # Dados obrigatórios
         "ativo": "S",
@@ -831,7 +875,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         "obs": safe(cliente_data.get("observacoes", f"Cadastro CRM - {datetime.now().strftime('%d/%m/%Y')}"))
     }
 
-    # ========== 7. ADICIONAR CONDOMÍNIO (se encontrado) ==========
+    # ========== 8. ADICIONAR CONDOMÍNIO (se encontrado) ==========
     if condominio_adicionado and id_condominio_para_enviar:
         payload["id_condominio"] = id_condominio_para_enviar
         
@@ -846,6 +890,14 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
         # 🔴 NÃO ADICIONAR CAMPOS DE ENDEREÇO (ALTERAÇÃO 1)
         # O IXC vai buscar do cadastro do condomínio
         print(f"✅ Payload com CONDOMÍNIO - Endereço NÃO enviado")
+        
+        # ⚠️ GARANTIR QUE ENDEREÇO NÃO ESTEJA NO PAYLOAD
+        # Remover qualquer campo de endereço que possa ter sido adicionado
+        campos_endereco = ['endereco', 'numero', 'bairro', 'cidade', 'cep', 'uf', 'complemento']
+        for campo in campos_endereco:
+            if campo in payload:
+                del payload[campo]
+                print(f"   🗑️ Removendo campo '{campo}' do payload (tem condomínio)")
         
     else:
         # ❌ SEM CONDOMÍNIO - Adicionar endereço completo
@@ -865,11 +917,16 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
             payload["uf"] = uf_id
         
         print(f"✅ Payload com ENDEREÇO - Endereço enviado")
+        
+        # ⚠️ GARANTIR QUE CONDOMÍNIO NÃO ESTEJA NO PAYLOAD
+        if 'id_condominio' in payload:
+            del payload['id_condominio']
+            print(f"   🗑️ Removendo 'id_condominio' do payload (sem condomínio)")
 
-    # ========== 8. REMOVER CAMPOS VAZIOS ==========
+    # ========== 9. REMOVER CAMPOS VAZIOS ==========
     payload = {k: v for k, v in payload.items() if v not in (None, "", " ", [], {})}
     
-    # ========== 9. LOG FINAL ==========
+    # ========== 10. LOG FINAL ==========
     print(f"\n📤 PAYLOAD FINAL:")
     print(f"   id_condominio: {payload.get('id_condominio', '❌ NÃO ENVIADO')}")
     print(f"   bloco: {payload.get('bloco', '❌ NÃO ENVIADO')}")
@@ -879,6 +936,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     print(f"   bairro: {payload.get('bairro', '❌ NÃO ENVIADO')}")
     print(f"   cidade: {payload.get('cidade', '❌ NÃO ENVIADO')}")
     print(f"   cep: {payload.get('cep', '❌ NÃO ENVIADO')}")
+    print("=" * 70)
 
     return payload, None
 
