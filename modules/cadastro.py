@@ -81,7 +81,7 @@ try:
 except ImportError:
     # Funções dummy se módulo não existir
     def enviar_cliente_para_ixc(cliente_data):
-        return False, None, "Módulo de integração IXC não disponível"
+        return False, None, "Módulo de integração IXC não disponível", None
     def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
         pass
     def verificar_cliente_existente_ixc(cpf, config):
@@ -2089,7 +2089,7 @@ def render_cadastro(clientes_collection):
                                     st.success("✅ Cliente vinculado ao IXC com sucesso!")
                                 else:
                                     # Tentar criar no IXC
-                                    sucesso_ixc, id_ixc, erro_ixc = enviar_cliente_para_ixc(cliente_data)
+                                    sucesso_ixc, id_ixc, erro_ixc, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
                                     
                                     if sucesso_ixc:
                                         update_fields = {
@@ -2098,12 +2098,29 @@ def render_cadastro(clientes_collection):
                                         }
                                         if id_ixc and id_ixc not in ["ok", "existente"]:
                                             update_fields["id_ixc"] = id_ixc
+                                        # Registra no Mongo se o condomínio não pôde ser
+                                        # vinculado no IXC, para dar pra filtrar/corrigir depois
+                                        if condominio_vinculado is False:
+                                            update_fields["condominio_vinculado_ixc"] = False
                                         
                                         clientes_collection.update_one(
                                             {"_id": result.inserted_id},
                                             {"$set": update_fields}
                                         )
-                                        st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+
+                                        # 👇 CRÍTICO: o cliente pode ter sido criado no IXC com
+                                        # sucesso, mas SEM o condomínio vinculado. Isso não pode
+                                        # mais passar em silêncio — avisa quem está cadastrando.
+                                        if condominio_vinculado is False:
+                                            st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                                            st.warning(
+                                                "⚠️ Atenção: o condomínio/bloco/apartamento informados "
+                                                "NÃO foram vinculados ao cliente no IXC. Verifique "
+                                                "manualmente o cadastro no IXC ou rode a sincronização "
+                                                "de condomínios e reenvie."
+                                            )
+                                        else:
+                                            st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
                                     else:
                                         registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
                                         st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
