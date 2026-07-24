@@ -76,7 +76,7 @@ try:
         get_ixc_config,
         sincronizar_condominio_crm_com_ixc,
         buscar_condominio_completo_ixc,
-        obter_id_ixc_condominio,  # 👈 NOVA FUNÇÃO
+        obter_id_ixc_condominio,
         render_painel_sincronizacao_condominios
     )
 except ImportError:
@@ -711,32 +711,72 @@ def expander_visualizar_editar(cliente, clientes_collection):
             
             col1, col2 = st.columns([3, 1])
             with col1:
-                endereco = st.text_input("Endereço*", max_chars=100, value=safe_session_state_get(f"endereco_{key_suffix}", cliente.get("endereco", "")), key=f"endereco_{key_suffix}")
+                endereco_valor = safe_session_state_get(f"endereco_{key_suffix}", cliente.get("endereco", ""))
+                endereco = st.text_input(
+                    "Endereço*",
+                    value=endereco_valor if endereco_valor else "",
+                    key=f"endereco_{key_suffix}"
+                )
             with col2:
-                numero = st.text_input("Número*", max_chars=6, value=safe_session_state_get(f"numero_{key_suffix}", cliente.get("numero", "")), key=f"numero_{key_suffix}")
+                numero_valor = safe_session_state_get(f"numero_{key_suffix}", cliente.get("numero", ""))
+                numero = st.text_input(
+                    "Número*",
+                    max_chars=6,
+                    value=numero_valor if numero_valor else "",
+                    key=f"numero_{key_suffix}"
+                )
 
             col_bloco, col_apto = st.columns(2)
             with col_bloco:
-                bloco = st.text_input("Bloco", value=cliente.get("bloco", ""), key=f"bloco_{key_suffix}")
+                bloco_valor = safe_session_state_get(f"bloco_{key_suffix}", cliente.get("bloco", ""))
+                bloco = st.text_input("Bloco", value=bloco_valor if bloco_valor else "", key=f"bloco_{key_suffix}")
             with col_apto:
-                apartamento = st.text_input("Apartamento", value=cliente.get("apartamento", ""), key=f"apartamento_{key_suffix}")
+                apto_valor = safe_session_state_get(f"apartamento_{key_suffix}", cliente.get("apartamento", ""))
+                apartamento = st.text_input("Apartamento", value=apto_valor if apto_valor else "", key=f"apartamento_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
-                complemento = st.text_input("Complemento", max_chars=50, value=cliente.get("complemento", ""), key=f"complemento_{key_suffix}")
+                complemento_valor = safe_session_state_get(f"complemento_{key_suffix}", cliente.get("complemento", ""))
+                complemento = st.text_input(
+                    "Complemento",
+                    value=complemento_valor if complemento_valor else "",
+                    key=f"complemento_{key_suffix}"
+                )
             with col2:
-                ponto_referencia = st.text_input("Ponto de referência", max_chars=100, value=cliente.get("ponto_referencia", ""), key=f"ponto_referencia_{key_suffix}")
+                ponto_ref_valor = safe_session_state_get(f"ponto_referencia_{key_suffix}", cliente.get("ponto_referencia", ""))
+                ponto_referencia = st.text_input(
+                    "Ponto de referência",
+                    value=ponto_ref_valor if ponto_ref_valor else "",
+                    key=f"ponto_referencia_{key_suffix}"
+                )
 
             col1, col2 = st.columns(2)
             with col1:
-                bairro = st.text_input("Bairro*", max_chars=50, value=cliente.get("bairro", ""), key=f"bairro_{key_suffix}")
+                bairro_valor = safe_session_state_get(f"bairro_{key_suffix}", cliente.get("bairro", ""))
+                bairro = st.text_input(
+                    "Bairro*",
+                    value=bairro_valor if bairro_valor else "",
+                    key=f"bairro_{key_suffix}"
+                )
             with col2:
-                cidade = st.text_input("Cidade*", max_chars=50, value=safe_session_state_get(f"cidade_{key_suffix}", cliente.get("cidade", "Rio de Janeiro")), key=f"cidade_{key_suffix}")
+                cidade_valor = safe_session_state_get(f"cidade_{key_suffix}", cliente.get("cidade", "Rio de Janeiro"))
+                cidade = st.text_input(
+                    "Cidade*",
+                    value=cidade_valor if cidade_valor else "",
+                    key=f"cidade_{key_suffix}"
+                )
 
             # ✅ CAMPO CEP
             col1, col2 = st.columns(2)
             with col1:
-                cep = st.text_input("CEP", max_chars=10, placeholder="00000-000", value=safe_session_state_get(f"cep_{key_suffix}", cliente.get("cep", "")), key=f"cep_{key_suffix}")
+                cep_valor = safe_session_state_get(f"cep_{key_suffix}", cliente.get("cep", ""))
+                cep = st.text_input(
+                    "CEP",
+                    max_chars=10,
+                    placeholder="00000-000",
+                    value=cep_valor if cep_valor else "",
+                    key=f"cep_{key_suffix}"
+                )
             with col2:
                 pass
 
@@ -1550,69 +1590,78 @@ def render_cadastro(clientes_collection):
 
                 col1, col2 = st.columns([3, 1])
                 with col1:
+                    endereco_valor = safe_session_state_get(f"endereco_{st.session_state['form_key']}", get_valor_inicial("endereco", ""))
                     endereco = st.text_input(
                         "Endereço*",
-                        value=safe_session_state_get(f"endereco_{st.session_state['form_key']}", get_valor_inicial("endereco", "")),
+                        value=endereco_valor if endereco_valor else "",
                         key=f"endereco_{st.session_state['form_key']}"
                     )
                 with col2:
+                    numero_valor = safe_session_state_get(f"numero_{st.session_state['form_key']}", get_valor_inicial("numero", ""))
                     numero = st.text_input(
                         "Número*",
                         max_chars=6,
-                        value=safe_session_state_get(f"numero_{st.session_state['form_key']}", get_valor_inicial("numero", "")),
+                        value=numero_valor if numero_valor else "",
                         key=f"numero_{st.session_state['form_key']}"
                     )
 
                 col_bloco, col_apto = st.columns(2)
                 with col_bloco:
+                    bloco_valor = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
                     bloco = st.text_input(
                         "Bloco", 
-                        value=safe_session_state_get(f"bloco_{st.session_state['form_key']}", ""),
+                        value=bloco_valor if bloco_valor else "",
                         key=f"bloco_{st.session_state['form_key']}"
                     )
                 with col_apto:
+                    apto_valor = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
                     apartamento = st.text_input(
                         "Apartamento", 
-                        value=safe_session_state_get(f"apartamento_{st.session_state['form_key']}", ""),
+                        value=apto_valor if apto_valor else "",
                         key=f"apartamento_{st.session_state['form_key']}"
                     )
 
                 col1, col2 = st.columns(2)
                 with col1:
+                    complemento_valor = safe_session_state_get(f"complemento_{st.session_state['form_key']}", get_valor_inicial("complemento", ""))
                     complemento = st.text_input(
                         "Complemento",
-                        value=get_valor_inicial("complemento", ""),
+                        value=complemento_valor if complemento_valor else "",
                         key=f"complemento_{st.session_state['form_key']}"
                     )
                 with col2:
+                    ponto_ref_valor = safe_session_state_get(f"ponto_referencia_{st.session_state['form_key']}", get_valor_inicial("ponto_referencia", ""))
                     ponto_referencia = st.text_input(
                         "Ponto de referência",
-                        value=get_valor_inicial("ponto_referencia", ""),
+                        value=ponto_ref_valor if ponto_ref_valor else "",
                         key=f"ponto_referencia_{st.session_state['form_key']}"
                     )
 
                 col1, col2 = st.columns(2)
                 with col1:
+                    bairro_valor = safe_session_state_get(f"bairro_{st.session_state['form_key']}", get_valor_inicial("bairro", ""))
                     bairro = st.text_input(
                         "Bairro*",
-                        value=get_valor_inicial("bairro", ""),
+                        value=bairro_valor if bairro_valor else "",
                         key=f"bairro_{st.session_state['form_key']}"
                     )
                 with col2:
+                    cidade_valor = safe_session_state_get(f"cidade_{st.session_state['form_key']}", get_valor_inicial("cidade", "Rio de Janeiro"))
                     cidade = st.text_input(
                         "Cidade*",
-                        value=safe_session_state_get(f"cidade_{st.session_state['form_key']}", get_valor_inicial("cidade", "Rio de Janeiro")),
+                        value=cidade_valor if cidade_valor else "",
                         key=f"cidade_{st.session_state['form_key']}"
                     )
 
                 # ✅ CAMPO CEP
                 col1, col2 = st.columns(2)
                 with col1:
+                    cep_valor = safe_session_state_get(f"cep_{st.session_state['form_key']}", get_valor_inicial("cep", ""))
                     cep = st.text_input(
                         "CEP",
                         max_chars=10,
                         placeholder="00000-000",
-                        value=safe_session_state_get(f"cep_{st.session_state['form_key']}", get_valor_inicial("cep", "")),
+                        value=cep_valor if cep_valor else "",
                         key=f"cep_{st.session_state['form_key']}"
                     )
                 with col2:
@@ -1711,8 +1760,10 @@ def render_cadastro(clientes_collection):
                 tipo_moradia = ""
                 tempo_moradia_valor = 0
                 tempo_moradia_unidade = "Anos"
-                bloco = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
-                apartamento = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
+                bloco_valor = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
+                bloco = bloco_valor if bloco_valor else ""
+                apto_valor = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
+                apartamento = apto_valor if apto_valor else ""
 
             # ================== BOTÕES DE GERAÇÃO DE DOCUMENTOS ==================
             col1, col2 = st.columns(2)
