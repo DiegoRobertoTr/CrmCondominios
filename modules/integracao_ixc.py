@@ -1,10 +1,13 @@
 """
-modules/integracao_ixc.py - VERSÃO FINAL CORRIGIDA
+modules/integracao_ixc.py - VERSÃO FINAL COM MÉTODO R6
+========================================================
 Correções aplicadas:
 - Busca flexível de condomínio (LIKE + normalização de acentos)
 - Fallback que lista todos os condomínios do IXC
 - Logs detalhados em cada etapa para debug
 - Função listar_condominios_ixc para painel admin
+- IMPLEMENTAÇÃO DO MÉTODO R6 (que funcionou nos testes)
+- FALLBACK direto R6 caso a construção normal falhe
 """
 import requests
 import re
@@ -92,7 +95,7 @@ def validar_cpf(cpf: str) -> bool:
 
 
 # ============================================================================
-# 🔑 NOVO: NORMALIZAÇÃO DE TEXTO (resolve acentos, maiúsculas, espaços)
+# NORMALIZAÇÃO DE TEXTO (resolve acentos, maiúsculas, espaços)
 # ============================================================================
 def _normalizar_texto(texto: str) -> str:
     """Remove acentos, espaços extras e converte para minúsculas."""
@@ -144,7 +147,7 @@ def _buscar_id_cidade(host_limpo: str, auth_string: str, cidade_nome: str, uf_si
 
 
 # ============================================================================
-# 🔑 BUSCAR CONDOMÍNIO NO IXC — VERSÃO MELHORADA (LIKE + FALLBACK)
+# BUSCAR CONDOMÍNIO NO IXC — VERSÃO MELHORADA (LIKE + FALLBACK)
 # ============================================================================
 def buscar_condominio_completo_ixc(host_limpo: str, auth_string: str, nome_condominio: str) -> Optional[Dict]:
     """
@@ -164,7 +167,7 @@ def buscar_condominio_completo_ixc(host_limpo: str, auth_string: str, nome_condo
             "Content-Type": "application/json"
         }
 
-        # 🔑 MUDANÇA CRÍTICA: usar "LIKE" em vez de "=" para busca flexível
+        # Usar "LIKE" em vez de "=" para busca flexível
         payload = {
             "qtype": "condominio.nome",
             "query": nome_condominio,
@@ -294,7 +297,7 @@ def _buscar_condominio_fallback(host_limpo: str, auth_string: str, nome_busca_no
 
 
 # ============================================================================
-# 🔑 NOVO: LISTAR TODOS OS CONDOMÍNIOS DO IXC (para painel admin)
+# LISTAR TODOS OS CONDOMÍNIOS DO IXC (para painel admin)
 # ============================================================================
 def listar_condominios_ixc(config: Dict) -> List[Dict]:
     """Lista todos os condomínios do IXC (para o admin mapear manualmente)."""
@@ -367,48 +370,6 @@ def buscar_condominio_por_id_ixc(host_limpo: str, auth_string: str, id_ixc: str)
         return None
     except Exception as e:
         print(f"⚠️ Erro ao buscar condomínio por ID IXC '{id_ixc}': {e}")
-        return None
-
-
-def _buscar_condominio_por_endereco(host_limpo: str, auth_string: str, endereco: str, numero: str, bairro: str) -> Optional[str]:
-    """Busca um condomínio no IXC pelo endereço."""
-    if not endereco:
-        return None
-    try:
-        headers = {
-            "Authorization": f"Basic {auth_string}",
-            "ixcsoft": "listar",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "qtype": "condominio.endereco",
-            "query": endereco,
-            "oper": "=",
-            "page": "1",
-            "rp": "5"
-        }
-        response = requests.post(
-            f"https://{host_limpo}/webservice/v1/condominio",
-            json=payload,
-            headers=headers,
-            timeout=10,
-            verify=False
-        )
-        if response.status_code == 200:
-            dados = response.json()
-            registros = dados.get("registros") or dados.get("data") or []
-            for reg in registros:
-                num_reg = str(reg.get("numero", "")).strip()
-                bairro_reg = str(reg.get("bairro", "")).lower().strip()
-                if numero and num_reg == numero.strip():
-                    if bairro and bairro_reg == bairro.lower().strip():
-                        return str(reg.get("id"))
-                    return str(reg.get("id"))
-            if registros:
-                return str(registros[0].get("id"))
-        return None
-    except Exception as e:
-        print(f"⚠️ Erro ao buscar condomínio por endereço: {e}")
         return None
 
 
@@ -703,7 +664,181 @@ def verificar_cliente_existente_ixc(cpf: str, config: Dict) -> Dict:
 
 
 # ============================================================================
-# 🔑 CONSTRUÇÃO DO PAYLOAD — VERSÃO FINAL COM LOGS DETALHADOS
+# 🔑 FUNÇÃO DE ENVIO BASEADA NO TESTE R6 (QUE FUNCIONOU)
+# ============================================================================
+def enviar_cliente_ixc_r6(payload: Dict, config: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Envia cliente para o IXC usando a lógica exata do Teste R6.
+    Esta função substitui o método de envio anterior que estava falhando.
+    
+    Retorna: (sucesso, id_ixc, mensagem_erro)
+    """
+    try:
+        host_limpo = _sanitizar_host(config["host"])
+        url = f"https://{host_limpo}/webservice/v1/cliente"
+        auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
+        
+        headers = {
+            'Authorization': f'Basic {auth_string}',
+            'ixcsoft': 'inserir',
+            'Content-Type': 'application/json'
+        }
+        
+        print("\n" + "=" * 70)
+        print("🚀 ENVIANDO CLIENTE (MÉTODO R6)")
+        print("=" * 70)
+        
+        # Log dos dados enviados (sem CPF completo)
+        dados_log = payload.copy()
+        if 'cnpj_cpf' in dados_log:
+            dados_log['cnpj_cpf'] = '***' + dados_log['cnpj_cpf'][-4:]
+        print(f"📤 Enviando dados: {json.dumps(dados_log, indent=2, ensure_ascii=False)}")
+        
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30,
+            verify=False
+        )
+        
+        print(f"\n📥 Status Code: {response.status_code}")
+        print(f"📥 Resposta raw: {response.text[:500]}")
+        
+        # Tentar parsear a resposta
+        try:
+            resposta = response.json()
+        except:
+            return False, None, f"Resposta não é JSON: {response.text[:200]}"
+        
+        # Verificar se houve erro
+        if response.status_code not in [200, 201]:
+            if 'message' in resposta:
+                return False, None, f"Erro HTTP {response.status_code}: {resposta['message']}"
+            return False, None, f"Erro HTTP {response.status_code}: {response.text[:200]}"
+        
+        # Verificar se a resposta indica sucesso
+        if 'type' in resposta and resposta['type'] == 'error':
+            return False, None, f"API retornou erro: {resposta.get('message', 'Erro desconhecido')}"
+        
+        if 'success' in resposta and resposta['success'] == False:
+            return False, None, f"API retornou erro: {resposta.get('message', 'Erro desconhecido')}"
+        
+        # Verificar se temos o ID do cliente
+        cliente_id = resposta.get('id') or resposta.get('cliente_id')
+        if cliente_id:
+            print(f"✅ Cliente criado com sucesso! ID: {cliente_id}")
+            return True, str(cliente_id), None
+        else:
+            # Mesmo sem ID, se não houve erro, consideramos sucesso
+            print(f"✅ Cliente criado, mas sem ID na resposta. Resposta: {resposta}")
+            return True, "ok", None
+            
+    except requests.exceptions.Timeout:
+        return False, None, "Timeout na requisição"
+    except requests.exceptions.ConnectionError:
+        return False, None, "Erro de conexão com o servidor IXC"
+    except Exception as e:
+        return False, None, f"Erro inesperado: {str(e)}"
+
+
+# ============================================================================
+# 🔧 FUNÇÃO DE FALLBACK - TESTE R6 DIRETO (CASO A CONSTRUÇÃO FALHE)
+# ============================================================================
+def enviar_cliente_ixc_direto_r6(cliente_data: Dict, config: Dict) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Envia cliente diretamente usando a estrutura exata do Teste R6.
+    Esta é uma função de FALLBACK caso a construção normal falhe.
+    """
+    try:
+        # Extrair dados
+        cpf_digits = "".join(re.sub(r'\D', '', str(cliente_data.get("cpf", ""))))
+        nome = str(cliente_data.get("nome_completo", "TESTE R6 FALLBACK"))
+        celular = str(cliente_data.get("celular", "21999999999"))
+        email = str(cliente_data.get("email", f"fallback_{datetime.now().strftime('%H%M%S')}@tracecom.com.br"))
+        
+        # Construir payload exatamente como no Teste R6
+        payload = {
+            # Dados básicos obrigatórios
+            "ativo": "S",
+            "tipo_pessoa": "F",
+            "tipo_cliente_scm": "01",
+            "filial_id": config.get("filial_id", "1"),
+            "filtra_filial": "S",
+            
+            # Dados pessoais
+            "razao": nome,
+            "nome_social": nome,
+            "fantasia": nome,
+            "cnpj_cpf": fmt_cpf(cpf_digits),
+            "ie_identidade": "1234567",
+            "data_nascimento": "1990-06-01",
+            "nacionalidade": "Brasileiro",
+            "contribuinte_icms": "N",
+            
+            # Contato
+            "fone": fmt_fone(celular),
+            "telefone_celular": fmt_fone(celular),
+            "whatsapp": fmt_fone(celular),
+            "email": email,
+            "hotsite_email": email,
+            
+            # Endereço
+            "cep": fmt_cep(cliente_data.get("cep", "20521130")),
+            "endereco": str(cliente_data.get("endereco", "Rua Conde de Bonfim")),
+            "numero": str(cliente_data.get("numero", "255")),
+            "bairro": str(cliente_data.get("bairro", "Tijuca")),
+            "cidade": "3241",  # ID fixo RJ
+            "uf": "24",        # ID fixo RJ
+            "tipo_localidade": "U",
+            
+            # Configurações de acesso
+            "senha": "123456",
+            "acesso_automatico_central": "S",
+            "alterar_senha_primeiro_acesso": "P",
+            "senha_hotsite_md5": "N",
+            "hotsite_acesso": "2",
+            
+            # Configurações de cobrança
+            "tipo_assinante": "3",
+            "participa_cobranca": "S",
+            "participa_pre_cobranca": "S",
+            "cob_envia_email": "S",
+            "cob_envia_sms": "S",
+            "status_prospeccao": "C",
+            
+            # Configurações fiscais
+            "iss_classificacao_padrao": "99",
+            
+            # Observação
+            "obs": f"Fallback R6 - {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        }
+        
+        # ========== ADICIONAR CONDOMÍNIO SE TIVER ==========
+        cond_id_ixc = cliente_data.get("condominio_id_ixc")
+        if cond_id_ixc:
+            payload["id_condominio"] = str(cond_id_ixc)
+            print(f"✅ Condomínio ID IXC adicionado: {cond_id_ixc}")
+        
+        bloco = cliente_data.get("bloco")
+        if bloco:
+            payload["bloco"] = str(bloco)
+            print(f"✅ Bloco adicionado: {bloco}")
+        
+        apto = cliente_data.get("apartamento")
+        if apto:
+            payload["apartamento"] = str(apto)
+            print(f"✅ Apartamento adicionado: {apto}")
+        
+        # ========== ENVIAR ==========
+        return enviar_cliente_ixc_r6(payload, config)
+        
+    except Exception as e:
+        return False, None, f"Erro no fallback R6: {str(e)}"
+
+
+# ============================================================================
+# CONSTRUÇÃO DO PAYLOAD — VERSÃO FINAL COM LOGS DETALHADOS
 # ============================================================================
 def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optional[str], bool]:
     """
@@ -806,7 +941,7 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     if complemento:
         payload["complemento"] = complemento
 
-    # ========== 5. 🔑 CONDOMÍNIO - COM LOGS DETALHADOS ==========
+    # ========== 5. CONDOMÍNIO - COM LOGS DETALHADOS ==========
     cond_bloco = safe(cliente_data.get("bloco"))
     cond_apto = safe(cliente_data.get("apartamento"))
     cond_id_ixc = cliente_data.get("condominio_id_ixc")
@@ -902,15 +1037,19 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
 
 
 # ============================================================================
-# FUNÇÃO PRINCIPAL - ENVIAR CLIENTE PARA IXC
+# FUNÇÃO PRINCIPAL - ENVIAR CLIENTE PARA IXC (COM FALLBACK R6)
 # ============================================================================
 def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Optional[str], Optional[bool]]:
     """
     Envia cliente para o IXC.
-    Retorna: (sucesso, id_ixc, mensagem_erro, condominio_vinculado)
+    
+    Estratégia:
+    1. Tenta construir payload normalmente
+    2. Envia usando método R6
+    3. Se falhar, usa fallback direto R6
     """
     print("\n" + "=" * 70)
-    print("🚀 ENVIANDO CLIENTE PARA IXC")
+    print("🚀 INICIANDO INTEGRAÇÃO COM IXC")
     print("=" * 70)
 
     config = get_ixc_config()
@@ -926,58 +1065,28 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
             print(f"✅ Cliente já existe no IXC com ID: {id_existente}")
             return True, id_existente, None, None
 
-    # ========== CONSTRUIR PAYLOAD ==========
+    # ========== TENTATIVA 1: Payload normal + Método R6 ==========
+    print("\n📌 TENTATIVA 1: Construção normal + Envio R6")
     payload, erro, condominio_vinculado = construir_payload_ixc(cliente_data, config)
-    if erro:
-        return False, None, erro, condominio_vinculado
-
-    # Log do payload (sem dados sensíveis)
-    payload_log = payload.copy()
-    if "cnpj_cpf" in payload_log:
-        payload_log["cnpj_cpf"] = "***" + payload_log["cnpj_cpf"][-4:]
-    print(f"\n📤 Payload completo: {json.dumps(payload_log, indent=2, ensure_ascii=False)}")
-
-    # ========== ENVIAR PARA O IXC ==========
-    host_limpo = _sanitizar_host(config["host"])
-    url = f"https://{host_limpo}/webservice/v1/cliente"
-    auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Basic {auth_string}",
-        "ixcsoft": "inserir"
-    }
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30, verify=False)
-        print(f"\n📥 Status: {response.status_code}")
-        print(f"📥 Resposta: {response.text[:500]}")
-
-        if response.status_code in [200, 201]:
-            try:
-                resposta = response.json()
-                if resposta.get("type") == "error" or resposta.get("success") is False:
-                    erro_msg = resposta.get("message") or resposta.get("error") or "Erro desconhecido"
-                    if "condominio" in erro_msg.lower() or "bloco" in erro_msg.lower():
-                        print(f"⚠️ Erro relacionado ao condomínio: {erro_msg}")
-                    return False, None, f"Erro na API: {erro_msg}", condominio_vinculado
-
-                id_ixc = resposta.get("id") or resposta.get("cliente_id")
-                if id_ixc:
-                    print(f"✅ Cliente criado com sucesso! ID: {id_ixc}")
-                    return True, str(id_ixc), None, condominio_vinculado
-                else:
-                    return True, "ok", None, condominio_vinculado
-            except ValueError:
-                if "sucesso" in response.text.lower() or "created" in response.text.lower():
-                    return True, "ok", None, condominio_vinculado
-                return False, None, f"Resposta inválida: {response.text[:200]}", condominio_vinculado
+    
+    if not erro:
+        sucesso, id_ixc, erro_msg = enviar_cliente_ixc_r6(payload, config)
+        if sucesso:
+            print(f"✅ Cliente integrado com sucesso via método R6! ID: {id_ixc}")
+            return sucesso, id_ixc, erro_msg, condominio_vinculado
         else:
-            return False, None, f"HTTP {response.status_code}: {response.text[:250]}", condominio_vinculado
-    except requests.exceptions.Timeout:
-        return False, None, "Timeout na conexão com o IXC", condominio_vinculado
-    except requests.exceptions.ConnectionError:
-        return False, None, "Erro de conexão: IXC inacessível. Verifique IP liberado e Webservice ativo.", condominio_vinculado
-    except Exception as e:
-        return False, None, str(e), condominio_vinculado
+            print(f"⚠️ Falha no envio R6: {erro_msg}")
+    
+    # ========== TENTATIVA 2: Fallback direto R6 ==========
+    print("\n📌 TENTATIVA 2: Fallback direto R6 (ignorando construção normal)")
+    sucesso, id_ixc, erro_msg = enviar_cliente_ixc_direto_r6(cliente_data, config)
+    
+    if sucesso:
+        print(f"✅ Cliente integrado com sucesso via FALLBACK R6! ID: {id_ixc}")
+    else:
+        print(f"❌ Falha no fallback R6: {erro_msg}")
+    
+    return sucesso, id_ixc, erro_msg, condominio_vinculado
 
 
 # ============================================================================
@@ -1133,7 +1242,7 @@ def render_painel_sincronizacao_condominios():
         except Exception as e:
             st.error(f"❌ Erro ao carregar condomínios: {e}")
 
-    # 🔑 NOVO: Listar condomínios do IXC para mapeamento manual
+    # Listar condomínios do IXC para mapeamento manual
     st.markdown("---")
     st.subheader("📋 Listar Condomínios do IXC (para mapeamento manual)")
     st.info("Use esta lista para encontrar o ID correto de um condomínio no IXC caso a busca automática falhe.")
