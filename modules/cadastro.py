@@ -76,6 +76,7 @@ try:
         get_ixc_config,
         sincronizar_condominio_crm_com_ixc,
         buscar_condominio_completo_ixc,
+        obter_id_ixc_condominio,  # 👈 NOVA FUNÇÃO
         render_painel_sincronizacao_condominios
     )
 except ImportError:
@@ -91,6 +92,8 @@ except ImportError:
     def sincronizar_condominio_crm_com_ixc(condominio_id, config):
         return {"sucesso": False, "erro": "Módulo não disponível"}
     def buscar_condominio_completo_ixc(host, auth, nome):
+        return None
+    def obter_id_ixc_condominio(condominio_id, config):
         return None
     def render_painel_sincronizacao_condominios():
         st.warning("Painel de sincronização não disponível")
@@ -1990,12 +1993,12 @@ def render_cadastro(clientes_collection):
                     cond_id_ixc = None
                     if dados_cond.get("condominio_id"):
                         try:
-                            cond_data = get_condominio_by_id(dados_cond["condominio_id"])
-                            if cond_data:
-                                cond_id_ixc = cond_data.get("id_ixc")
-                                print(f"🔍 Condomínio encontrado no CRM: {cond_data.get('nome')} (ID IXC: {cond_id_ixc})")
+                            config_ixc = get_ixc_config()
+                            if config_ixc:
+                                cond_id_ixc = obter_id_ixc_condominio(dados_cond["condominio_id"], config_ixc)
+                                print(f"🔍 ID IXC do condomínio obtido: {cond_id_ixc}")
                         except Exception as e:
-                            print(f"⚠️ Erro ao buscar id_ixc do condomínio: {e}")
+                            print(f"⚠️ Erro ao obter id_ixc do condomínio: {e}")
                     
                     # Log para debug
                     print(f"🔍 DEBUG - Dados do condomínio salvos:")
@@ -2056,7 +2059,7 @@ def render_cadastro(clientes_collection):
                         # 👇 CRÍTICO: USAR OS DADOS OBTIDOS DA FUNÇÃO
                         "condominio_id": dados_cond["condominio_id"],
                         "condominio_nome": dados_cond["condominio_nome"],
-                        "condominio_id_ixc": cond_id_ixc,  # NOVO: ID do IXC para integração
+                        "condominio_id_ixc": cond_id_ixc,  # ID do IXC para integração
                         "bloco": dados_cond["bloco"] if dados_cond["bloco"] else None,
                         "apartamento": dados_cond["apartamento"] if dados_cond["apartamento"] else None,
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
