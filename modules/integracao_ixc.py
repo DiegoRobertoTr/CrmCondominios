@@ -315,6 +315,51 @@ def _buscar_condominio_por_endereco(host_limpo: str, auth_string: str, endereco:
 
 
 # ============================================================================
+# OBTER ID IXC DO CONDOMÍNIO (NOVA FUNÇÃO)
+# ============================================================================
+def obter_id_ixc_condominio(condominio_id: str, config: Dict) -> Optional[str]:
+    """
+    Obtém o ID do IXC para um condomínio.
+    Se não tiver, tenta sincronizar.
+    """
+    try:
+        from .condominios import get_condominio_by_id, update_condominio
+        
+        cond_data = get_condominio_by_id(condominio_id)
+        if not cond_data:
+            return None
+        
+        # Se já tem ID do IXC, retorna
+        if cond_data.get("id_ixc"):
+            print(f"✅ ID IXC do condomínio encontrado no CRM: {cond_data['id_ixc']}")
+            return cond_data["id_ixc"]
+        
+        # Tenta sincronizar
+        print(f"🔄 Tentando sincronizar condomínio '{cond_data.get('nome')}' com IXC...")
+        resultado = sincronizar_condominio_crm_com_ixc(condominio_id, config)
+        if resultado["sucesso"] and resultado.get("id_ixc"):
+            print(f"✅ Condomínio sincronizado! ID IXC: {resultado['id_ixc']}")
+            return resultado["id_ixc"]
+        
+        # Se não encontrou, tenta buscar pelo nome
+        if cond_data.get("nome"):
+            host_limpo = _sanitizar_host(config["host"])
+            auth_string = base64.b64encode(config["token"].encode('utf-8')).decode('utf-8')
+            dados_ixc = buscar_condominio_completo_ixc(host_limpo, auth_string, cond_data["nome"])
+            if dados_ixc and dados_ixc.get("id_ixc"):
+                # Salvar no CRM
+                update_condominio(condominio_id, {"id_ixc": dados_ixc["id_ixc"]})
+                print(f"✅ ID IXC encontrado pelo nome e salvo no CRM: {dados_ixc['id_ixc']}")
+                return dados_ixc["id_ixc"]
+        
+        print(f"⚠️ Condomínio '{cond_data.get('nome')}' não encontrado no IXC")
+        return None
+    except Exception as e:
+        print(f"⚠️ Erro ao obter ID IXC do condomínio: {e}")
+        return None
+
+
+# ============================================================================
 # SINCRONIZAR CONDOMÍNIO DO CRM COM IXC
 # ============================================================================
 def sincronizar_condominio_crm_com_ixc(condominio_id: str, config: Dict) -> Dict:
@@ -756,47 +801,47 @@ def construir_payload_ixc(cliente_data: Dict, config: Dict) -> Tuple[Dict, Optio
     if complemento:
         payload["complemento"] = complemento
 
-    # ========== 5. CONDOMÍNIO - FORMATO DO TESTE 5 QUE FUNCIONOU ==========
-    # Teste 5 usou: id_condominio="6", bloco="07", apartamento="508"
+    # ========== 5. CONDOMÍNIO - CORREÇÃO ==========
+    # ====== AGORA USA DIRETAMENTE OS DADOS DO CRM ======
     
+    # 🆕 PRIORIDADE 1: Usar condominio_id_ixc (já sincronizado)
+    cond_id_ixc = cliente_data.get("condominio_id_ixc")
+    cond_id_crm = cliente_data.get("condominio_id")
+    cond_nome = safe(cliente_data.get("condominio_nome"))
     cond_bloco = safe(cliente_data.get("bloco"))
     cond_apto = safe(cliente_data.get("apartamento"))
-    cond_nome = safe(cliente_data.get("condominio_nome"))
-    cond_id_crm = cliente_data.get("condominio_id")
-    cond_id_ixc = cliente_data.get("condominio_id_ixc")
     
-    # Flag para saber se adicionamos condomínio
     condominio_adicionado = False
     
-    print(f"\n🔍 PROCESSANDO CONDOMÍNIO:")
-    print(f"   cond_id_ixc: {cond_id_ixc}")
+    print(f"\n🔍 PROCESSANDO CONDOMÍNIO (CORREÇÃO):")
+    print(f"   cond_id_ixc (do cliente): {cond_id_ixc}")
     print(f"   cond_id_crm: {cond_id_crm}")
     print(f"   cond_nome: '{cond_nome}'")
     print(f"   cond_bloco: '{cond_bloco}'")
     print(f"   cond_apto: '{cond_apto}'")
     
-    # PRIORIDADE 1: Usar ID do IXC se disponível (já sincronizado)
+    # PRIORIDADE 1: Usar ID do IXC se disponível (mais confiável)
     if cond_id_ixc:
         payload["id_condominio"] = str(cond_id_ixc)
         condominio_adicionado = True
-        print(f"✅ Usando ID IXC do condomínio: {cond_id_ixc}")
+        print(f"✅ Usando ID IXC do cliente: {cond_id_ixc}")
     
-    # PRIORIDADE 2: Se tem ID do CRM, buscar/sincronizar
+    # PRIORIDADE 2: Se tem ID do CRM, buscar o id_ixc do condomínio
     elif cond_id_crm:
         try:
-            # Tenta sincronizar para obter o ID do IXC
-            resultado_sinc = sincronizar_condominio_crm_com_ixc(cond_id_crm, config)
-            if resultado_sinc["sucesso"] and resultado_sinc.get("id_ixc"):
-                payload["id_condominio"] = str(resultado_sinc["id_ixc"])
+            from .condominios import get_condominio_by_id
+            cond_data = get_condominio_by_id(cond_id_crm)
+            if cond_data and cond_data.get("id_ixc"):
+                payload["id_condominio"] = str(cond_data["id_ixc"])
                 condominio_adicionado = True
-                print(f"✅ Condomínio sincronizado: ID IXC = {resultado_sinc['id_ixc']}")
+                print(f"✅ ID IXC encontrado via CRM: {cond_data['id_ixc']}")
             else:
-                print(f"⚠️ Condomínio não encontrado no IXC (ID CRM: {cond_id_crm})")
+                print(f"⚠️ Condomínio ID {cond_id_crm} não tem id_ixc no CRM")
         except Exception as e:
-            print(f"⚠️ Erro ao sincronizar condomínio: {e}")
+            print(f"⚠️ Erro ao buscar condomínio: {e}")
     
-    # PRIORIDADE 3: Se tem nome, buscar pelo nome
-    elif cond_nome:
+    # PRIORIDADE 3: Se tem nome, buscar pelo nome (fallback)
+    if not condominio_adicionado and cond_nome:
         try:
             dados_ixc = buscar_condominio_completo_ixc(host_limpo, auth_string, cond_nome)
             if dados_ixc and dados_ixc.get("id_ixc"):
