@@ -1,4 +1,4 @@
-# modules/condominios.py - COMPLETO ATUALIZADO COM IMPORTAÇÃO
+# modules/condominios.py - COMPLETO ATUALIZADO COM BAIRRO NA IMPORTAÇÃO
 import streamlit as st
 from datetime import datetime
 from pymongo import MongoClient
@@ -126,7 +126,7 @@ def render_cadastro_condominio():
 
 
 def render_lista_condominios():
-    """Exibe lista de condomínios e permite editar IDs do IXC"""
+    """Exibe lista de condomínios e permite editar IDs IXC"""
     collection = get_condominios_collection()
     condominios = list(collection.find().sort("nome", 1))
     
@@ -158,6 +158,7 @@ def render_lista_condominios():
         dados.append({
             "ID IXC": c.get("id_ixc", "❌ Não configurado"),
             "Nome do Condomínio": c.get("nome", ""),
+            "Bairro": c.get("bairro", ""),  # 👈 ADICIONADO BAIRRO NA TABELA
             "Cidade": c.get("cidade", ""),
             "Endereço": f"{c.get('endereco', '')}, {c.get('numero', '')}",
             "Zona": c.get("zona", ""),
@@ -166,9 +167,9 @@ def render_lista_condominios():
     
     st.dataframe(dados, use_container_width=True, height=400)
     
-    # Editor de ID IXC
+    # Editor de ID IXC e Bairro
     st.divider()
-    st.subheader("✏️ Configurar/Editar ID do IXC")
+    st.subheader("✏️ Configurar/Editar ID do IXC e Bairro")
     
     # Selectbox para escolher o condomínio
     cond_options = [f"{c['nome']} - {c['cidade']}" for c in condominios]
@@ -207,6 +208,32 @@ def render_lista_condominios():
                     else:
                         st.warning(f"⚠️ ID do IXC removido para '{cond_atual['nome']}'. A integração não enviará este campo.")
                     st.rerun()
+            
+            # 👇 NOVO: Editor de Bairro
+            st.divider()
+            st.subheader("📌 Editar Bairro")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                novo_bairro = st.text_input(
+                    "Bairro do Condomínio:",
+                    value=cond_atual.get("bairro", ""),
+                    placeholder="Digite o bairro",
+                    help="Este é o bairro onde o condomínio está localizado",
+                    key="novo_bairro_input"
+                )
+            with col2:
+                st.markdown("### ")
+                if st.button("💾 Salvar Bairro", type="primary", key="salvar_bairro"):
+                    collection.update_one(
+                        {"_id": cond_atual["_id"]},
+                        {"$set": {"bairro": novo_bairro.strip() if novo_bairro else None}}
+                    )
+                    if novo_bairro:
+                        st.success(f"✅ Bairro '{novo_bairro}' configurado para '{cond_atual['nome']}'!")
+                    else:
+                        st.warning(f"⚠️ Bairro removido para '{cond_atual['nome']}'.")
+                    st.rerun()
 
 
 # ============================================================================
@@ -229,6 +256,7 @@ def render_importacao_condominios():
     - ✅ Endereço completo
     - ✅ Número
     - ✅ Cidade
+    - ✅ Bairro (se disponível na planilha)
     - ✅ CEP
     - ✅ ID do IXC
     
@@ -250,7 +278,7 @@ def render_importacao_condominios():
     arquivo = st.file_uploader(
         "📂 Selecione o arquivo CSV ou Excel com os dados do IXC:",
         type=["csv", "xlsx", "xls"],
-        help="O arquivo deve conter as colunas: ID, Condomínio, Cidade, Endereço, Número, CEP"
+        help="O arquivo deve conter as colunas: ID, Condomínio, Cidade, Endereço, Número, CEP (Bairro é opcional)"
     )
     
     if arquivo and senha:
@@ -306,6 +334,12 @@ def render_importacao_condominios():
                 for nome in ['Cidade', 'cidade', 'CIDADE', 'Município', 'Municipio']:
                     if nome in df.columns:
                         mapa_colunas['cidade'] = nome
+                        break
+                
+                # 👇 NOVO: Bairro
+                for nome in ['Bairro', 'bairro', 'BAIRRO', 'Bairro/Núcleo', 'Bairro (Núcleo)', 'Bairro_Núcleo']:
+                    if nome in df.columns:
+                        mapa_colunas['bairro'] = nome
                         break
                 
                 # Endereço
@@ -426,6 +460,7 @@ def render_importacao_condominios():
                                     dados_resumo.append({
                                         "ID IXC": c.get("id_ixc", "N/A"),
                                         "Nome": c.get("nome", ""),
+                                        "Bairro": c.get("bairro", ""),  # 👈 ADICIONADO BAIRRO
                                         "Endereço": f"{c.get('endereco', '')}, {c.get('numero', '')}",
                                         "Cidade": c.get("cidade", ""),
                                         "CEP": c.get("cep", ""),
@@ -449,6 +484,7 @@ def importar_condominios_completos(df, mapa_colunas):
     """
     Importa/SUBSTITUI completamente os dados dos condomínios a partir de dados do IXC.
     PRESERVA os vínculos com clientes (mantendo o _id).
+    AGORA INCLUI O CAMPO BAIRRO!
     """
     resultado = {
         "total": 0,
@@ -474,6 +510,9 @@ def importar_condominios_completos(df, mapa_colunas):
                 numero = str(row.get(mapa_colunas.get('numero', ''), '')).strip() if mapa_colunas.get('numero') else ''
                 cep = str(row.get(mapa_colunas.get('cep', ''), '')).strip() if mapa_colunas.get('cep') else ''
                 cnpj = str(row.get(mapa_colunas.get('cnpj', ''), '')).strip() if mapa_colunas.get('cnpj') else ''
+                
+                # 👇 NOVO: Extrair bairro
+                bairro = str(row.get(mapa_colunas.get('bairro', ''), '')).strip() if mapa_colunas.get('bairro') else ''
                 
                 # Limpar ID do IXC (remover caracteres não numéricos se necessário)
                 id_ixc = re.sub(r'[^0-9]', '', id_ixc)
@@ -511,6 +550,7 @@ def importar_condominios_completos(df, mapa_colunas):
                         "cel_sindico": cond_existente.get("cel_sindico"),
                         "contato": cond_existente.get("contato"),
                         "cel_contato": cond_existente.get("cel_contato"),
+                        "zona": cond_existente.get("zona"),  # Preservar zona se existir
                     }
                     
                     # Preparar os novos dados (SUBSTITUIÇÃO COMPLETA)
@@ -521,6 +561,7 @@ def importar_condominios_completos(df, mapa_colunas):
                         "estado": "RJ",
                         "endereco": endereco,
                         "numero": numero if numero else "",
+                        "bairro": bairro if bairro else "",  # 👈 ADICIONADO BAIRRO
                         "cep": cep if cep else "",
                         "cnpj": cnpj if cnpj else cond_existente.get("cnpj", ""),
                         "ultima_sincronizacao_ixc": datetime.now(),
@@ -569,6 +610,7 @@ def importar_condominios_completos(df, mapa_colunas):
                         "estado": "RJ",
                         "endereco": endereco,
                         "numero": numero if numero else "",
+                        "bairro": bairro if bairro else "",  # 👈 ADICIONADO BAIRRO
                         "cep": cep if cep else "",
                         "cnpj": cnpj if cnpj else "",
                         "data_cadastro": datetime.now(),
