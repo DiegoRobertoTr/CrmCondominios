@@ -15,6 +15,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Seletor de período: Personalizado primeiro, depois pré-selecionados, depois meses (do mais recente para o mais antigo)
 - Exportação em Excel
 - Permissões: admin e diretoria
+- RÓTULOS DE DADOS VISÍVEIS E DESTAQUE PARA O LÍDER DE VENDAS
 """
 import streamlit as st
 import pandas as pd
@@ -1083,6 +1084,7 @@ def render_dashboard():
         "📤 Exportar"
     ])
     
+    # ========== ABA 1: VENDAS POR VENDEDOR (ATUALIZADA COM RÓTULOS) ==========
     with tab1:
         st.subheader("👥 Vendas por Vendedor")
         
@@ -1092,28 +1094,116 @@ def render_dashboard():
         if not vendas_vendedor.empty:
             top_vendedores = vendas_vendedor.head(CONFIG['limite_grafico'])
             
-            fig = px.bar(
-                top_vendedores,
-                x='vendedor',
-                y='total_vendas',
-                title=f'📊 Vendas por Vendedor ({len(vendas_vendedor)} vendedores)',
-                color='total_vendas',
-                color_continuous_scale='Viridis',
-                text='total_vendas'
+            # ========== DESTACAR O VENDEDOR COM MAIS VENDAS ==========
+            max_vendas = top_vendedores['total_vendas'].max()
+            
+            # Criar coluna de cores - destaque para o líder
+            cores = []
+            for idx, row in top_vendedores.iterrows():
+                if row['total_vendas'] == max_vendas:
+                    cores.append('#FFD700')  # Dourado para o líder
+                else:
+                    cores.append('#3498db')  # Azul padrão
+            
+            # ========== GRÁFICO COM RÓTULOS MELHORADOS ==========
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                x=top_vendedores['vendedor'],
+                y=top_vendedores['total_vendas'],
+                marker_color=cores,
+                text=top_vendedores['total_vendas'],
+                textposition='outside',  # Rótulos fora das barras
+                textfont=dict(
+                    size=14,
+                    color='black',
+                    family='Arial Black'
+                ),
+                hovertemplate='<b>%{x}</b><br>Vendas: %{y}<extra></extra>'
+            ))
+            
+            # Adicionar anotação do líder
+            lider = top_vendedores.iloc[0]['vendedor']
+            vendas_lider = top_vendedores.iloc[0]['total_vendas']
+            
+            fig.update_layout(
+                title=dict(
+                    text=f'📊 Vendas por Vendedor ({len(vendas_vendedor)} vendedores)',
+                    font=dict(size=16)
+                ),
+                xaxis_title="",
+                yaxis_title="Vendas",
+                height=450,  # Aumentei a altura para melhor visualização
+                bargap=0.3,
+                showlegend=False,
+                margin=dict(t=50, b=50, l=50, r=50)
             )
-            fig.update_traces(textposition='outside')
-            fig.update_layout(height=350, xaxis_title="", yaxis_title="Vendas")
+            
+            # Ajustar eixo Y para caber os rótulos
+            fig.update_yaxes(
+                range=[0, max_vendas * 1.25]  # 25% de espaço extra para os rótulos
+            )
+            
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
+            # ========== ADICIONAR UM CARD DE DESTAQUE PARA O LÍDER ==========
+            st.markdown("---")
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #FFD700, #FFA500); 
+                        padding: 15px; 
+                        border-radius: 12px; 
+                        margin: 10px 0;
+                        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                        text-align: center;">
+                <h3 style="margin: 0; color: #1a1a2e;">🏆 Líder de Vendas</h3>
+                <h2 style="margin: 5px 0; color: #1a1a2e;">{lider}</h2>
+                <p style="font-size: 24px; font-weight: bold; margin: 0; color: #1a1a2e;">
+                    {vendas_lider} vendas
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # ========== TABELA COM DESTAQUE PARA O LÍDER ==========
+            st.markdown("### 📋 Ranking de Vendas")
+            
+            # Criar uma cópia com índice para posição
+            df_ranking_vendas = vendas_vendedor.copy()
+            df_ranking_vendas = df_ranking_vendas.reset_index(drop=True)
+            df_ranking_vendas.index = df_ranking_vendas.index + 1
+            
+            # Adicionar emoji de posição
+            def get_pos_emoji(pos):
+                if pos == 1:
+                    return "🥇"
+                elif pos == 2:
+                    return "🥈"
+                elif pos == 3:
+                    return "🥉"
+                else:
+                    return f"{pos}º"
+            
+            df_ranking_vendas['Posição'] = df_ranking_vendas.index
+            df_ranking_vendas['Posição'] = df_ranking_vendas['Posição'].apply(get_pos_emoji)
+            
+            # Reordenar colunas
+            df_ranking_vendas = df_ranking_vendas[['Posição', 'vendedor', 'total_vendas']]
+            df_ranking_vendas.columns = ['Posição', 'Vendedor', 'Vendas']
+            
+            # Destacar o líder na tabela com CSS condicional (via dataframe)
             st.dataframe(
-                vendas_vendedor,
+                df_ranking_vendas,
                 use_container_width=True,
                 height=250,
                 column_config={
-                    'vendedor': 'Vendedor',
-                    'total_vendas': st.column_config.NumberColumn('Vendas', format='%d')
+                    'Posição': st.column_config.TextColumn('🏆', width='small'),
+                    'Vendedor': st.column_config.TextColumn('Vendedor', width='large'),
+                    'Vendas': st.column_config.NumberColumn('Vendas', format='%d')
                 }
             )
+            
+            st.caption(f"📌 Total de {len(vendas_vendedor)} vendedores com vendas no período")
+        else:
+            st.info("ℹ️ Nenhuma venda no período selecionado.")
     
     with tab2:
         st.subheader("📈 Evolução Semanal de Vendas")
