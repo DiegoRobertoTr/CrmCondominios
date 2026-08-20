@@ -102,7 +102,7 @@ def render_agendamentos(clientes_collection):
         mostrar_calendario(clientes_collection)
 
 # ============================================================================
-# FUNÇÃO: mostrar_pool
+# FUNÇÃO: mostrar_pool (MODIFICADA)
 # ============================================================================
 def mostrar_pool(clientes_collection):
     st.subheader("📋 Clientes que seguiram para ativação (sem agendamento)")
@@ -114,7 +114,10 @@ def mostrar_pool(clientes_collection):
             {"retorno_agendado": {"$not": {"$regex": r"^\d{4}-\d{2}-\d{2}$"}}}
         ]
     }
-    clientes = list(clientes_collection.find(query))
+    
+    # 🔥 MODIFICAÇÃO: Ordenar por _id decrescente (mais recentes primeiro)
+    clientes = list(clientes_collection.find(query).sort("_id", -1))
+    
     pool_valido = []
     for c in clientes:
         data = c.get("retorno_agendado")
