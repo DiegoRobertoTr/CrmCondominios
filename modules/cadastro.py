@@ -5,6 +5,7 @@ Correções aplicadas:
 - Logs detalhados para debug do condomínio
 - Integração correta com integracao_ixc.py atualizado
 - Tratamento adequado de erros
+- ADICIONADO: Botão de reintegração ao IXC para cadastros pendentes
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -61,6 +62,89 @@ def obter_dados_condominio(suffix):
         "cidade": safe_session_state_get(f"cidade_{suffix}"),
         "cep": safe_session_state_get(f"cep_{suffix}"),
     }
+
+
+# ============================================================================
+# ✅ FUNÇÃO PARA REINTEGRAR AO IXC
+# ============================================================================
+def reintegrar_cliente_ixc(cliente_id, clientes_collection):
+    """
+    Tenta reintegrar um cliente pendente ao IXC.
+    Retorna (sucesso, mensagem)
+    """
+    try:
+        # Buscar o cliente
+        cliente = clientes_collection.find_one({"_id": cliente_id})
+        if not cliente:
+            return False, "Cliente não encontrado"
+        
+        # Verificar se já está integrado
+        if cliente.get("integrado_ixc", False):
+            return True, "Cliente já está integrado ao IXC"
+        
+        # Verificar se é cadastro completo
+        if cliente.get("tipo_cadastro") != "completo":
+            return False, "Apenas cadastros completos (CRM) podem ser integrados ao IXC"
+        
+        # Verificar dados mínimos
+        if not cliente.get("cpf"):
+            return False, "CPF não informado - necessário para integração"
+        
+        # Tentar integrar
+        from .integracao_ixc import enviar_cliente_para_ixc, get_ixc_config, verificar_cliente_existente_ixc
+        
+        config = get_ixc_config()
+        if not config:
+            return False, "Configuração do IXC não disponível"
+        
+        # Verificar se já existe no IXC
+        cpf_digits = "".join(filter(str.isdigit, str(cliente.get("cpf", ""))))
+        if len(cpf_digits) == 11:
+            resultado_existente = verificar_cliente_existente_ixc(cpf_digits, config)
+            if resultado_existente.get("existe"):
+                # Cliente já existe no IXC - apenas vincular
+                id_ixc = resultado_existente.get("id_ixc")
+                clientes_collection.update_one(
+                    {"_id": cliente_id},
+                    {"$set": {
+                        "integrado_ixc": True,
+                        "id_ixc": id_ixc,
+                        "data_integracao_ixc": datetime.now()
+                    }}
+                )
+                return True, f"Cliente já existia no IXC (ID: {id_ixc}) - Vinculado com sucesso!"
+        
+        # Tentar criar no IXC
+        sucesso, id_ixc, erro, condominio_vinculado = enviar_cliente_para_ixc(cliente)
+        
+        if sucesso:
+            update_fields = {
+                "integrado_ixc": True,
+                "data_integracao_ixc": datetime.now()
+            }
+            if id_ixc and id_ixc not in ["ok", "existente"]:
+                update_fields["id_ixc"] = id_ixc
+            
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$set": update_fields}
+            )
+            
+            mensagem = "✅ Cliente integrado ao IXC com sucesso!"
+            if condominio_vinculado is False:
+                mensagem += " ⚠️ Atenção: o condomínio não foi vinculado. Verifique manualmente."
+            
+            return True, mensagem
+        else:
+            # Atualizar tentativas
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$inc": {"tentativas_integracao": 1}}
+            )
+            return False, f"❌ Falha na integração: {erro[:150] if erro else 'Erro desconhecido'}"
+            
+    except Exception as e:
+        return False, f"❌ Erro ao reintegrar: {str(e)[:150]}"
 
 
 # ============================================================================
@@ -694,6 +778,38 @@ def expander_visualizar_editar(cliente, clientes_collection):
             else:
                 st.text_input("Data de cadastro:", value="Não disponível", disabled=True, key="data_cadastro_visualizar")
             
+            # ✅ ADICIONAR: Status de integração IXC com botão de reintegração
+            st.markdown("### 🔄 Status de Integração IXC")
+            col_status1, col_status2 = st.columns([2, 1])
+            with col_status1:
+                if cliente.get("integrado_ixc"):
+                    st.success(f"✅ Integrado ao IXC (ID: {cliente.get('id_ixc', 'N/A')})")
+                else:
+                    st.warning("⚠️ Pendente de integração com IXC")
+                    if cliente.get("tentativas_integracao"):
+                        st.info(f"Tentativas anteriores: {cliente.get('tentativas_integracao')}")
+            
+            with col_status2:
+                # ✅ BOTÃO DE REINTEGRAÇÃO
+                if not cliente.get("integrado_ixc", False) and cliente.get("tipo_cadastro") == "completo":
+                    if st.form_submit_button("🔄 Reintegrar ao IXC", type="secondary", use_container_width=True):
+                        with st.spinner("🔄 Tentando integrar com IXC..."):
+                            sucesso, mensagem = reintegrar_cliente_ixc(cliente["_id"], clientes_collection)
+                            if sucesso:
+                                st.success(mensagem)
+                                # Atualizar o cliente na sessão
+                                cliente_atualizado = clientes_collection.find_one({"_id": cliente["_id"]})
+                                if cliente_atualizado:
+                                    st.session_state["cliente_selecionado"] = copy.deepcopy(dict(cliente_atualizado))
+                                st.rerun()
+                            else:
+                                st.error(mensagem)
+                else:
+                    if cliente.get("integrado_ixc", False):
+                        st.info("✅ Já integrado")
+                    else:
+                        st.info("ℹ️ Complete o cadastro para integrar")
+            
             st.subheader("📝 Dados do Cliente")
             
             col_tel1, col_tel2, col_tel3 = st.columns(3)
@@ -979,6 +1095,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.session_state["mensagem_confirmacao_visualizar"] = mensagem
                 st.success("✅ Mensagem gerada!")
             
+            # BOTÃO DE ATUALIZAR
             atualizar = st.form_submit_button("🔄 Atualizar Cadastro", type="primary")
             
             if atualizar:
@@ -1240,10 +1357,15 @@ def render_cadastro(clientes_collection):
                                 )
                         
                         # ✅ Exibir status de integração IXC
+                        st.markdown("---")
+                        st.markdown("### 🔄 Status de Integração IXC")
                         if cliente.get("integrado_ixc"):
                             st.success(f"✅ Integrado ao IXC - ID: {cliente.get('id_ixc', 'N/A')}")
+                            st.write(f"**Data de Integração:** {cliente.get('data_integracao_ixc', 'N/A')}")
                         elif cliente.get("integrado_ixc") is False:
                             st.warning(f"⚠️ Pendente de integração com IXC")
+                            if cliente.get("tentativas_integracao"):
+                                st.info(f"**Tentativas:** {cliente.get('tentativas_integracao')}")
                         else:
                             st.info("ℹ️ Aguardando integração com IXC")
                         
@@ -1285,7 +1407,8 @@ def render_cadastro(clientes_collection):
                         if cliente.get("observacoes_followup"):
                             st.write(f"**Observações de Follow-up:** {cliente['observacoes_followup']}")
                         
-                        col1, col2 = st.columns(2)
+                        st.markdown("---")
+                        col1, col2, col3 = st.columns([1, 1, 1])
                         with col1:
                             if st.button("📝 Ver Detalhes / Editar", key=f"ver_detalhes_{cliente['_id']}"):
                                 st.session_state["mostrar_visualizar"] = False
@@ -1305,7 +1428,29 @@ def render_cadastro(clientes_collection):
                                     st.session_state["mostrar_completar"] = True
                                     st.rerun()
                             else:
-                                st.write("Cadastro já completo")
+                                # ✅ ADICIONAR BOTÃO DE REINTEGRAÇÃO PARA CADASTROS COMPLETOS PENDENTES
+                                if not cliente.get("integrado_ixc", False):
+                                    if st.button("🔄 Reintegrar ao IXC", key=f"reintegrar_{cliente['_id']}", use_container_width=True):
+                                        with st.spinner("🔄 Tentando integrar com IXC..."):
+                                            sucesso, mensagem = reintegrar_cliente_ixc(cliente["_id"], clientes_collection)
+                                            if sucesso:
+                                                st.success(mensagem)
+                                                st.rerun()
+                                            else:
+                                                st.error(mensagem)
+                                else:
+                                    st.write("✅ Cadastro completo e integrado")
+                        
+                        with col3:
+                            if cliente.get("tipo_cadastro") == "completo" and not cliente.get("integrado_ixc", False):
+                                if st.button("📤 Reenviar ao IXC", key=f"reenviar_{cliente['_id']}", use_container_width=True):
+                                    with st.spinner("🔄 Reenviando para IXC..."):
+                                        sucesso, mensagem = reintegrar_cliente_ixc(cliente["_id"], clientes_collection)
+                                        if sucesso:
+                                            st.success(mensagem)
+                                            st.rerun()
+                                        else:
+                                            st.error(mensagem)
             else:
                 st.warning("⚠️ Nenhum cliente encontrado.")
     
