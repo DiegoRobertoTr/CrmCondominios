@@ -40,6 +40,7 @@ PLANOS = [
     "600MB+Trace Canais Novo: 99,99",
     "800MB+Trace Canais Novo: 99,99",
     "800MB+Canais: 69,99",
+    "800MB+TraceCanais Básico + 1 Streaming à escolha: 99,99",
     "600MB+1 APP PREMIUM: 99,99",
     "600MB+Canais+Disney: 109,99",
     "600MB+Canais+Globoplay: 124,99",
