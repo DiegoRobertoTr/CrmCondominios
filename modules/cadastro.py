@@ -6,6 +6,7 @@ Correções aplicadas:
 - Integração correta com integracao_ixc.py atualizado
 - Tratamento adequado de erros
 - Adicionado botão de reintegração ao IXC em cadastros existentes
+- Correção do erro st.button() dentro de st.form()
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -65,12 +66,132 @@ def obter_dados_condominio(suffix):
 
 
 # ============================================================================
-# ✅ REINTEGRAÇÃO IXC - FUNÇÃO AUXILIAR
+# ✅ REINTEGRAÇÃO IXC - FUNÇÃO AUXILIAR (VERSÃO CORRIGIDA)
 # ============================================================================
-def render_botao_reintegrar_ixc(cliente, clientes_collection):
+def _processar_forcar_atualizacao(cliente, clientes_collection):
+    """Processa a atualização forçada do cliente no IXC."""
+    with st.spinner("📤 Atualizando dados no IXC..."):
+        try:
+            from .integracao_ixc import atualizar_cliente_ixc
+            
+            # Buscar config do IXC
+            config = get_ixc_config()
+            if not config:
+                st.error("❌ Configuração do IXC não encontrada.")
+                return
+            
+            # Preparar dados do cliente (remover campos que não devem ser enviados)
+            cliente_data = dict(cliente)
+            for key in ["_id", "data_cadastro", "tipo_cadastro", "status", "atendente", "cadastrado_por"]:
+                cliente_data.pop(key, None)
+            
+            # Atualizar no IXC
+            id_ixc_atual = cliente.get("id_ixc")
+            sucesso, mensagem = atualizar_cliente_ixc(id_ixc_atual, cliente_data, config)
+            
+            if sucesso:
+                st.success("✅ Cliente atualizado no IXC com sucesso!")
+                # Registrar a atualização
+                clientes_collection.update_one(
+                    {"_id": cliente["_id"]},
+                    {"$set": {"data_ultima_atualizacao_ixc": datetime.now()}}
+                )
+                st.rerun()
+            else:
+                st.error(f"❌ Erro ao atualizar no IXC: {mensagem}")
+        except Exception as e:
+            st.error(f"❌ Erro ao atualizar: {str(e)}")
+
+
+def _processar_integrar_ixc(cliente, clientes_collection):
+    """Processa a integração do cliente com o IXC."""
+    with st.spinner("📤 Enviando dados para o IXCsoft..."):
+        try:
+            # Verificar se cliente já existe no IXC
+            config = get_ixc_config()
+            if not config:
+                st.error("❌ Configuração do IXC não encontrada.")
+                return
+            
+            cpf = cliente.get("cpf")
+            cpf_digits = "".join(filter(str.isdigit, str(cpf)))
+            
+            # Incrementar tentativas
+            clientes_collection.update_one(
+                {"_id": cliente["_id"]},
+                {"$inc": {"tentativas_integracao": 1}}
+            )
+            
+            resultado = verificar_cliente_existente_ixc(cpf_digits, config)
+            
+            if resultado.get("existe"):
+                # Cliente já existe no IXC - vincular
+                id_ixc = resultado.get("id_ixc")
+                clientes_collection.update_one(
+                    {"_id": cliente["_id"]},
+                    {"$set": {
+                        "integrado_ixc": True,
+                        "id_ixc": id_ixc,
+                        "data_integracao_ixc": datetime.now()
+                    }}
+                )
+                st.success(f"✅ Cliente vinculado ao IXC (ID: {id_ixc})")
+                st.rerun()
+            else:
+                # Tentar criar no IXC
+                cliente_data = dict(cliente)
+                for key in ["_id", "data_cadastro", "tipo_cadastro", "status", "atendente", "cadastrado_por"]:
+                    cliente_data.pop(key, None)
+                
+                # Adicionar condomínio_id_ixc se disponível
+                if cliente_data.get("condominio_id"):
+                    try:
+                        cond_id_ixc = obter_id_ixc_condominio(cliente_data["condominio_id"], config)
+                        if cond_id_ixc:
+                            cliente_data["condominio_id_ixc"] = cond_id_ixc
+                    except Exception as e:
+                        print(f"⚠️ Erro ao obter id_ixc do condomínio: {e}")
+                
+                sucesso, id_ixc, erro, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
+                
+                if sucesso:
+                    update_fields = {
+                        "integrado_ixc": True,
+                        "data_integracao_ixc": datetime.now()
+                    }
+                    if id_ixc and id_ixc not in ["ok", "existente"]:
+                        update_fields["id_ixc"] = id_ixc
+                    
+                    clientes_collection.update_one(
+                        {"_id": cliente["_id"]},
+                        {"$set": update_fields}
+                    )
+                    
+                    if condominio_vinculado is False:
+                        st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                        st.warning("⚠️ Condomínio não vinculado no IXC. Verifique manualmente.")
+                    else:
+                        st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                    st.rerun()
+                else:
+                    # Registrar pendência
+                    registrar_pendencia_integracao(cliente["_id"], cliente_data, erro)
+                    st.warning(f"⚠️ Falha na integração: {erro[:150] if erro else 'Erro desconhecido'}")
+                    st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
+                    
+        except Exception as e:
+            st.error(f"❌ Erro na integração: {str(e)}")
+
+
+def render_botao_reintegrar_ixc(cliente, clientes_collection, dentro_do_form=False):
     """
     Renderiza um botão para reintegrar um cliente ao IXC.
     Usado em cadastros que foram salvos como "simples" e depois completados.
+    
+    Args:
+        cliente: Dicionário com os dados do cliente
+        clientes_collection: Collection do MongoDB
+        dentro_do_form: Se True, usa st.form_submit_button() em vez de st.button()
     """
     if not cliente:
         return
@@ -90,37 +211,13 @@ def render_botao_reintegrar_ixc(cliente, clientes_collection):
         # Opção para forçar atualização (se o cliente foi alterado)
         col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("🔄 Forçar Atualização", key=f"forcar_ixc_{cliente['_id']}"):
-                with st.spinner("📤 Atualizando dados no IXC..."):
-                    try:
-                        from .integracao_ixc import atualizar_cliente_ixc
-                        
-                        # Buscar config do IXC
-                        config = get_ixc_config()
-                        if not config:
-                            st.error("❌ Configuração do IXC não encontrada.")
-                            return
-                        
-                        # Preparar dados do cliente (remover campos que não devem ser enviados)
-                        cliente_data = dict(cliente)
-                        for key in ["_id", "data_cadastro", "tipo_cadastro", "status", "atendente", "cadastrado_por"]:
-                            cliente_data.pop(key, None)
-                        
-                        # Atualizar no IXC
-                        sucesso, mensagem = atualizar_cliente_ixc(id_ixc_atual, cliente_data, config)
-                        
-                        if sucesso:
-                            st.success("✅ Cliente atualizado no IXC com sucesso!")
-                            # Registrar a atualização
-                            clientes_collection.update_one(
-                                {"_id": cliente["_id"]},
-                                {"$set": {"data_ultima_atualizacao_ixc": datetime.now()}}
-                            )
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Erro ao atualizar no IXC: {mensagem}")
-                    except Exception as e:
-                        st.error(f"❌ Erro ao atualizar: {str(e)}")
+            # Escolher entre st.button ou st.form_submit_button
+            if dentro_do_form:
+                if st.form_submit_button("🔄 Forçar Atualização", key=f"forcar_ixc_{cliente['_id']}"):
+                    _processar_forcar_atualizacao(cliente, clientes_collection)
+            else:
+                if st.button("🔄 Forçar Atualização", key=f"forcar_ixc_{cliente['_id']}"):
+                    _processar_forcar_atualizacao(cliente, clientes_collection)
         
         return
     
@@ -154,80 +251,13 @@ def render_botao_reintegrar_ixc(cliente, clientes_collection):
         # Botão de integração
         col1, col2 = st.columns([1, 3])
         with col1:
-            if st.button("📤 Integrar com IXCsoft", key=f"integrar_ixc_{cliente['_id']}"):
-                with st.spinner("📤 Enviando dados para o IXCsoft..."):
-                    try:
-                        # Verificar se cliente já existe no IXC
-                        config = get_ixc_config()
-                        if not config:
-                            st.error("❌ Configuração do IXC não encontrada.")
-                            return
-                        
-                        # Incrementar tentativas
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {"$inc": {"tentativas_integracao": 1}}
-                        )
-                        
-                        resultado = verificar_cliente_existente_ixc(cpf_digits, config)
-                        
-                        if resultado.get("existe"):
-                            # Cliente já existe no IXC - vincular
-                            id_ixc = resultado.get("id_ixc")
-                            clientes_collection.update_one(
-                                {"_id": cliente["_id"]},
-                                {"$set": {
-                                    "integrado_ixc": True,
-                                    "id_ixc": id_ixc,
-                                    "data_integracao_ixc": datetime.now()
-                                }}
-                            )
-                            st.success(f"✅ Cliente vinculado ao IXC (ID: {id_ixc})")
-                            st.rerun()
-                        else:
-                            # Tentar criar no IXC
-                            cliente_data = dict(cliente)
-                            for key in ["_id", "data_cadastro", "tipo_cadastro", "status", "atendente", "cadastrado_por"]:
-                                cliente_data.pop(key, None)
-                            
-                            # Adicionar condomínio_id_ixc se disponível
-                            if cliente_data.get("condominio_id"):
-                                try:
-                                    cond_id_ixc = obter_id_ixc_condominio(cliente_data["condominio_id"], config)
-                                    if cond_id_ixc:
-                                        cliente_data["condominio_id_ixc"] = cond_id_ixc
-                                except Exception as e:
-                                    print(f"⚠️ Erro ao obter id_ixc do condomínio: {e}")
-                            
-                            sucesso, id_ixc, erro, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
-                            
-                            if sucesso:
-                                update_fields = {
-                                    "integrado_ixc": True,
-                                    "data_integracao_ixc": datetime.now()
-                                }
-                                if id_ixc and id_ixc not in ["ok", "existente"]:
-                                    update_fields["id_ixc"] = id_ixc
-                                
-                                clientes_collection.update_one(
-                                    {"_id": cliente["_id"]},
-                                    {"$set": update_fields}
-                                )
-                                
-                                if condominio_vinculado is False:
-                                    st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
-                                    st.warning("⚠️ Condomínio não vinculado no IXC. Verifique manualmente.")
-                                else:
-                                    st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
-                                st.rerun()
-                            else:
-                                # Registrar pendência
-                                registrar_pendencia_integracao(cliente["_id"], cliente_data, erro)
-                                st.warning(f"⚠️ Falha na integração: {erro[:150] if erro else 'Erro desconhecido'}")
-                                st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
-                                
-                    except Exception as e:
-                        st.error(f"❌ Erro na integração: {str(e)}")
+            # Escolher entre st.button ou st.form_submit_button
+            if dentro_do_form:
+                if st.form_submit_button("📤 Integrar com IXCsoft", key=f"integrar_ixc_{cliente['_id']}"):
+                    _processar_integrar_ixc(cliente, clientes_collection)
+            else:
+                if st.button("📤 Integrar com IXCsoft", key=f"integrar_ixc_{cliente['_id']}"):
+                    _processar_integrar_ixc(cliente, clientes_collection)
 
 
 # ============================================================================
@@ -255,7 +285,7 @@ try:
         buscar_condominio_completo_ixc,
         obter_id_ixc_condominio,
         render_painel_sincronizacao_condominios,
-        atualizar_cliente_ixc  # NOVA FUNÇÃO ADICIONADA
+        atualizar_cliente_ixc
     )
 except ImportError:
     # Funções dummy se módulo não existir
@@ -1150,9 +1180,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.success("✅ Mensagem gerada!")
             
             # ==================================================================
-            # 🟢 BOTÃO DE REINTEGRAÇÃO AO IXC
+            # 🟢 BOTÃO DE REINTEGRAÇÃO AO IXC (dentro do form)
             # ==================================================================
-            render_botao_reintegrar_ixc(cliente, clientes_collection)
+            render_botao_reintegrar_ixc(cliente, clientes_collection, dentro_do_form=True)
             
             # ==================================================================
             # 💾 BOTÃO DE ATUALIZAR CADASTRO
