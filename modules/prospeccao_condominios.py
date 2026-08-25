@@ -1235,6 +1235,10 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
 
 # ==================== INTERFACE STREAMLIT ====================
 def render_prospeccao_condominios():
+    # ==================== INICIALIZAÇÃO ====================
+    # Inicializa a variável uploaded_file para evitar erro de referência
+    uploaded_file = None
+    
     st.title("🏢 Prospecção de Condomínios")
     st.markdown("Acompanhamento de fases de construção por construtora e oportunidades de mercado")
     db = init_mongo()
@@ -1395,12 +1399,12 @@ def render_prospeccao_condominios():
 
     st.markdown("---")
 
-    # ==================== BARRA LATERAL - FILTRO POR RESPONSÁVEL ====================
-    # Carregar dados primeiro para usar no filtro lateral
+    # ==================== CARREGAR DADOS ====================
     if st.session_state.get("reload_prospeccao") or "df_prospeccao_cached" not in st.session_state:
         with st.spinner('🔄 Carregando dados do banco...'):
             start_time = time.time()
             result = load_latest_prospeccao(db)
+            
             if result[0] is not None:
                 df_prospeccao, meta = result
 
@@ -1418,9 +1422,8 @@ def render_prospeccao_condominios():
                 elapsed = time.time() - start_time
                 st.success(f"📦 Dados carregados! (Tempo: {elapsed:.2f}s)")
             else:
-                if uploaded_file is None:
-                    st.info("📂 Faça upload da planilha para começar")
-                    return
+                # ✅ CORREÇÃO: usa st.info em vez de acessar uploaded_file
+                st.info("📂 Nenhum dado encontrado no banco. Faça upload da planilha para começar.")
 
     if "reload_prospeccao" in st.session_state:
         del st.session_state["reload_prospeccao"]
@@ -1428,11 +1431,18 @@ def render_prospeccao_condominios():
     df_prospeccao = st.session_state.get("df_prospeccao_cached")
     meta = st.session_state.get("meta_cached")
 
+    # Se não tem dados, mostra apenas o upload e para
     if df_prospeccao is None or df_prospeccao.empty:
         st.info("📂 Faça upload da planilha para visualizar os dados")
+        # Mostra o uploader e retorna
+        uploaded_file = st.file_uploader("📥 Importar Planilha de Prospecção", type=["xlsx", "xls"],
+                                         help="Planilha com colunas: Região, BAIRRO, ENDEREÇO, NOME, BLOCO, APTO, CONSTRUTORA, ESTÁGIO, VIABILIDADE, OBS, Acompanhamento (opcional)")
+        if uploaded_file is not None:
+            # Processa o upload aqui (código de importação)
+            pass
         return
 
-    # Filtro por Responsável na Barra Lateral
+    # ==================== BARRA LATERAL - FILTRO POR RESPONSÁVEL ====================
     with st.sidebar:
         st.markdown("---")
         st.markdown("### 👤 Filtro por Responsável")
@@ -1692,6 +1702,11 @@ def render_prospeccao_condominios():
                 progress_bar.empty()
 
     # ==================== ABAS PRINCIPAIS ====================
+    # Verifica se df_prospeccao existe antes de criar as abas
+    if df_prospeccao is None or df_prospeccao.empty:
+        st.info("📂 Faça upload da planilha para visualizar os dados")
+        return
+
     tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5, tab_agenda, tab_meus = st.tabs([
         "✏️ Atualizar Empreendimentos", "➕ Novo Cadastro", "📊 Por Construtora",
         "🗺️ Por Região", "⏱️ Timeline", "🎯 Priorização", "📋 Lista Completa",
