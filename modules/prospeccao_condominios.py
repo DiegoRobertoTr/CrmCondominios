@@ -1236,7 +1236,6 @@ def exportar_prospeccao_excel(df_prospeccao, df_construtoras, df_zonas):
 # ==================== INTERFACE STREAMLIT ====================
 def render_prospeccao_condominios():
     # ==================== INICIALIZAÇÃO ====================
-    # Inicializa a variável uploaded_file para evitar erro de referência
     uploaded_file = None
     
     st.title("🏢 Prospecção de Condomínios")
@@ -1399,6 +1398,228 @@ def render_prospeccao_condominios():
 
     st.markdown("---")
 
+    # ==================== GERENCIAMENTO DE DADOS ====================
+    st.subheader("📂 Gerenciamento de Dados")
+    
+    # Layout melhorado com colunas
+    col_upload, col_btn1, col_btn2, col_btn3 = st.columns([3, 1, 1, 1])
+
+    with col_upload:
+        uploaded_file = st.file_uploader(
+            "📥 Importar Planilha de Prospecção", 
+            type=["xlsx", "xls"],
+            help="Planilha com colunas: Região, BAIRRO, ENDEREÇO, NOME, BLOCO, APTO, CONSTRUTORA, ESTÁGIO, VIABILIDADE, OBS, Acompanhamento (opcional)",
+            key="upload_principal"
+        )
+
+    with col_btn1:
+        if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state["reload_prospeccao"] = True
+            st.rerun()
+
+    with col_btn2:
+        if st.button("🗑️ Limpar Dados", type="secondary", use_container_width=True):
+            if st.session_state.get("confirm_delete_prospeccao"):
+                deleted = clear_prospeccao_data(db)
+                st.success(f"✅ {deleted} registros removidos!")
+                st.session_state["confirm_delete_prospeccao"] = False
+                st.cache_data.clear()
+                st.session_state.pop("df_prospeccao_cached", None)
+                st.session_state.pop("last_imported_file", None)
+                st.rerun()
+            else:
+                st.warning("⚠️ Clique novamente para confirmar")
+                st.session_state["confirm_delete_prospeccao"] = True
+
+    with col_btn3:
+        # Botão para processar e salvar
+        if uploaded_file is not None:
+            if st.button("🚀 Processar e Salvar", type="primary", use_container_width=True):
+                st.session_state["processar_upload"] = True
+                st.rerun()
+        else:
+            st.button("🚀 Processar e Salvar", type="primary", use_container_width=True, disabled=True)
+
+    # ==================== PROCESSAMENTO DE UPLOAD ====================
+    # Verifica se deve processar o upload
+    if uploaded_file is not None and st.session_state.get("processar_upload", False):
+        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+
+        if st.session_state.get("last_imported_file") == file_key:
+            if "df_prospeccao_cached" not in st.session_state:
+                st.session_state["reload_prospeccao"] = True
+                st.session_state["processar_upload"] = False
+        else:
+            start_time = time.time()
+            progress_bar = st.progress(0)
+
+            try:
+                # ========== LEITURA DA PLANILHA ==========
+                progress_bar.progress(10)
+                st.info(f"📄 Lendo arquivo: {uploaded_file.name}")
+                df_prospeccao = pd.read_excel(uploaded_file, sheet_name=0)
+
+                # ========== LIMPEZA INICIAL ==========
+                progress_bar.progress(30)
+                if len(df_prospeccao) > 0:
+                    # Verifica se a primeira linha é cabeçalho duplicado
+                    primeira_linha = df_prospeccao.iloc[0].astype(str).str.lower()
+                    colunas_lower = [str(c).lower().strip() for c in df_prospeccao.columns]
+                    # Se a primeira linha parece um cabeçalho, remove
+                    if all(val in colunas_lower or val == 'nan' for val in primeira_linha):
+                        df_prospeccao = df_prospeccao.iloc[1:].reset_index(drop=True)
+
+                if len(df_prospeccao) == 0:
+                    st.error("❌ A planilha está vazia após a limpeza inicial.")
+                    progress_bar.empty()
+                    st.session_state["processar_upload"] = False
+                    st.stop()
+
+                st.info(f"📊 {len(df_prospeccao)} linhas encontradas na planilha.")
+
+                # ========== MAPEAMENTO DE COLUNAS ==========
+                progress_bar.progress(50)
+                col_mapping = {
+                    'região': 'Região', 'zona': 'Região', 'bairro': 'BAIRRO',
+                    'endereço': 'ENDEREÇO', 'endereco': 'ENDEREÇO', 'nome': 'NOME',
+                    'condomínio': 'NOME', 'condominio': 'NOME', 'bloco': 'BLOCO',
+                    'apto': 'APTO', 'apartamentos': 'APTO', 'construtora': 'CONSTRUTORA',
+                    'estágio': 'ESTÁGIO', 'estagio': 'ESTÁGIO', 'viabilidade': 'VIABILIDADE',
+                    'obs': 'OBS', 'observações': 'OBS', 'observacoes': 'OBS',
+                    'data da atualização': 'Data da Atualização',
+                    'previsão de entrega': 'Previsão de Entrega',
+                    'acompanhamento': 'ACOMPANHAMENTO',
+                    'responsável': 'ACOMPANHAMENTO',
+                    'responsavel': 'ACOMPANHAMENTO',
+                }
+                
+                df_prospeccao.columns = [str(col).strip() for col in df_prospeccao.columns]
+                cols_lower_map = {c.lower(): c for c in df_prospeccao.columns}
+                rename_map = {cols_lower_map[k]: v for k, v in col_mapping.items() if k in cols_lower_map and cols_lower_map[k] != v}
+                df_prospeccao = df_prospeccao.rename(columns=rename_map)
+
+                # ========== VALIDAÇÃO DE COLUNAS OBRIGATÓRIAS ==========
+                progress_bar.progress(60)
+                if "ESTÁGIO" not in df_prospeccao.columns:
+                    st.error("❌ Coluna 'ESTÁGIO' não encontrada na planilha!")
+                    st.info("📌 Certifique-se de que a planilha tenha uma coluna chamada 'ESTÁGIO' ou 'estágio'.")
+                    progress_bar.empty()
+                    st.session_state["processar_upload"] = False
+                    st.stop()
+
+                # Remove colunas de prazo que podem conflitar
+                for col in ['Prazo Medio', 'Prazo_Medio', 'prazo_medio', 'Prazo médio']:
+                    if col in df_prospeccao.columns:
+                        df_prospeccao = df_prospeccao.drop(columns=[col])
+
+                # ========== PROCESSAMENTO DE FASES ==========
+                progress_bar.progress(70)
+                st.info("🔄 Classificando fases...")
+                df_prospeccao["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(df_prospeccao["ESTÁGIO"])
+                df_prospeccao["FASE_ORIGINAL"] = df_prospeccao["ESTÁGIO"]
+
+                # ========== EXTRAÇÃO DE DATAS ==========
+                progress_bar.progress(80)
+                st.info("📅 Extraindo previsões de entrega...")
+                if "VIABILIDADE" in df_prospeccao.columns:
+                    df_prospeccao["PREVISAO_ENTREGA"] = extrair_previsao_entrega_vetorizado(df_prospeccao["VIABILIDADE"])
+                if "Previsão de Entrega" in df_prospeccao.columns:
+                    prev2 = extrair_previsao_entrega_vetorizado(df_prospeccao["Previsão de Entrega"])
+                    if "PREVISAO_ENTREGA" in df_prospeccao.columns:
+                        df_prospeccao["PREVISAO_ENTREGA"] = df_prospeccao["PREVISAO_ENTREGA"].where(df_prospeccao["PREVISAO_ENTREGA"].notna(), prev2)
+                    else:
+                        df_prospeccao["PREVISAO_ENTREGA"] = prev2
+
+                # ========== CÁLCULO DE PRAZOS E PRIORIDADES ==========
+                progress_bar.progress(85)
+                df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao.get("PREVISAO_ENTREGA"))
+                df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
+
+                # ========== LIMPEZA DE TEXTO ==========
+                progress_bar.progress(90)
+                for col in ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'ACOMPANHAMENTO']:
+                    if col in df_prospeccao.columns:
+                        df_prospeccao[col] = df_prospeccao[col].astype(str).fillna('')
+                        df_prospeccao[col] = df_prospeccao[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN', 'Na N'], '')
+
+                # ========== SALVAMENTO NO BANCO ==========
+                progress_bar.progress(95)
+                st.info("💾 Salvando dados no banco...")
+                
+                fases_count = df_prospeccao["FASE_CLASSIFICADA"].value_counts().to_dict()
+                metadata = {
+                    "timestamp": datetime.now().replace(tzinfo=None),
+                    "batch_id": f"prospeccao_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    "filename": uploaded_file.name,
+                    "fases": fases_count,
+                    "construtoras": df_prospeccao["CONSTRUTORA"].dropna().unique().tolist() if "CONSTRUTORA" in df_prospeccao.columns else [],
+                }
+
+                progress_bar.progress(100)
+
+                if save_prospeccao_data(db, df_prospeccao, metadata):
+                    elapsed = time.time() - start_time
+                    st.success(f"✅ Dados importados com sucesso! {len(df_prospeccao)} projetos de {len(metadata['construtoras'])} construtoras (Tempo: {elapsed:.2f}s)")
+
+                    # ========== INFORMAÇÕES SOBRE ACOMPANHAMENTO ==========
+                    if "ACOMPANHAMENTO" in df_prospeccao.columns:
+                        responsaveis = df_prospeccao["ACOMPANHAMENTO"].unique().tolist()
+                        responsaveis_validos = [r for r in responsaveis if r and r != '']
+                        if responsaveis_validos:
+                            st.info(f"👥 Coluna 'Acompanhamento' detectada! Responsáveis encontrados: {', '.join(responsaveis_validos[:5])}{'...' if len(responsaveis_validos) > 5 else ''}")
+                            st.markdown("💡 **Use o filtro na barra lateral para ver apenas seus condomínios!**")
+
+                    # ========== BACKUP POR EMAIL ==========
+                    with st.spinner("📦 Gerando backups e enviando por e-mail..."):
+                        try:
+                            excel_tratado = gerar_excel_tratado(df_prospeccao)
+                            excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
+                            sucesso, msg_email = enviar_email_backup(
+                                arquivo_tratado=excel_tratado.getvalue(),
+                                arquivo_reimportavel=excel_reimportavel.getvalue(),
+                                total_projetos=len(df_prospeccao),
+                                nome_arquivo_original=uploaded_file.name,
+                            )
+                            if sucesso:
+                                st.success(msg_email)
+                            else:
+                                st.warning(f"⚠️ Backup gerado, mas falha no envio de e-mail: {msg_email}")
+
+                            # ========== DOWNLOADS MANUAIS ==========
+                            st.markdown("##### 📥 Download manual dos backups:")
+                            col_dl1, col_dl2 = st.columns(2)
+                            data_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            with col_dl1:
+                                excel_tratado.seek(0)
+                                st.download_button("📊 Backup Tratado (sistema)", data=excel_tratado, file_name=f"backup_tratado_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                            with col_dl2:
+                                excel_reimportavel.seek(0)
+                                st.download_button("📋 Backup Reimportável (original)", data=excel_reimportavel, file_name=f"backup_reimportavel_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                        except Exception as e_backup:
+                            st.warning(f"⚠️ Erro ao gerar backup: {e_backup}")
+
+                    # ========== FINALIZAÇÃO ==========
+                    st.session_state["last_imported_file"] = file_key
+                    st.session_state["processar_upload"] = False
+                    st.cache_data.clear()
+                    st.session_state.pop("df_prospeccao_cached", None)
+                    st.session_state["reload_prospeccao"] = True
+                    
+                    # Pequeno delay para mostrar a mensagem de sucesso antes de recarregar
+                    st.balloons()
+                    time.sleep(1)
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"❌ Erro ao processar planilha: {str(e)}")
+                import traceback
+                with st.expander("Detalhes técnicos do erro"):
+                    st.code(traceback.format_exc())
+                st.session_state["processar_upload"] = False
+            finally:
+                progress_bar.empty()
+
     # ==================== CARREGAR DADOS ====================
     if st.session_state.get("reload_prospeccao") or "df_prospeccao_cached" not in st.session_state:
         with st.spinner('🔄 Carregando dados do banco...'):
@@ -1422,8 +1643,8 @@ def render_prospeccao_condominios():
                 elapsed = time.time() - start_time
                 st.success(f"📦 Dados carregados! (Tempo: {elapsed:.2f}s)")
             else:
-                # ✅ CORREÇÃO: usa st.info em vez de acessar uploaded_file
-                st.info("📂 Nenhum dado encontrado no banco. Faça upload da planilha para começar.")
+                # Mostra o uploader se não houver dados
+                st.info("📂 Nenhum dado encontrado no banco. Faça upload da planilha e clique em 'Processar e Salvar' para começar.")
 
     if "reload_prospeccao" in st.session_state:
         del st.session_state["reload_prospeccao"]
@@ -1433,13 +1654,7 @@ def render_prospeccao_condominios():
 
     # Se não tem dados, mostra apenas o upload e para
     if df_prospeccao is None or df_prospeccao.empty:
-        st.info("📂 Faça upload da planilha para visualizar os dados")
-        # Mostra o uploader e retorna
-        uploaded_file = st.file_uploader("📥 Importar Planilha de Prospecção", type=["xlsx", "xls"],
-                                         help="Planilha com colunas: Região, BAIRRO, ENDEREÇO, NOME, BLOCO, APTO, CONSTRUTORA, ESTÁGIO, VIABILIDADE, OBS, Acompanhamento (opcional)")
-        if uploaded_file is not None:
-            # Processa o upload aqui (código de importação)
-            pass
+        st.info("📂 Faça upload da planilha e clique em 'Processar e Salvar' para começar")
         return
 
     # ==================== BARRA LATERAL - FILTRO POR RESPONSÁVEL ====================
@@ -1533,180 +1748,7 @@ def render_prospeccao_condominios():
             st.toast(msg, icon="🔔")
         st.session_state.ultima_verificacao_alertas = agora
 
-    # ==================== GERENCIAMENTO DE DADOS ====================
-    st.subheader("📂 Gerenciamento de Dados")
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        uploaded_file = st.file_uploader("📥 Importar Planilha de Prospecção", type=["xlsx", "xls"],
-                                         help="Planilha com colunas: Região, BAIRRO, ENDEREÇO, NOME, BLOCO, APTO, CONSTRUTORA, ESTÁGIO, VIABILIDADE, OBS, Acompanhamento (opcional)")
-
-    with col2:
-        if st.button("🔄 Recarregar Últimos", type="primary", use_container_width=True):
-            st.cache_data.clear()
-            st.session_state["reload_prospeccao"] = True
-            st.rerun()
-
-        if st.button("🗑️ Limpar Dados", type="secondary", use_container_width=True):
-            if st.session_state.get("confirm_delete_prospeccao"):
-                deleted = clear_prospeccao_data(db)
-                st.success(f"✅ {deleted} registros removidos!")
-                st.session_state["confirm_delete_prospeccao"] = False
-                st.cache_data.clear()
-                st.session_state.pop("df_prospeccao_cached", None)
-                st.session_state.pop("last_imported_file", None)
-                st.rerun()
-            else:
-                st.warning("⚠️ Clique novamente para confirmar")
-                st.session_state["confirm_delete_prospeccao"] = True
-
-    # ==================== IMPORTAÇÃO DA PLANILHA ====================
-    if uploaded_file is not None:
-        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-
-        if st.session_state.get("last_imported_file") == file_key:
-            if "df_prospeccao_cached" not in st.session_state:
-                st.session_state["reload_prospeccao"] = True
-        else:
-            start_time = time.time()
-            progress_bar = st.progress(0)
-
-            try:
-                progress_bar.progress(10)
-                df_prospeccao = pd.read_excel(uploaded_file, sheet_name=0)
-
-                progress_bar.progress(30)
-                if len(df_prospeccao) > 0:
-                    primeira_linha = df_prospeccao.iloc[0].astype(str).str.lower()
-                    if all(val in [str(c).lower().strip() for c in df_prospeccao.columns] or val == 'nan' for val in primeira_linha):
-                        df_prospeccao = df_prospeccao.iloc[1:].reset_index(drop=True)
-
-                progress_bar.progress(50)
-                if len(df_prospeccao) == 0:
-                    st.error("❌ A planilha está vazia após a limpeza inicial.")
-                    progress_bar.empty()
-                    st.stop()
-
-                col_mapping = {
-                    'região': 'Região', 'zona': 'Região', 'bairro': 'BAIRRO',
-                    'endereço': 'ENDEREÇO', 'endereco': 'ENDEREÇO', 'nome': 'NOME',
-                    'condomínio': 'NOME', 'condominio': 'NOME', 'bloco': 'BLOCO',
-                    'apto': 'APTO', 'apartamentos': 'APTO', 'construtora': 'CONSTRUTORA',
-                    'estágio': 'ESTÁGIO', 'estagio': 'ESTÁGIO', 'viabilidade': 'VIABILIDADE',
-                    'obs': 'OBS', 'observações': 'OBS',
-                    'data da atualização': 'Data da Atualização',
-                    'previsão de entrega': 'Previsão de Entrega',
-                    'acompanhamento': 'ACOMPANHAMENTO',
-                    'responsável': 'ACOMPANHAMENTO',
-                    'responsavel': 'ACOMPANHAMENTO',
-                }
-                df_prospeccao.columns = [str(col).strip() for col in df_prospeccao.columns]
-                cols_lower_map = {c.lower(): c for c in df_prospeccao.columns}
-                rename_map = {cols_lower_map[k]: v for k, v in col_mapping.items() if k in cols_lower_map and cols_lower_map[k] != v}
-                df_prospeccao = df_prospeccao.rename(columns=rename_map)
-
-                progress_bar.progress(70)
-                if "ESTÁGIO" not in df_prospeccao.columns:
-                    st.error("❌ Coluna 'ESTÁGIO' não encontrada na planilha!")
-                    progress_bar.empty()
-                    st.stop()
-
-                for col in ['Prazo Medio', 'Prazo_Medio', 'prazo_medio', 'Prazo médio']:
-                    if col in df_prospeccao.columns:
-                        df_prospeccao = df_prospeccao.drop(columns=[col])
-
-                df_prospeccao["FASE_CLASSIFICADA"] = classificar_fase_vetorizado(df_prospeccao["ESTÁGIO"])
-                df_prospeccao["FASE_ORIGINAL"] = df_prospeccao["ESTÁGIO"]
-
-                progress_bar.progress(80)
-                if "VIABILIDADE" in df_prospeccao.columns:
-                    df_prospeccao["PREVISAO_ENTREGA"] = extrair_previsao_entrega_vetorizado(df_prospeccao["VIABILIDADE"])
-                if "Previsão de Entrega" in df_prospeccao.columns:
-                    prev2 = extrair_previsao_entrega_vetorizado(df_prospeccao["Previsão de Entrega"])
-                    if "PREVISAO_ENTREGA" in df_prospeccao.columns:
-                        df_prospeccao["PREVISAO_ENTREGA"] = df_prospeccao["PREVISAO_ENTREGA"].where(df_prospeccao["PREVISAO_ENTREGA"].notna(), prev2)
-                    else:
-                        df_prospeccao["PREVISAO_ENTREGA"] = prev2
-
-                progress_bar.progress(90)
-                df_prospeccao["DIAS_RESTANTES"] = calcular_dias_para_entrega_vetorizado(df_prospeccao.get("PREVISAO_ENTREGA"))
-                df_prospeccao["PRIORIDADE"] = calcular_prioridade_vetorizado(df_prospeccao)
-
-                for col in ['VIABILIDADE', 'OBS', 'ESTÁGIO', 'FASE_ORIGINAL', 'ACOMPANHAMENTO']:
-                    if col in df_prospeccao.columns:
-                        df_prospeccao[col] = df_prospeccao[col].astype(str).fillna('')
-                        df_prospeccao[col] = df_prospeccao[col].replace(['nan', 'NaT', 'None', 'nat', 'NaN', 'Na N'], '')
-
-                progress_bar.progress(95)
-                fases_count = df_prospeccao["FASE_CLASSIFICADA"].value_counts().to_dict()
-                metadata = {
-                    "timestamp": datetime.now().replace(tzinfo=None),
-                    "batch_id": f"prospeccao_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                    "filename": uploaded_file.name,
-                    "fases": fases_count,
-                    "construtoras": df_prospeccao["CONSTRUTORA"].dropna().unique().tolist() if "CONSTRUTORA" in df_prospeccao.columns else [],
-                }
-
-                progress_bar.progress(100)
-
-                if save_prospeccao_data(db, df_prospeccao, metadata):
-                    elapsed = time.time() - start_time
-                    st.success(f"✅ Dados importados! {len(df_prospeccao)} projetos de {len(metadata['construtoras'])} construtoras (Tempo: {elapsed:.2f}s)")
-
-                    if "ACOMPANHAMENTO" in df_prospeccao.columns:
-                        responsaveis = df_prospeccao["ACOMPANHAMENTO"].unique().tolist()
-                        responsaveis_validos = [r for r in responsaveis if r and r != '']
-                        if responsaveis_validos:
-                            st.info(f"👥 Coluna 'Acompanhamento' detectada! Responsáveis encontrados: {', '.join(responsaveis_validos[:5])}{'...' if len(responsaveis_validos) > 5 else ''}")
-                            st.markdown("💡 **Use o filtro na barra lateral para ver apenas seus condomínios!**")
-
-                    with st.spinner("📦 Gerando backups e enviando por e-mail..."):
-                        try:
-                            excel_tratado = gerar_excel_tratado(df_prospeccao)
-                            excel_reimportavel = gerar_excel_reimportavel(df_prospeccao)
-                            sucesso, msg_email = enviar_email_backup(
-                                arquivo_tratado=excel_tratado.getvalue(),
-                                arquivo_reimportavel=excel_reimportavel.getvalue(),
-                                total_projetos=len(df_prospeccao),
-                                nome_arquivo_original=uploaded_file.name,
-                            )
-                            if sucesso:
-                                st.success(msg_email)
-                            else:
-                                st.warning(f"⚠️ Backup gerado, mas falha no envio de e-mail: {msg_email}")
-
-                            st.markdown("##### 📥 Download manual dos backups (caso preciso):")
-                            col_dl1, col_dl2 = st.columns(2)
-                            data_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            with col_dl1:
-                                excel_tratado.seek(0)
-                                st.download_button("📊 Backup Tratado (sistema)", data=excel_tratado, file_name=f"backup_tratado_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                            with col_dl2:
-                                excel_reimportavel.seek(0)
-                                st.download_button("📋 Backup Reimportável (original)", data=excel_reimportavel, file_name=f"backup_reimportavel_{data_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                        except Exception as e_backup:
-                            st.warning(f"⚠️ Erro ao gerar backup: {e_backup}")
-
-                    st.session_state["last_imported_file"] = file_key
-                    st.cache_data.clear()
-                    st.session_state.pop("df_prospeccao_cached", None)
-                    st.session_state["reload_prospeccao"] = True
-                    st.rerun()
-
-            except Exception as e:
-                st.error(f"❌ Erro ao processar planilha: {str(e)}")
-                import traceback
-                with st.expander("Detalhes técnicos do erro"):
-                    st.code(traceback.format_exc())
-            finally:
-                progress_bar.empty()
-
     # ==================== ABAS PRINCIPAIS ====================
-    # Verifica se df_prospeccao existe antes de criar as abas
-    if df_prospeccao is None or df_prospeccao.empty:
-        st.info("📂 Faça upload da planilha para visualizar os dados")
-        return
-
     tab_update, tab_new, tab_dash1, tab_dash2, tab_dash3, tab_dash4, tab_dash5, tab_agenda, tab_meus = st.tabs([
         "✏️ Atualizar Empreendimentos", "➕ Novo Cadastro", "📊 Por Construtora",
         "🗺️ Por Região", "⏱️ Timeline", "🎯 Priorização", "📋 Lista Completa",
