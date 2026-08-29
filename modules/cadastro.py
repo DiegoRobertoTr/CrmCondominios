@@ -5,7 +5,6 @@ Correções aplicadas:
 - Logs detalhados para debug do condomínio
 - Integração correta com integracao_ixc.py atualizado
 - Tratamento adequado de erros
-- Botão de integração com IXC para edição/completar cadastro
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -88,8 +87,7 @@ try:
         sincronizar_condominio_crm_com_ixc,
         buscar_condominio_completo_ixc,
         obter_id_ixc_condominio,
-        render_painel_sincronizacao_condominios,
-        enviar_cliente_para_ixc_com_verificacao
+        render_painel_sincronizacao_condominios
     )
 except ImportError:
     # Funções dummy se módulo não existir
@@ -109,8 +107,6 @@ except ImportError:
         return None
     def render_painel_sincronizacao_condominios():
         st.warning("Painel de sincronização não disponível")
-    def enviar_cliente_para_ixc_com_verificacao(cliente_data, cliente_id, clientes_collection):
-        return {"sucesso": False, "mensagem": "Módulo não disponível"}
 
 
 # ============================================================================
@@ -675,113 +671,6 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 key=f"observacoes_followup_{key_suffix}"
             )
         
-        # ========== 🚀 INTEGRAÇÃO IXC ==========
-        st.markdown("### 🔌 Integração com IXCsoft")
-        
-        # Verificar se cliente tem dados mínimos para integração
-        cpf_digits = "".join(filter(str.isdigit, str(cliente.get("cpf", ""))))
-        dados_minimos = len(cpf_digits) >= 11 and cliente.get("endereco") and cliente.get("numero")
-        
-        if cliente.get("integrado_ixc"):
-            st.success(f"✅ Integrado ao IXC - ID: `{cliente.get('id_ixc', 'N/A')}`")
-            
-            # Mostrar se o condomínio foi vinculado
-            if cliente.get("condominio_vinculado_ixc") is False:
-                st.warning("⚠️ O condomínio NÃO foi vinculado no IXC. Verifique manualmente.")
-            
-            # Mostrar data da integração
-            if cliente.get("data_integracao_ixc"):
-                try:
-                    data_int = cliente["data_integracao_ixc"]
-                    if isinstance(data_int, str):
-                        data_int = datetime.fromisoformat(data_int)
-                    st.info(f"📅 Integrado em: {data_int.strftime('%d/%m/%Y %H:%M')}")
-                except:
-                    pass
-            
-            # Botão para reintegrar (atualizar dados)
-            if st.button("🔄 Reintegrar/Atualizar IXC", key=f"reintegrar_ixc_{cliente['_id']}"):
-                st.info("ℹ️ Para atualizar dados no IXC, edite o cadastro e clique em 'Atualizar Cadastro' - a reintegração automática será feita no próximo salvamento.")
-                
-        elif cliente.get("integrado_ixc") is False:
-            st.warning("⚠️ Pendente de integração com IXC")
-            
-            # Mostrar erro anterior se houver
-            if cliente.get("erro_integracao_ixc"):
-                st.warning(f"⚠️ Último erro: {cliente['erro_integracao_ixc'][:200]}")
-            
-            # Botão para integrar
-            col_ixc1, col_ixc2 = st.columns([1, 3])
-            with col_ixc1:
-                if st.button("🚀 Integrar com IXC Agora", key=f"integrar_ixc_{cliente['_id']}", type="primary"):
-                    if not dados_minimos:
-                        st.error("❌ Dados mínimos para integração: CPF, Endereço e Número são obrigatórios.")
-                    else:
-                        with st.spinner("🔄 Integrando cliente com o IXC..."):
-                            from .integracao_ixc import enviar_cliente_para_ixc_com_verificacao
-                            
-                            resultado = enviar_cliente_para_ixc_com_verificacao(
-                                cliente,
-                                cliente["_id"],
-                                clientes_collection
-                            )
-                            
-                            if resultado["sucesso"]:
-                                st.success(f"✅ {resultado['mensagem']}")
-                                # Atualizar cliente na sessão
-                                st.session_state["cliente_selecionado"]["integrado_ixc"] = True
-                                if resultado.get("id_ixc"):
-                                    st.session_state["cliente_selecionado"]["id_ixc"] = resultado["id_ixc"]
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {resultado['mensagem']}")
-                                # Atualizar cliente na sessão com o erro
-                                st.session_state["cliente_selecionado"]["erro_integracao_ixc"] = resultado['mensagem']
-        else:
-            st.info("ℹ️ Aguardando integração com IXC")
-            
-            # Botão para integrar (caso não tenha status definido)
-            col_ixc1, col_ixc2 = st.columns([1, 3])
-            with col_ixc1:
-                if st.button("🚀 Integrar com IXC", key=f"integrar_ixc_{cliente['_id']}", type="primary"):
-                    if not dados_minimos:
-                        st.error("❌ Dados mínimos para integração: CPF, Endereço e Número são obrigatórios.")
-                    else:
-                        with st.spinner("🔄 Integrando cliente com o IXC..."):
-                            from .integracao_ixc import enviar_cliente_para_ixc_com_verificacao
-                            
-                            resultado = enviar_cliente_para_ixc_com_verificacao(
-                                cliente,
-                                cliente["_id"],
-                                clientes_collection
-                            )
-                            
-                            if resultado["sucesso"]:
-                                st.success(f"✅ {resultado['mensagem']}")
-                                st.session_state["cliente_selecionado"]["integrado_ixc"] = True
-                                if resultado.get("id_ixc"):
-                                    st.session_state["cliente_selecionado"]["id_ixc"] = resultado["id_ixc"]
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {resultado['mensagem']}")
-                                st.session_state["cliente_selecionado"]["erro_integracao_ixc"] = resultado['mensagem']
-        
-        # Mostrar informações de diagnóstico
-        if st.checkbox("🔍 Mostrar informações de diagnóstico IXC", key=f"diagnostico_ixc_{cliente['_id']}"):
-            st.json({
-                "integrado_ixc": cliente.get("integrado_ixc"),
-                "id_ixc": cliente.get("id_ixc"),
-                "cpf": cpf_digits,
-                "endereco": cliente.get("endereco"),
-                "numero": cliente.get("numero"),
-                "condominio_id": cliente.get("condominio_id"),
-                "condominio_nome": cliente.get("condominio_nome"),
-                "condominio_id_ixc": cliente.get("condominio_id_ixc"),
-                "condominio_vinculado_ixc": cliente.get("condominio_vinculado_ixc"),
-                "erro_integracao_ixc": cliente.get("erro_integracao_ixc"),
-                "data_integracao_ixc": str(cliente.get("data_integracao_ixc")) if cliente.get("data_integracao_ixc") else None
-            })
-        
         with st.form("form_editar_cadastro"):
             st.markdown("### ⚙️ Informações do Sistema")
             st.text_input("Cadastrado por:", value=cliente.get("cadastrado_por", "N/A"), disabled=True, key="cadastrado_por_visualizar")
@@ -1110,20 +999,6 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         
                         cpf_limpo = limpar_cpf(cpf)
                         
-                        # ========== OBTER DADOS DO CONDOMÍNIO ==========
-                        dados_cond = obter_dados_condominio(key_suffix)
-                        
-                        # Buscar id_ixc do condomínio se disponível
-                        cond_id_ixc = None
-                        if dados_cond.get("condominio_id"):
-                            try:
-                                config_ixc = get_ixc_config()
-                                if config_ixc:
-                                    cond_id_ixc = obter_id_ixc_condominio(dados_cond["condominio_id"], config_ixc)
-                                    print(f"✅ ID IXC do condomínio obtido: {cond_id_ixc}")
-                            except Exception as e:
-                                print(f"⚠️ Erro ao obter id_ixc do condomínio: {e}")
-                        
                         update_data = {
                             "nome_completo": nome_completo,
                             "celular": normalize_phone(celular),
@@ -1175,9 +1050,8 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                             "endereco_bloqueado": cliente.get("endereco_bloqueado", False),
                             "observacoes_bloqueio_endereco": cliente.get("observacoes_bloqueio_endereco", None),
-                            "condominio_id": dados_cond["condominio_id"],
-                            "condominio_nome": dados_cond["condominio_nome"],
-                            "condominio_id_ixc": cond_id_ixc,
+                            "condominio_id": safe_session_state_get(f"condominio_id_{key_suffix}", cliente.get("condominio_id")),
+                            "condominio_nome": safe_session_state_get(f"condominio_nome_{key_suffix}", cliente.get("condominio_nome")),
                             "bloco": bloco if bloco else None,
                             "apartamento": apartamento if apartamento else None,
                             "produtos_interesse": produtos_interesse if produtos_interesse else [],
@@ -1200,41 +1074,8 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             update_data["equipamento_acessorios"] = equip_acessorios
                         
                         try:
-                            # Atualizar no MongoDB
                             clientes_collection.update_one({"_id": cliente["_id"]}, {"$set": update_data})
                             st.success("✅ Cadastro atualizado com sucesso!")
-                            
-                            # ========== 🚀 TENTAR INTEGRAÇÃO COM IXC APÓS ATUALIZAÇÃO ==========
-                            # Se o cliente já estava integrado, manter o status
-                            if cliente.get("integrado_ixc") and cliente.get("id_ixc"):
-                                st.info(f"ℹ️ Cliente já integrado ao IXC (ID: {cliente.get('id_ixc')})")
-                            elif cliente.get("integrado_ixc") is False or cliente.get("integrado_ixc") is None:
-                                # Verificar se cliente tem dados mínimos e tentar integrar
-                                cpf_digits_check = "".join(filter(str.isdigit, str(cpf_limpo or "")))
-                                if len(cpf_digits_check) >= 11 and update_data.get("endereco") and update_data.get("numero"):
-                                    st.info("🔄 Tentando integrar com IXC automaticamente...")
-                                    with st.spinner("🔄 Integrando com IXC..."):
-                                        from .integracao_ixc import enviar_cliente_para_ixc_com_verificacao
-                                        
-                                        # Buscar dados atualizados do cliente
-                                        cliente_atualizado = clientes_collection.find_one({"_id": cliente["_id"]})
-                                        
-                                        resultado_ixc = enviar_cliente_para_ixc_com_verificacao(
-                                            cliente_atualizado,
-                                            cliente["_id"],
-                                            clientes_collection
-                                        )
-                                        
-                                        if resultado_ixc["sucesso"]:
-                                            st.success(f"✅ {resultado_ixc['mensagem']}")
-                                            if resultado_ixc.get("id_ixc"):
-                                                st.session_state["cliente_selecionado"]["id_ixc"] = resultado_ixc["id_ixc"]
-                                            st.session_state["cliente_selecionado"]["integrado_ixc"] = True
-                                        else:
-                                            st.warning(f"⚠️ {resultado_ixc['mensagem']}")
-                                else:
-                                    st.info("💡 Para integrar com IXC, preencha CPF, Endereço e Número e clique em 'Integrar com IXC' no painel acima.")
-                            
                             st.balloons()
                             st.rerun()
                         except Exception as e:
@@ -1399,18 +1240,12 @@ def render_cadastro(clientes_collection):
                                 )
                         
                         # ✅ Exibir status de integração IXC
-                        st.markdown("---")
-                        st.markdown("**🔌 Status IXC:**")
                         if cliente.get("integrado_ixc"):
-                            st.success(f"✅ Integrado - ID: {cliente.get('id_ixc', 'N/A')}")
-                            if cliente.get("condominio_vinculado_ixc") is False:
-                                st.warning("⚠️ Condomínio não vinculado")
+                            st.success(f"✅ Integrado ao IXC - ID: {cliente.get('id_ixc', 'N/A')}")
                         elif cliente.get("integrado_ixc") is False:
-                            st.warning("⚠️ Pendente de integração")
-                            if cliente.get("erro_integracao_ixc"):
-                                st.caption(f"Erro: {cliente['erro_integracao_ixc'][:100]}")
+                            st.warning(f"⚠️ Pendente de integração com IXC")
                         else:
-                            st.info("ℹ️ Aguardando integração")
+                            st.info("ℹ️ Aguardando integração com IXC")
                         
                         data_cadastro = cliente.get("data_cadastro")
                         if data_cadastro:
