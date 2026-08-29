@@ -5,10 +5,11 @@ Correções aplicadas:
 - Busca flexível de condomínio (LIKE + normalização de acentos)
 - Fallback que lista todos os condomínios do IXC
 - Logs detalhados em cada etapa para debug
-- Função listar_condominios_ixc para painel admin
 - IMPLEMENTAÇÃO DO MÉTODO R6 (que funcionou nos testes)
 - BUSCA DE ID DO CONDOMÍNIO DIRETAMENTE NO CRM
 - FALLBACK direto R6 caso a construção normal falhe
+- NOVA FUNÇÃO: enviar_cliente_para_ixc_com_verificacao() para integração sob demanda
+- CORREÇÃO: Nome do cliente agora é enviado sem numeração (timestamp removido)
 """
 import requests
 import re
@@ -847,19 +848,21 @@ def enviar_cliente_ixc_r6(payload: Dict, config: Dict) -> Tuple[bool, Optional[s
 
 
 # ============================================================================
-# 🔧 CONSTRUIR PAYLOAD ESTILO TESTE R6 (COM BUSCA NO CRM)
+# 🔧 CONSTRUIR PAYLOAD ESTILO TESTE R6 (COM BUSCA NO CRM) - CORRIGIDO
 # ============================================================================
 def construir_payload_estilo_r6(cliente_data: Dict, config: Dict) -> Tuple[Dict, bool]:
     """
     Constrói payload EXATAMENTE como no Teste 5 do R6.
     O id_condominio é BUSCADO na base de dados do CRM.
     
+    CORREÇÃO: O nome do cliente agora é enviado SEM numeração adicional.
+    
     Retorna: (payload, condominio_vinculado)
     """
     from datetime import datetime
     
     # Extrair dados do cliente
-    nome = str(cliente_data.get("nome_completo", "TESTE R6"))
+    nome = str(cliente_data.get("nome_completo", "TESTE R6")).strip()
     cpf_raw = "".join(filter(str.isdigit, str(cliente_data.get("cpf", ""))))
     celular = str(cliente_data.get("celular", "21999999999"))
     email = str(cliente_data.get("email", f"r6_{datetime.now().strftime('%H%M%S')}@tracecom.com.br"))
@@ -868,10 +871,6 @@ def construir_payload_estilo_r6(cliente_data: Dict, config: Dict) -> Tuple[Dict,
     cpf_formatado = fmt_cpf(cpf_raw)
     telefone_formatado = fmt_fone(celular)
     cep_formatado = fmt_cep(cliente_data.get("cep", "20521130"))
-    
-    # Data/hora para nome único
-    ts = datetime.now().strftime("%H%M%S")
-    nome_teste = f"{nome} {ts}"
     
     # ========== BUSCAR ID DO CONDOMÍNIO NO CRM ==========
     id_ixc_condominio, bloco, apto = buscar_id_condominio_no_crm(cliente_data)
@@ -885,10 +884,10 @@ def construir_payload_estilo_r6(cliente_data: Dict, config: Dict) -> Tuple[Dict,
         "filial_id": config.get("filial_id", "1"),
         "filtra_filial": "S",
         
-        # Dados pessoais
-        "razao": nome_teste,
-        "nome_social": nome_teste,
-        "fantasia": nome_teste,
+        # Dados pessoais - NOME SEM NUMERAÇÃO
+        "razao": nome,                        # ✅ CORRIGIDO
+        "nome_social": nome,                  # ✅ CORRIGIDO
+        "fantasia": nome,                     # ✅ CORRIGIDO
         "cnpj_cpf": cpf_formatado,
         "ie_identidade": "1234567",
         "data_nascimento": "1990-06-01",
@@ -964,7 +963,7 @@ def enviar_cliente_ixc_direto_r6(cliente_data: Dict, config: Dict) -> Tuple[bool
     try:
         # Extrair dados
         cpf_digits = "".join(re.sub(r'\D', '', str(cliente_data.get("cpf", ""))))
-        nome = str(cliente_data.get("nome_completo", "TESTE R6 FALLBACK"))
+        nome = str(cliente_data.get("nome_completo", "TESTE R6 FALLBACK")).strip()
         celular = str(cliente_data.get("celular", "21999999999"))
         email = str(cliente_data.get("email", f"fallback_{datetime.now().strftime('%H%M%S')}@tracecom.com.br"))
         
@@ -980,7 +979,7 @@ def enviar_cliente_ixc_direto_r6(cliente_data: Dict, config: Dict) -> Tuple[bool
             "filial_id": config.get("filial_id", "1"),
             "filtra_filial": "S",
             
-            # Dados pessoais
+            # Dados pessoais - NOME SEM NUMERAÇÃO
             "razao": nome,
             "nome_social": nome,
             "fantasia": nome,
@@ -1236,6 +1235,134 @@ def enviar_cliente_para_ixc(cliente_data: Dict) -> Tuple[bool, Optional[str], Op
         print(f"❌ Falha no fallback R6: {erro_msg}")
     
     return sucesso, id_ixc, erro_msg, condominio_vinculado
+
+
+# ============================================================================
+# 🔄 NOVA FUNÇÃO: INTEGRAÇÃO SOB DEMANDA (PARA EDITAR/COMPLETAR)
+# ============================================================================
+def enviar_cliente_para_ixc_com_verificacao(cliente_data: Dict, cliente_id, clientes_collection) -> Dict:
+    """
+    Verifica se o cliente existe no IXC e:
+    - Se existir: vincula o ID ao CRM
+    - Se não existir: cria no IXC
+    
+    Esta função é usada quando editamos um cadastro simples ou completamos
+    um cadastro que ainda não foi integrado.
+    
+    Retorna: {
+        "sucesso": bool,
+        "mensagem": str,
+        "id_ixc": Optional[str],
+        "acao": "vinculado" | "criado" | "ja_integrado" | "erro"
+    }
+    """
+    resultado = {
+        "sucesso": False,
+        "mensagem": "",
+        "id_ixc": None,
+        "acao": "erro"
+    }
+    
+    config = get_ixc_config()
+    if not config:
+        resultado["mensagem"] = "Configuração do IXC não encontrada"
+        return resultado
+    
+    # Verificar se cliente já está integrado
+    if cliente_data.get("integrado_ixc") and cliente_data.get("id_ixc"):
+        resultado["sucesso"] = True
+        resultado["mensagem"] = f"Cliente já está integrado ao IXC (ID: {cliente_data['id_ixc']})"
+        resultado["id_ixc"] = cliente_data["id_ixc"]
+        resultado["acao"] = "ja_integrado"
+        return resultado
+    
+    # Buscar CPF
+    cpf = cliente_data.get("cpf")
+    if not cpf:
+        resultado["mensagem"] = "CPF não informado"
+        return resultado
+    
+    cpf_digits = "".join(filter(str.isdigit, str(cpf)))
+    if len(cpf_digits) < 11:
+        resultado["mensagem"] = f"CPF inválido: '{cpf}'"
+        return resultado
+    
+    # Verificar se já existe no IXC
+    print(f"🔍 Verificando CPF {cpf_digits} no IXC...")
+    id_existente = buscar_cliente_ixc_por_cpf(cpf_digits, config)
+    
+    if id_existente:
+        # Cliente já existe - apenas vincular
+        print(f"✅ Cliente já existe no IXC com ID: {id_existente}")
+        try:
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$set": {
+                    "integrado_ixc": True,
+                    "id_ixc": id_existente,
+                    "data_integracao_ixc": datetime.now()
+                }}
+            )
+            resultado["sucesso"] = True
+            resultado["mensagem"] = f"Cliente vinculado ao IXC com sucesso! ID: {id_existente}"
+            resultado["id_ixc"] = id_existente
+            resultado["acao"] = "vinculado"
+            return resultado
+        except Exception as e:
+            resultado["mensagem"] = f"Erro ao vincular cliente: {str(e)}"
+            return resultado
+    
+    # Cliente não existe - tentar criar
+    print(f"🔄 Cliente não encontrado no IXC. Tentando criar...")
+    sucesso, id_ixc, erro_msg, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
+    
+    if sucesso:
+        try:
+            update_fields = {
+                "integrado_ixc": True,
+                "data_integracao_ixc": datetime.now()
+            }
+            if id_ixc and id_ixc not in ["ok", "existente"]:
+                update_fields["id_ixc"] = id_ixc
+            
+            # Registrar se o condomínio não foi vinculado
+            if condominio_vinculado is False:
+                update_fields["condominio_vinculado_ixc"] = False
+            
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$set": update_fields}
+            )
+            
+            resultado["sucesso"] = True
+            resultado["mensagem"] = f"Cliente integrado ao IXC com sucesso! ID: {id_ixc or 'ok'}"
+            resultado["id_ixc"] = id_ixc
+            resultado["acao"] = "criado"
+            
+            if condominio_vinculado is False:
+                resultado["mensagem"] += " ⚠️ Condomínio não vinculado - verifique manualmente."
+            
+            return resultado
+        except Exception as e:
+            resultado["mensagem"] = f"Cliente criado no IXC mas erro ao atualizar CRM: {str(e)}"
+            resultado["id_ixc"] = id_ixc
+            return resultado
+    else:
+        # Falha na criação
+        resultado["mensagem"] = f"Falha ao criar cliente no IXC: {erro_msg or 'Erro desconhecido'}"
+        # Registrar tentativa
+        try:
+            clientes_collection.update_one(
+                {"_id": cliente_id},
+                {"$set": {
+                    "integrado_ixc": False,
+                    "erro_integracao_ixc": erro_msg,
+                    "ultima_tentativa_integracao": datetime.now()
+                }}
+            )
+        except:
+            pass
+        return resultado
 
 
 # ============================================================================
