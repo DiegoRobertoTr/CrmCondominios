@@ -1,0 +1,134 @@
+TERMO DE ADESÃO - CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE COMUNICAÇÃO MULTIMÍDIA - SCM E SERVIÇOS DE VALOR ADICIONADO - SVA
+
+As partes abaixo mencionadas, especialmente o CONTRATANTE, tiveram total acesso ao CONTRATO DE PRESTAÇÃO DE SCM - SERVIÇOS DE COMUNICAÇÃO MULTIMÍDIA e ao CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, que estão disponibilizados no site da CONTRATADA ({{ site_empresa }}), CONCORDANDO ambas as partes com todos os termos desses contratos, suas cláusulas e condições.
+
+---
+
+**QUALIFICAÇÃO DA CONTRATADA**
+
+Razão Social: {{ razao_social }}
+CNPJ: {{ cnpj_empresa }}
+Endereço: {{ endereco_empresa }}, {{ numero_empresa }}
+Bairro: {{ bairro_empresa }}
+Cidade: {{ cidade_empresa }} - {{ estado_empresa }}
+CEP: {{ cep_empresa }}
+Telefone: {{ telefone_empresa }}
+E-mail: {{ email_empresa }}
+Site: {{ site_empresa }}
+Autorização ANATEL: {{ anatel_autorizacao }}
+
+---
+
+**QUALIFICAÇÃO DO CONTRATANTE**
+
+Nome: {{ nome_completo }}
+CPF: {{ cpf }}
+RG: {{ rg or 'Não informado' }}
+Data de Nascimento: {{ data_nascimento or 'Não informado' }}
+Telefone: {{ celular }}
+E-mail: {{ email or 'Não informado' }}
+
+**ENDEREÇO DE INSTALAÇÃO**
+
+Endereço: {{ endereco }}, {{ numero }}
+{% if complemento %}Complemento: {{ complemento }}{% endif %}
+{% if condominio_nome %}Condomínio: {{ condominio_nome }}{% endif %}
+{% if bloco %}Bloco: {{ bloco }}{% endif %}
+{% if apartamento %}Apartamento: {{ apartamento }}{% endif %}
+Bairro: {{ bairro }}
+Cidade: {{ cidade }}
+CEP: {{ cep or 'Não informado' }}
+Ponto de Referência: {{ ponto_referencia or 'Não informado' }}
+
+---
+
+**DADOS DO PLANO SCM CONTRATADO**
+
+Plano Contratado: {{ plano_escolhido }}
+Tecnologia: {{ tecnologia or 'Fibra Óptica' }}
+Prazo para Instalação: {{ prazo_instalacao or '10' }} dias úteis
+Vigência Contratual: {{ vigencia_contratual or '12' }} meses
+
+---
+
+**VALORES SCM**
+
+Mensalidade: R$ {{ valor_mensal }}
+Instalação: R$ {{ valor_instalacao or '0,00' }}
+Vencimento: Dia {{ data_vencimento }} de cada mês
+Forma de Pagamento: {{ forma_pagamento or 'Boleto Bancário' }}
+Juros Moratórios: 1% ao mês
+Multa por Atraso: 2%
+Reajuste Anual: {{ indice_correcao or 'IPCA' }}
+
+---
+
+**SERVIÇOS DE VALOR ADICIONADO (SVA)**
+
+O CONTRATANTE declara ciência de que Serviços de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
+
+Todos os detalhes, regras e condições dos SVA estão disponíveis no CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, disponível no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
+
+---
+
+**EQUIPAMENTOS DISPONIBILIZADOS EM COMODATO**
+
+Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
+Modelo: {{ equipamento_modelo }}
+Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação, cabo Ethernet' }}
+
+O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolvê-lo(s) no final do contrato nas condições em que lhe foram entregues, salvo desgaste natural.
+
+---
+
+**CONTRATO DE PERMANÊNCIA / FIDELIDADE**
+
+O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANÊNCIA / TERMO DE FIDELIDADE e:
+
+{% if optou_fidelidade %}
+( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA (12 meses)
+(   ) NÃO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA
+{% else %}
+(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA (12 meses)
+( X ) NÃO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA
+{% endif %}
+
+---
+
+**OBSERVAÇÕES**
+
+- A Contratada terá o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a análise de viabilidade técnica. Caso constatada a inviabilidade técnica, o contrato será cancelado automaticamente sem qualquer ônus para ambas as partes.
+- O Contratante declara ter conhecimento que a medição da banda contratada através de aparelhos WI-FI pode variar, e que o correto é medir por meio de equipamentos via cabo.
+- O Contratante está ciente dos motivos que podem culminar na degradação dos serviços, conforme previsto nos contratos disponíveis no site.
+
+---
+
+**DECLARAÇÃO DE CONCORDÂNCIA DO CONTRATANTE**
+
+Declaro, para os devidos fins, que são corretos os dados cadastrais e informações por mim prestadas neste instrumento.
+
+Declaro estar ciente que a assinatura deste instrumento representa expressa concordância aos termos e condições dos CONTRATOS DE PRESTAÇÃO DE SCM E SVA, disponíveis no site da Contratada.
+
+Declaro que tive prévio acesso a todas as informações relativas aos contratos mencionados, bem como ao plano de serviço por mim ora contratado.
+
+---
+
+**ASSINATURA**
+
+{{ cidade }}/{{ estado_empresa }}, {{ data_assinatura }}.
+
+**Contratada:** {{ razao_social }}
+________________________________
+Assinatura / Carimbo
+
+**Contratante:** {{ nome_completo }}
+________________________________
+Assinatura
+
+**Testemunha 1**
+Nome: _________________________
+CPF: __________________________
+
+**Testemunha 2**
+Nome: _________________________
+CPF: __________________________
