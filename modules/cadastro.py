@@ -1,11 +1,15 @@
 """
-cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM CORREÇÃO DO CONDOMÍNIO E INTEGRAÇÃO IXC)
+cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM TERMO DE ADESÃO)
 Correções aplicadas:
 - Obtenção correta do condominio_id_ixc antes de salvar
 - Logs detalhados para debug do condomínio
 - Integração correta com integracao_ixc.py atualizado
 - Tratamento adequado de erros
 - Botão de integração com IXC para edição/completar cadastro
+- NOVO: Termo de Adesão substituindo contrato tradicional
+- NOVO: Checkbox de fidelidade (12 meses)
+- NOVO: Multiselect de SVA (opcional)
+- NOVO: Valor mensal auto-preenchido do plano
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -16,10 +20,49 @@ import string
 import streamlit.components.v1 as components
 from urllib.parse import quote
 from .utils import normalize_phone, validar_cpf, get_followup_date
-from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, MODELOS_ROTEADORES, PLANOS
+from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, gerar_pdf_termo_adesao, MODELOS_ROTEADORES, PLANOS
 from pymongo.errors import DuplicateKeyError
 import copy
 from typing import Dict, Optional, Any
+
+
+# ============================================================================
+# CONSTANTES PARA SVA
+# ============================================================================
+SVA_OPCOES = [
+    "Globoplay (Básico com anúncio): R$ 20,00",
+    "Globoplay Premium: R$ 39,99",
+    "HBO Max (com anúncio): R$ 29,99",
+    "HBO Max (sem anúncio): R$ 39,99",
+    "Disney+ (com anúncio): R$ 29,99",
+    "Disney+ (sem anúncio): R$ 39,99",
+    "Disney+ Premium: R$ 59,99",
+    "Amazon Prime: R$ 20,00",
+    "Apple TV: R$ 20,00",
+    "Telecine: R$ 29,99",
+    "Premiere: R$ 49,99",
+    "Tracecanais",
+    "Telemedicina",
+    "Telefonia VoIP",
+    "Antivírus",
+    "Câmeras de Segurança",
+    "HOME ASSIST",
+    "Assistência Premium",
+    "Livros Digitais",
+    "Cartão de Vantagens",
+    "Plataforma EAD"
+]
+
+
+# ============================================================================
+# FUNÇÃO AUXILIAR PARA EXTRAIR VALOR DO PLANO
+# ============================================================================
+def extrair_valor_plano(plano_nome):
+    """Extrai o valor do nome do plano"""
+    if not plano_nome or plano_nome == "Selecione...":
+        return "0,00"
+    match = re.search(r'([0-9]+,[0-9]{2})', plano_nome)
+    return match.group(1) if match else "0,00"
 
 
 # ============================================================================
@@ -966,6 +1009,49 @@ def expander_visualizar_editar(cliente, clientes_collection):
             plano_atual = cliente.get("plano_escolhido")
             index_plano = (PLANOS.index(plano_atual) + 1) if plano_atual in PLANOS else 0
             plano_escolhido = st.selectbox("Plano escolhido*", ["Selecione..."] + PLANOS, index=index_plano, key="plano_escolhido_editar")
+
+            # ========== 🎬 SERVIÇOS DE VALOR ADICIONADO (SVA) ==========
+            st.markdown("### 🎬 Serviços de Valor Adicionado (SVA)")
+            
+            sva_selecionados = st.multiselect(
+                "Selecione os SVA inclusos no plano (opcional - para referência)",
+                options=SVA_OPCOES,
+                default=cliente.get("sva_selecionados", []),
+                key=f"sva_selecionados_editar",
+                help="Selecione todos os SVA que o cliente contratou. Os valores já estão embutidos no plano."
+            )
+            
+            # Mostrar resumo dos SVA selecionados
+            if sva_selecionados:
+                st.info(f"📌 **SVA selecionados:** {len(sva_selecionados)} serviço(s)")
+                for sva in sva_selecionados:
+                    st.caption(f"• {sva}")
+
+            # ========== 💰 VALOR MENSAL (AUTO-PREENCHIDO) ==========
+            valor_mensal = st.text_input(
+                "Valor Mensal (R$)*",
+                value=extrair_valor_plano(plano_escolhido),
+                key="valor_mensal_editar",
+                disabled=True,
+                help="Valor extraído automaticamente do plano selecionado"
+            )
+
+            # ========== 🔒 CONTRATO DE PERMANÊNCIA (FIDELIDADE) ==========
+            st.markdown("### 🔒 Contrato de Permanência (Fidelidade)")
+            
+            optou_fidelidade = st.radio(
+                "Deseja contratar com fidelidade de 12 meses?",
+                options=["Sim", "Não"],
+                index=0 if cliente.get("optou_fidelidade", True) else 1,
+                key="optou_fidelidade_editar",
+                help="Planos com fidelidade podem ter descontos especiais. A multa por rescisão antecipada é de até 30% sobre o valor das parcelas vincendas.",
+                horizontal=True
+            )
+            
+            if optou_fidelidade == "Sim":
+                st.success("✅ Cliente optou pela fidelidade de 12 meses")
+            else:
+                st.info("ℹ️ Cliente optou por NÃO ter fidelidade")
             
             profissao = st.text_input("Profissão*", max_chars=50, value=cliente.get("profissao", ""), key="profissao_editar")
             
@@ -994,33 +1080,48 @@ def expander_visualizar_editar(cliente, clientes_collection):
             
             col1, col2 = st.columns(2)
             with col1:
-                if st.session_state.get("gerando_contrato_visualizar"):
-                    st.form_submit_button("⏳ Gerando contrato...", disabled=True)
-                elif st.session_state.get("contrato_pronto_visualizar"):
-                    if st.form_submit_button("📥 Baixar Contrato Gerado", type="secondary"):
+                if st.session_state.get("gerando_termo_visualizar"):
+                    st.form_submit_button("⏳ Gerando termo...", disabled=True)
+                elif st.session_state.get("termo_pronto_visualizar"):
+                    if st.form_submit_button("📥 Baixar Termo Gerado", type="secondary"):
                         pass
                 else:
-                    if st.form_submit_button("✍️ Gerar Contrato", type="secondary"):
+                    if st.form_submit_button("📄 Gerar Termo de Adesão", type="secondary"):
                         cpf_valido = limpar_cpf(cpf)
                         if not cpf_valido:
                             st.error("❌ CPF inválido!")
                         elif not all([nome_completo, cpf_valido, endereco, celular, plano_escolhido != "Selecione..."]):
-                            st.error("❌ Preencha todos os campos obrigatórios para gerar contrato!")
+                            st.error("❌ Preencha todos os campos obrigatórios para gerar o termo!")
                         else:
-                            st.session_state["dados_temp_contrato_visualizar"] = {
-                                "nome_contratante": nome_completo,
-                                "cpf_cnpj_contratante": cpf_valido,
-                                "endereco_contratante": endereco,
-                                "numero_contratante": numero,
+                            st.session_state["dados_temp_termo_visualizar"] = {
+                                "nome_completo": nome_completo,
+                                "cpf": cpf_valido,
+                                "rg": rg,
+                                "data_nascimento": data_nascimento.strftime("%d/%m/%Y") if data_nascimento else "",
+                                "celular": celular,
+                                "email": email,
+                                "endereco": endereco,
+                                "numero": numero,
                                 "complemento": complemento,
-                                "cidade": cidade,
                                 "bairro": bairro,
-                                "telefone_contratante": celular,
-                                "plano_contratado": plano_escolhido,
-                                "modalidade": "Pós Pago"
+                                "cidade": cidade,
+                                "cep": cep,
+                                "ponto_referencia": ponto_referencia,
+                                "condominio_nome": safe_session_state_get(f"condominio_nome_{key_suffix}", ""),
+                                "bloco": bloco,
+                                "apartamento": apartamento,
+                                "plano_escolhido": plano_escolhido,
+                                "valor_mensal": valor_mensal,
+                                "data_vencimento": str(data_vencimento),
+                                "optou_fidelidade": optou_fidelidade == "Sim",
+                                "equipamento_descricao": equip_desc,
+                                "equipamento_modelo": equip_modelo,
+                                "equipamento_acessorios": equip_acessorios,
+                                "sva_selecionados": sva_selecionados,
+                                "valor_instalacao": "0,00",
                             }
-                            st.session_state["gerando_contrato_visualizar"] = True
-                            st.session_state["nome_arquivo_contrato_visualizar"] = f"Contrato_{nome_completo.replace(' ', '_')}.pdf"
+                            st.session_state["gerando_termo_visualizar"] = True
+                            st.session_state["nome_arquivo_termo_visualizar"] = f"Termo_Adesao_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
             
             with col2:
@@ -1049,7 +1150,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                 "equipamento_descricao": equip_desc,
                                 "equipamento_modelo": equip_modelo,
                                 "equipamento_codigo": equip_codigo,
-                                "equipamento_acessorios": equip_acessorios
+                                "equipamento_acessorios": equip_acessorios,
+                                "condominio_nome": safe_session_state_get(f"condominio_nome_{key_suffix}", ""),
+                                "bloco": bloco if bloco else "",
+                                "apartamento": apartamento if apartamento else ""
                             }
                             st.session_state["gerando_comodato_visualizar"] = True
                             st.session_state["nome_arquivo_comodato_visualizar"] = f"Termo_Comodato_{nome_completo.replace(' ', '_')}.pdf"
@@ -1181,6 +1285,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "bloco": bloco if bloco else None,
                             "apartamento": apartamento if apartamento else None,
                             "produtos_interesse": produtos_interesse if produtos_interesse else [],
+                            "valor_mensal": valor_mensal,
+                            "optou_fidelidade": optou_fidelidade == "Sim",
+                            "sva_selecionados": sva_selecionados if sva_selecionados else [],
                         }
                         
                         if foto_documento:
@@ -1291,6 +1398,12 @@ def render_cadastro(clientes_collection):
     
     if "comodato_pronto_principal" not in st.session_state:
         st.session_state["comodato_pronto_principal"] = False
+
+    if "gerando_termo_principal" not in st.session_state:
+        st.session_state["gerando_termo_principal"] = False
+    
+    if "termo_pronto_principal" not in st.session_state:
+        st.session_state["termo_pronto_principal"] = False
     
     if "ignorar_bloqueio" not in st.session_state:
         st.session_state["ignorar_bloqueio"] = False
@@ -1965,6 +2078,49 @@ def render_cadastro(clientes_collection):
                     index=index_plano,
                     key=f"plano_escolhido_{st.session_state['form_key']}"
                 )
+
+                # ========== 🎬 SERVIÇOS DE VALOR ADICIONADO (SVA) ==========
+                st.markdown("### 🎬 Serviços de Valor Adicionado (SVA)")
+                
+                sva_selecionados = st.multiselect(
+                    "Selecione os SVA inclusos no plano (opcional - para referência)",
+                    options=SVA_OPCOES,
+                    default=[],
+                    key=f"sva_selecionados_{st.session_state['form_key']}",
+                    help="Selecione todos os SVA que o cliente contratou. Os valores já estão embutidos no plano."
+                )
+                
+                # Mostrar resumo dos SVA selecionados
+                if sva_selecionados:
+                    st.info(f"📌 **SVA selecionados:** {len(sva_selecionados)} serviço(s)")
+                    for sva in sva_selecionados:
+                        st.caption(f"• {sva}")
+
+                # ========== 💰 VALOR MENSAL (AUTO-PREENCHIDO) ==========
+                valor_mensal = st.text_input(
+                    "Valor Mensal (R$)*",
+                    value=extrair_valor_plano(plano_escolhido),
+                    key=f"valor_mensal_{st.session_state['form_key']}",
+                    disabled=True,
+                    help="Valor extraído automaticamente do plano selecionado"
+                )
+
+                # ========== 🔒 CONTRATO DE PERMANÊNCIA (FIDELIDADE) ==========
+                st.markdown("### 🔒 Contrato de Permanência (Fidelidade)")
+                
+                optou_fidelidade = st.radio(
+                    "Deseja contratar com fidelidade de 12 meses?",
+                    options=["Sim", "Não"],
+                    index=0,  # "Sim" como padrão
+                    key=f"optou_fidelidade_{st.session_state['form_key']}",
+                    help="Planos com fidelidade podem ter descontos especiais. A multa por rescisão antecipada é de até 30% sobre o valor das parcelas vincendas.",
+                    horizontal=True
+                )
+                
+                if optou_fidelidade == "Sim":
+                    st.success("✅ Cliente optou pela fidelidade de 12 meses")
+                else:
+                    st.info("ℹ️ Cliente optou por NÃO ter fidelidade")
                 
                 profissao = st.text_input(
                     "Profissão*",
@@ -2030,6 +2186,9 @@ def render_cadastro(clientes_collection):
                 tipo_moradia = ""
                 tempo_moradia_valor = 0
                 tempo_moradia_unidade = "Anos"
+                valor_mensal = "0,00"
+                optou_fidelidade = "Sim"
+                sva_selecionados = []
                 
                 bloco_valor = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
                 bloco = bloco_valor if bloco_valor else ""
@@ -2040,36 +2199,48 @@ def render_cadastro(clientes_collection):
             # ================== BOTÕES DE GERAÇÃO DE DOCUMENTOS ==================
             col1, col2 = st.columns(2)
             with col1:
-                if st.session_state["gerando_contrato_principal"]:
-                    st.form_submit_button("⏳ Gerando contrato...", disabled=True)
-                elif st.session_state["contrato_pronto_principal"]:
-                    if st.form_submit_button("📥 Baixar Contrato Gerado", type="secondary"):
+                if st.session_state["gerando_termo_principal"]:
+                    st.form_submit_button("⏳ Gerando termo...", disabled=True)
+                elif st.session_state["termo_pronto_principal"]:
+                    if st.form_submit_button("📥 Baixar Termo Gerado", type="secondary"):
                         pass
                 else:
-                    if st.form_submit_button("✍️ Gerar Contrato", type="secondary"):
+                    if st.form_submit_button("📄 Gerar Termo de Adesão", type="secondary"):
                         cpf_valido = limpar_cpf(cpf)
                         if not cpf_valido:
                             st.error("❌ CPF inválido!")
                         elif not all([nome_completo, cpf_valido, endereco, celular_principal, plano_escolhido != "Selecione..."]):
-                            st.error("❌ Preencha todos os campos obrigatórios para gerar contrato!")
+                            st.error("❌ Preencha todos os campos obrigatórios para gerar o termo!")
                         else:
-                            st.session_state["dados_temp_contrato_principal"] = {
-                                "nome_contratante": nome_completo,
-                                "cpf_cnpj_contratante": cpf_valido,
-                                "endereco_contratante": endereco,
-                                "numero_contratante": numero,
+                            st.session_state["dados_temp_termo_principal"] = {
+                                "nome_completo": nome_completo,
+                                "cpf": cpf_valido,
+                                "rg": rg,
+                                "data_nascimento": data_nascimento.strftime("%d/%m/%Y") if data_nascimento else "",
+                                "celular": celular_principal,
+                                "email": email,
+                                "endereco": endereco,
+                                "numero": numero,
                                 "complemento": complemento,
-                                "cidade": cidade,
                                 "bairro": bairro,
-                                "telefone_contratante": celular_principal,
-                                "plano_contratado": plano_escolhido,
-                                "modalidade": "Pós Pago",
+                                "cidade": cidade,
+                                "cep": cep,
+                                "ponto_referencia": ponto_referencia,
                                 "condominio_nome": safe_session_state_get(f"condominio_nome_{st.session_state['form_key']}", ""),
                                 "bloco": bloco if bloco else "",
-                                "apartamento": apartamento if apartamento else ""
+                                "apartamento": apartamento if apartamento else "",
+                                "plano_escolhido": plano_escolhido,
+                                "valor_mensal": valor_mensal,
+                                "data_vencimento": str(data_vencimento),
+                                "optou_fidelidade": optou_fidelidade == "Sim",
+                                "equipamento_descricao": equip_desc,
+                                "equipamento_modelo": equip_modelo,
+                                "equipamento_acessorios": equip_acessorios,
+                                "sva_selecionados": sva_selecionados,
+                                "valor_instalacao": "0,00",
                             }
-                            st.session_state["gerando_contrato_principal"] = True
-                            st.session_state["nome_arquivo_contrato_principal"] = f"Contrato_{nome_completo.replace(' ', '_')}.pdf"
+                            st.session_state["gerando_termo_principal"] = True
+                            st.session_state["nome_arquivo_termo_principal"] = f"Termo_Adesao_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
             
             with col2:
@@ -2397,6 +2568,10 @@ def render_cadastro(clientes_collection):
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         "integrado_ixc": False,
                         "tentativas_integracao": 0,
+                        # NOVOS CAMPOS
+                        "valor_mensal": valor_mensal if tipo_cadastro == "Cadastro CRM" else "0,00",
+                        "optou_fidelidade": optou_fidelidade == "Sim" if tipo_cadastro == "Cadastro CRM" else False,
+                        "sva_selecionados": sva_selecionados if tipo_cadastro == "Cadastro CRM" else [],
                     }
                     
                     # ========== 🚀 SALVAR NO MONGODB ==========
@@ -2554,16 +2729,23 @@ def render_cadastro(clientes_collection):
             else:
                 st.warning("⚠️ Nenhum cliente encontrado com esse nome ou telefone.")
     
-    # Gerar PDFs
-    for tipo in ["contrato", "comodato"]:
+    # Gerar PDFs - ADICIONAR O TERMO DE ADESÃO
+    for tipo in ["contrato", "comodato", "termo"]:
         for contexto in ["principal", "visualizar", "completar"]:
             estado_gerando = f"gerando_{tipo}_{contexto}"
             dados_temp = f"dados_temp_{tipo}_{contexto}"
             nome_arquivo = f"nome_arquivo_{tipo}_{contexto}"
             
             if st.session_state.get(estado_gerando) and dados_temp in st.session_state:
-                with st.spinner(f"📝 Gerando seu {'contrato' if tipo == 'contrato' else 'termo de comodato'}..."):
-                    func_gerar = gerar_pdf_contrato if tipo == "contrato" else gerar_pdf_comodato
+                with st.spinner(f"📝 Gerando seu documento..."):
+                    # Função correta para cada tipo
+                    if tipo == "contrato":
+                        func_gerar = gerar_pdf_contrato
+                    elif tipo == "termo":
+                        func_gerar = gerar_pdf_termo_adesao
+                    else:
+                        func_gerar = gerar_pdf_comodato
+                    
                     pdf_bytes = func_gerar(st.session_state[dados_temp])
                     
                     if pdf_bytes:
@@ -2577,13 +2759,30 @@ def render_cadastro(clientes_collection):
                         
                         st.rerun()
                     else:
-                        st.error(f"❌ Falha ao gerar o {'contrato' if tipo == 'contrato' else 'termo de comodato'}.")
+                        st.error(f"❌ Falha ao gerar o documento.")
                         if estado_gerando in st.session_state:
                             del st.session_state[estado_gerando]
                         if dados_temp in st.session_state:
                             del st.session_state[dados_temp]
                         if nome_arquivo in st.session_state:
                             del st.session_state[nome_arquivo]
+    
+    # Download do Termo de Adesão
+    if "termo_pdf_bytes" in st.session_state and "termo_nome" in st.session_state:
+        st.download_button(
+            label="📄 Baixar Termo de Adesão",
+            data=st.session_state["termo_pdf_bytes"],
+            file_name=st.session_state["termo_nome"],
+            mime="application/pdf",
+            key="download_termo_global_unica_key"
+        )
+        
+        if st.button("🗑️ Limpar Termo", key="limpar_termo_global"):
+            del st.session_state["termo_pdf_bytes"]
+            del st.session_state["termo_nome"]
+            for key in ["termo_pronto_principal", "termo_pronto_visualizar", "termo_pronto_completar"]:
+                if key in st.session_state:
+                    del st.session_state[key]
     
     if "contrato_pdf_bytes" in st.session_state and "contrato_nome" in st.session_state:
         st.download_button(
@@ -2628,20 +2827,27 @@ def render_cadastro(clientes_collection):
                 "followup_opcao", "mes", "ano", "retorno_agendado",
                 "contrato_pdf_bytes", "contrato_nome",
                 "comodato_pdf_bytes", "comodato_nome",
+                "termo_pdf_bytes", "termo_nome",
                 "mostrar_completar", "mostrar_visualizar", "cliente_selecionado",
                 "mensagem_confirmacao_novo", "mensagem_confirmacao_completar", "mensagem_confirmacao_visualizar",
                 "gerando_contrato_principal", "contrato_pronto_principal",
                 "gerando_comodato_principal", "comodato_pronto_principal",
+                "gerando_termo_principal", "termo_pronto_principal",
                 "gerando_contrato_visualizar", "contrato_pronto_visualizar",
                 "gerando_comodato_visualizar", "comodato_pronto_visualizar",
+                "gerando_termo_visualizar", "termo_pronto_visualizar",
                 "gerando_contrato_completar", "contrato_pronto_completar",
                 "gerando_comodato_completar", "comodato_pronto_completar",
+                "gerando_termo_completar", "termo_pronto_completar",
                 "dados_temp_contrato_principal", "nome_arquivo_contrato_principal",
                 "dados_temp_comodato_principal", "nome_arquivo_comodato_principal",
+                "dados_temp_termo_principal", "nome_arquivo_termo_principal",
                 "dados_temp_contrato_visualizar", "nome_arquivo_contrato_visualizar",
                 "dados_temp_comodato_visualizar", "nome_arquivo_comodato_visualizar",
+                "dados_temp_termo_visualizar", "nome_arquivo_termo_visualizar",
                 "dados_temp_contrato_completar", "nome_arquivo_contrato_completar",
                 "dados_temp_comodato_completar", "nome_arquivo_comodato_completar",
+                "dados_temp_termo_completar", "nome_arquivo_termo_completar",
                 "dados_temp_bloqueio", "ignorar_bloqueio", "endereco_bloqueado_confirmado",
                 "confirmar_ixc_existente"
             ]
