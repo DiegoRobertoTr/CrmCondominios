@@ -10,7 +10,7 @@ from datetime import datetime
 # CONSTANTES DA EMPRESA
 # ============================================================================
 DADOS_EMPRESA = {
-    "razao_social": "Tracecom Soluções em Ti Infraestrutura e Telecomunicações Ltda.",
+    "razao_social": "Tracecom Solucoes em Ti Infraestrutura e Telecomunicacoes Ltda.",
     "cnpj_empresa": "09.637.271/0001-27",
     "endereco_empresa": "Rua da Empresa",
     "numero_empresa": "100",
@@ -21,17 +21,17 @@ DADOS_EMPRESA = {
     "telefone_empresa": "(24) 9XXXX-XXXX",
     "email_empresa": "contato@tracecom.com.br",
     "site_empresa": "www.tracecom.com.br",
-    "anatel_autorizacao": "Ato nº. 123456/2023",
-    "forma_pagamento": "Boleto Bancário",
+    "anatel_autorizacao": "Ato no. 123456/2023",
+    "forma_pagamento": "Boleto Bancario",
     "indice_correcao": "IPCA",
-    "tecnologia": "Fibra Óptica",
+    "tecnologia": "Fibra Optica",
     "prazo_instalacao": "10",
     "vigencia_contratual": "12",
     "prazo_viabilidade": "10",
 }
 
 # ============================================================================
-# LISTAS ESTÁTICAS
+# LISTAS ESTATICAS
 # ============================================================================
 MODELOS_ROTEADORES = [
     "Tp Link Ax3000 Xx530v Wifi 6 Mesh Dual Band Bivolt",
@@ -55,7 +55,7 @@ PLANOS = [
     "600MB+Trace Canais Novo: 99,99",
     "800MB+Trace Canais Novo: 99,99",
     "800MB+Canais: 69,99",
-    "800MB+TraceCanais Básico + 1 Streaming à escolha: 99,99",
+    "800MB+TraceCanais Basico + 1 Streaming a escolha: 99,99",
     "600MB+1 APP PREMIUM: 99,99",
     "600MB+Canais+Disney: 109,99",
     "600MB+Canais+Globoplay: 124,99",
@@ -115,7 +115,7 @@ PLANOS = [
 ]
 
 # ============================================================================
-# FUNÇÃO PARA EXTRAIR VALOR DO PLANO (CORRIGIDA)
+# FUNCAO PARA EXTRAIR VALOR DO PLANO (CORRIGIDA)
 # ============================================================================
 def extrair_valor_do_plano(plano_nome):
     """
@@ -127,12 +127,12 @@ def extrair_valor_do_plano(plano_nome):
     if not plano_nome or plano_nome == "Selecione...":
         return "0,00"
     
-    # Busca padrão: número com vírgula após ":" ou "R$"
+    # Busca padrao: numero com virgula apos ":" ou "R$"
     match = re.search(r'(?:R?\$?\s*|:\s*)([0-9]+,[0-9]{2})', plano_nome)
     if match:
         return match.group(1)
     
-    # Fallback: busca qualquer número com vírgula no texto
+    # Fallback: busca qualquer numero com virgula no texto
     match = re.search(r'([0-9]+,[0-9]{2})', plano_nome)
     if match:
         return match.group(1)
@@ -140,7 +140,7 @@ def extrair_valor_do_plano(plano_nome):
     return "0,00"
 
 # ============================================================================
-# FUNÇÕES PARA CARREGAR TEMPLATES
+# FUNCOES PARA CARREGAR TEMPLATES
 # ============================================================================
 def load_template(filename):
     """Carrega um template de arquivo externo"""
@@ -149,7 +149,7 @@ def load_template(filename):
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
     else:
-        st.error(f"❌ Template '{filename}' não encontrado em /templates/")
+        st.error(f"Template '{filename}' nao encontrado em /templates/")
         return ""
 
 # Carrega templates de arquivos externos
@@ -157,82 +157,82 @@ CONTRATO_TEMPLATE = load_template("contrato.txt")
 TERMO_COMODATO_TEMPLATE = load_template("comodato.txt")
 TERMO_ADESAO_TEMPLATE = load_template("termo_adesao.txt")
 
-# Fallback: se o arquivo não existir, usa o template embutido
+# Fallback: se o arquivo nao existir, usa o template embutido com caracteres simples
 if not TERMO_ADESAO_TEMPLATE:
-    TERMO_ADESAO_TEMPLATE = """TERMO DE ADESÃO - CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE COMUNICAÇÃO MULTIMÍDIA - SCM E SERVIÇOS DE VALOR ADICIONADO - SVA
+    TERMO_ADESAO_TEMPLATE = """TERMO DE ADESAO - CONTRATO DE PRESTACAO DE SERVICOS DE COMUNICACAO MULTIMIDIA - SCM E SERVICOS DE VALOR ADICIONADO - SVA
 
-As partes abaixo mencionadas, especialmente o CONTRATANTE, tiveram total acesso ao CONTRATO DE PRESTAÇÃO DE SCM - SERVIÇOS DE COMUNICAÇÃO MULTIMÍDIA e ao CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, que estão disponibilizados no site da CONTRATADA ({{ site_empresa }}), CONCORDANDO ambas as partes com todos os termos desses contratos, suas cláusulas e condições.
+As partes abaixo mencionadas, especialmente o CONTRATANTE, tiveram total acesso ao CONTRATO DE PRESTACAO DE SCM - SERVICOS DE COMUNICACAO MULTIMIDIA e ao CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, que estao disponibilizados no site da CONTRATADA ({{ site_empresa }}), CONCORDANDO ambas as partes com todos os termos desses contratos, suas clausulas e condicoes.
 
 ================================================================================
-                              1. QUALIFICAÇÃO DAS PARTES
+                              1. QUALIFICACAO DAS PARTES
 ================================================================================
 
 CONTRATADA:
-Razão Social: {{ razao_social }}
+Razao Social: {{ razao_social }}
 CNPJ: {{ cnpj_empresa }}
-Endereço: {{ endereco_empresa }}, {{ numero_empresa }} - {{ bairro_empresa }}
+Endereco: {{ endereco_empresa }}, {{ numero_empresa }} - {{ bairro_empresa }}
 Cidade: {{ cidade_empresa }} - {{ estado_empresa }} | CEP: {{ cep_empresa }}
 Telefone: {{ telefone_empresa }} | E-mail: {{ email_empresa }}
 Site: {{ site_empresa }}
-Autorização ANATEL: {{ anatel_autorizacao }}
+Autorizacao ANATEL: {{ anatel_autorizacao }}
 
 CONTRATANTE:
 Nome: {{ nome_completo }}
 CPF: {{ cpf }}
-RG: {{ rg or 'Não informado' }}
-Data de Nascimento: {{ data_nascimento or 'Não informado' }}
+RG: {{ rg or 'Nao informado' }}
+Data de Nascimento: {{ data_nascimento or 'Nao informado' }}
 Telefone: {{ celular }}
-E-mail: {{ email or 'Não informado' }}
+E-mail: {{ email or 'Nao informado' }}
 
-ENDEREÇO DE INSTALAÇÃO:
+ENDERECO DE INSTALACAO:
 {{ endereco }}, {{ numero }}
 {% if complemento %}Complemento: {{ complemento }}{% endif %}
-{% if condominio_nome %}Condomínio: {{ condominio_nome }}{% endif %}
+{% if condominio_nome %}Condominio: {{ condominio_nome }}{% endif %}
 {% if bloco %}Bloco: {{ bloco }}{% endif %}
 {% if apartamento %}Apartamento: {{ apartamento }}{% endif %}
 Bairro: {{ bairro }} | Cidade: {{ cidade }}
-CEP: {{ cep or 'Não informado' }}
-Ponto de Referência: {{ ponto_referencia or 'Não informado' }}
+CEP: {{ cep or 'Nao informado' }}
+Ponto de Referencia: {{ ponto_referencia or 'Nao informado' }}
 
 ================================================================================
                               2. DO OBJETO E PLANO CONTRATADO
 ================================================================================
 
-O presente contrato tem como objeto a prestação, pela CONTRATADA, do Serviço de Comunicação Multimídia (SCM) - Internet, conforme plano detalhado abaixo:
+O presente contrato tem como objeto a prestacao, pela CONTRATADA, do Servico de Comunicacao Multimidia (SCM) - Internet, conforme plano detalhado abaixo:
 
 PLANO CONTRATADO:
 {{ plano_escolhido }}
 
-CARACTERÍSTICAS TÉCNICAS:
-- Tecnologia: {{ tecnologia or 'Fibra Óptica' }}
-- Prazo para Instalação: {{ prazo_instalacao or '10' }} dias úteis
-- Vigência Contratual: {{ vigencia_contratual or '12' }} meses
+CARACTERISTICAS TECNICAS:
+- Tecnologia: {{ tecnologia or 'Fibra Optica' }}
+- Prazo para Instalacao: {{ prazo_instalacao or '10' }} dias uteis
+- Vigencia Contratual: {{ vigencia_contratual or '12' }} meses
 
 ================================================================================
-                              3. VALORES E CONDIÇÕES DE PAGAMENTO
+                              3. VALORES E CONDICOES DE PAGAMENTO
 ================================================================================
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ DESCRIÇÃO              │ VALOR (R$)                                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ Mensalidade            │ {{ valor_mensal }}                                │
-│ Taxa de Instalação     │ {{ valor_instalacao or '0,00' }}                  │
-│ Vencimento             │ Dia {{ data_vencimento }} de cada mês             │
-│ Forma de Pagamento     │ {{ forma_pagamento or 'Boleto Bancário' }}        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ JUROS E MULTAS:                                                           │
-│ Juros Moratórios       │ 1% ao mês                                         │
-│ Multa por Atraso       │ 2%                                                │
-│ Reajuste Anual         │ {{ indice_correcao or 'IPCA' }}                  │
-└─────────────────────────────────────────────────────────────────────────────┘
+-----------------------------------------------------------+------------------
+DESCRICAO                                                  | VALOR (R$)
+-----------------------------------------------------------+------------------
+Mensalidade                                                | {{ valor_mensal }}
+Taxa de Instalacao                                         | {{ valor_instalacao or '0,00' }}
+Vencimento                                                 | Dia {{ data_vencimento }} de cada mes
+Forma de Pagamento                                         | {{ forma_pagamento or 'Boleto Bancario' }}
+-----------------------------------------------------------+------------------
+JUROS E MULTAS:                                            |
+Juros Moratorios                                           | 1% ao mes
+Multa por Atraso                                           | 2%
+Reajuste Anual                                             | {{ indice_correcao or 'IPCA' }}
+-----------------------------------------------------------+------------------
 
 ================================================================================
-                              4. SERVIÇOS DE VALOR ADICIONADO (SVA)
+                              4. SERVICOS DE VALOR ADICIONADO (SVA)
 ================================================================================
 
-O CONTRATANTE declara ciência de que Serviços de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
+O CONTRATANTE declara ciencia de que Servicos de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
 
-Todos os detalhes, regras e condições dos SVA estão disponíveis no CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, disponível no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
+Todos os detalhes, regras e condicoes dos SVA estao disponiveis no CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, disponivel no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
 
 ================================================================================
                               5. EQUIPAMENTOS EM COMODATO
@@ -242,57 +242,57 @@ A CONTRATADA disponibiliza ao CONTRATANTE, em regime de comodato, o(s) seguinte(
 
 Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
 Modelo: {{ equipamento_modelo }}
-Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação, cabo Ethernet' }}
+Acessorios: {{ equipamento_acessorios or 'Fonte de alimentacao, cabo Ethernet' }}
 
-O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolvê-lo(s) no final do contrato nas condições em que lhe foram entregues, salvo desgaste natural.
+O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolve-lo(s) no final do contrato nas condicoes em que lhe foram entregues, salvo desgaste natural.
 
 ================================================================================
-                              6. CONTRATO DE PERMANÊNCIA / FIDELIDADE
+                              6. CONTRATO DE PERMANENCIA / FIDELIDADE
 ================================================================================
 
-O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANÊNCIA / TERMO DE FIDELIDADE e:
+O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO DE FIDELIDADE e:
 
 {% if optou_fidelidade %}
-( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA (12 meses)
-(   ) NÃO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA
+( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
+(   ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
 
-CONDIÇÕES DA FIDELIDADE:
-- Prazo mínimo: 12 meses
-- Multa por rescisão antecipada: até 30% sobre o valor das parcelas vincendas
-- Benefícios aplicáveis: descontos e condições especiais conforme plano contratado
+CONDICOES DA FIDELIDADE:
+- Prazo minimo: 12 meses
+- Multa por rescissao antecipada: ate 30% sobre o valor das parcelas vincendas
+- Beneficios aplicaveis: descontos e condicoes especiais conforme plano contratado
 {% else %}
-(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA (12 meses)
-( X ) NÃO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA
+(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
+( X ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
 
-CONDIÇÕES SEM FIDELIDADE:
+CONDICOES SEM FIDELIDADE:
 - Contrato por prazo indeterminado
 - Cancelamento a qualquer momento, sem multa
 - Valor integral do plano aplicado
 {% endif %}
 
 ================================================================================
-                              7. DISPOSIÇÕES GERAIS E OBSERVAÇÕES
+                              7. DISPOSICOES GERAIS E OBSERVACOES
 ================================================================================
 
-- A Contratada terá o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a análise de viabilidade técnica. Caso constatada a inviabilidade técnica, o contrato será cancelado automaticamente sem qualquer ônus para ambas as partes.
+- A Contratada tera o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a analise de viabilidade tecnica. Caso constatada a inviabilidade tecnica, o contrato sera cancelado automaticamente sem qualquer onus para ambas as partes.
 
-- O Contratante declara ter conhecimento que a medição da banda contratada através de aparelhos WI-FI pode variar, e que o correto é medir por meio de equipamentos via cabo.
+- O Contratante declara ter conhecimento que a medicao da banda contratada atraves de aparelhos WI-FI pode variar, e que o correto e medir por meio de equipamentos via cabo.
 
-- O Contratante está ciente dos motivos que podem culminar na degradação dos serviços, conforme previsto nos contratos disponíveis no site.
+- O Contratante esta ciente dos motivos que podem culminar na degradacao dos servicos, conforme previsto nos contratos disponiveis no site.
 
-- Este Termo de Adesão, juntamente com os CONTRATOS DE PRESTAÇÃO DE SCM E SVA disponíveis no site da CONTRATADA, constituem o acordo integral entre as partes.
+- Este Termo de Adesao, juntamente com os CONTRATOS DE PRESTACAO DE SCM E SVA disponiveis no site da CONTRATADA, constituem o acordo integral entre as partes.
 
 ================================================================================
-                              8. DECLARAÇÃO DE CONCORDÂNCIA
+                              8. DECLARACAO DE CONCORDANCIA
 ================================================================================
 
-Declaro, para os devidos fins, que são corretos os dados cadastrais e informações por mim prestadas neste instrumento.
+Declaro, para os devidos fins, que sao corretos os dados cadastrais e informacoes por mim prestadas neste instrumento.
 
-Declaro estar ciente que a assinatura deste instrumento representa expressa concordância aos termos e condições dos CONTRATOS DE PRESTAÇÃO DE SCM E SVA, disponíveis no site da Contratada.
+Declaro estar ciente que a assinatura deste instrumento representa expressa concordancia aos termos e condicoes dos CONTRATOS DE PRESTACAO DE SCM E SVA, disponiveis no site da Contratada.
 
-Declaro que tive prévio acesso a todas as informações relativas aos contratos mencionados, bem como ao plano de serviço por mim ora contratado.
+Declaro que tive previo acesso a todas as informacoes relativas aos contratos mencionados, bem como ao plano de servico por mim ora contratado.
 
-Declaro que o presente documento, juntamente com os contratos mencionados, formam um único instrumento contratual.
+Declaro que o presente documento, juntamente com os contratos mencionados, formam um unico instrumento contratual.
 
 ================================================================================
                                     9. ASSINATURA
@@ -319,14 +319,40 @@ Testemunha 2
 Nome: _________________________  CPF: __________________________
 
 ================================================================================
-                        10. FORO DE ELEIÇÃO
+                        10. FORO DE ELEICAO
 ================================================================================
 
-As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer dúvidas ou controvérsias oriundas do presente contrato, com expressa renúncia a qualquer outro, por mais privilegiado que seja.
+As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer duvidas ou controversias oriundas do presente contrato, com expressa renuncia a qualquer outro, por mais privilegiado que seja.
 """
 
 # ============================================================================
-# FUNÇÕES DE GERAÇÃO DE PDF
+# FUNCAO AUXILIAR PARA CONVERTER TEXTO PARA LATIN-1
+# ============================================================================
+def safe_latin1_encode(texto):
+    """
+    Converte texto para latin-1 substituindo caracteres não suportados.
+    """
+    try:
+        return texto.encode('latin-1').decode('latin-1')
+    except UnicodeEncodeError:
+        # Substitui caracteres problemáticos
+        texto = texto.replace('á', 'a').replace('à', 'a').replace('ã', 'a').replace('â', 'a')
+        texto = texto.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
+        texto = texto.replace('í', 'i').replace('ì', 'i').replace('î', 'i')
+        texto = texto.replace('ó', 'o').replace('ò', 'o').replace('õ', 'o').replace('ô', 'o')
+        texto = texto.replace('ú', 'u').replace('ù', 'u').replace('û', 'u')
+        texto = texto.replace('ç', 'c')
+        texto = texto.replace('Á', 'A').replace('À', 'A').replace('Ã', 'A').replace('Â', 'A')
+        texto = texto.replace('É', 'E').replace('È', 'E').replace('Ê', 'E')
+        texto = texto.replace('Í', 'I').replace('Ì', 'I').replace('Î', 'I')
+        texto = texto.replace('Ó', 'O').replace('Ò', 'O').replace('Õ', 'O').replace('Ô', 'O')
+        texto = texto.replace('Ú', 'U').replace('Ù', 'U').replace('Û', 'U')
+        texto = texto.replace('Ç', 'C')
+        # Tenta novamente
+        return texto.encode('latin-1', errors='replace').decode('latin-1')
+
+# ============================================================================
+# FUNCOES DE GERACAO DE PDF
 # ============================================================================
 def gerar_pdf_contrato(dados):
     """Gera PDF do contrato e retorna bytes"""
@@ -352,7 +378,8 @@ def gerar_pdf_contrato(dados):
         
         pdf.set_font("Arial", size=10)
         for linha in contrato_preenchido.split("\n"):
-            pdf.multi_cell(0, 8, linha)
+            linha_segura = safe_latin1_encode(linha)
+            pdf.multi_cell(0, 8, linha_segura)
         
         return pdf.output(dest='S').encode('latin1')
     except Exception as e:
@@ -383,7 +410,8 @@ def gerar_pdf_comodato(dados):
         
         pdf.set_font("Arial", size=10)
         for linha in termo_preenchido.split("\n"):
-            pdf.multi_cell(0, 8, linha)
+            linha_segura = safe_latin1_encode(linha)
+            pdf.multi_cell(0, 8, linha_segura)
         
         return pdf.output(dest='S').encode('latin1')
     except Exception as e:
@@ -392,7 +420,7 @@ def gerar_pdf_comodato(dados):
 
 def gerar_pdf_termo_adesao(dados_cliente):
     """
-    Gera o PDF do Termo de Adesão Unificado (SCM + referência SVA)
+    Gera o PDF do Termo de Adesao Unificado (SCM + referencia SVA)
     Usa dados do cliente + dados da empresa
     """
     if not TERMO_ADESAO_TEMPLATE:
@@ -405,22 +433,22 @@ def gerar_pdf_termo_adesao(dados_cliente):
         # Mesclar com os dados do cliente (cliente tem prioridade)
         dados.update(dados_cliente)
         
-        # Garantir campos obrigatórios
+        # Garantir campos obrigatorios
         dados.setdefault("valor_mensal", extrair_valor_do_plano(dados.get("plano_escolhido", "")))
         dados.setdefault("optou_fidelidade", True)
         dados.setdefault("data_assinatura", datetime.now().strftime("%d/%m/%Y"))
-        dados.setdefault("rg", "Não informado")
-        dados.setdefault("data_nascimento", "Não informado")
-        dados.setdefault("email", "Não informado")
-        dados.setdefault("cep", "Não informado")
-        dados.setdefault("ponto_referencia", "Não informado")
+        dados.setdefault("rg", "Nao informado")
+        dados.setdefault("data_nascimento", "Nao informado")
+        dados.setdefault("email", "Nao informado")
+        dados.setdefault("cep", "Nao informado")
+        dados.setdefault("ponto_referencia", "Nao informado")
         dados.setdefault("complemento", "")
         dados.setdefault("condominio_nome", "")
         dados.setdefault("bloco", "")
         dados.setdefault("apartamento", "")
         dados.setdefault("equipamento_descricao", "Roteador Wi-Fi")
-        dados.setdefault("equipamento_modelo", "Não informado")
-        dados.setdefault("equipamento_acessorios", "Fonte de alimentação, cabo Ethernet")
+        dados.setdefault("equipamento_modelo", "Nao informado")
+        dados.setdefault("equipamento_acessorios", "Fonte de alimentacao, cabo Ethernet")
         dados.setdefault("valor_instalacao", "0,00")
         
         # Renderizar template
@@ -438,10 +466,12 @@ def gerar_pdf_termo_adesao(dados_cliente):
         
         pdf.set_font("Arial", size=9)
         for linha in texto.split("\n"):
-            pdf.multi_cell(0, 6, linha)
+            # Converter para latin-1 com seguranca
+            linha_segura = safe_latin1_encode(linha)
+            pdf.multi_cell(0, 6, linha_segura)
         
         return pdf.output(dest='S').encode('latin1')
     
     except Exception as e:
-        st.error(f"Erro ao gerar termo de adesão: {e}")
+        st.error(f"Erro ao gerar termo de adesao: {e}")
         return None
