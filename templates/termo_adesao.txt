@@ -97,8 +97,10 @@ O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO D
 
 CONDICOES DA FIDELIDADE:
 - Prazo minimo: 12 meses
-- Multa por rescissao antecipada: ate 30% sobre o valor das parcelas vincendas
-- Beneficios aplicaveis: descontos e condicoes especiais conforme plano contratado
+- Beneficio Concedido: Isenção integral da taxa de instalação, no valor de R$ 320,00.
+- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa correspondente ao valor do benefício concedido, calculada de forma proporcional ao número de meses restantes para o fim do contrato.
+  - Formula de Calculo: (Valor Total do Beneficio / 12) x Meses Restantes
+  - Exemplo: Cancelamento no 6º mes (restando 6 meses), multa de R$ 160,00 (R$ 320,00 / 12 x 6).
 {% else %}
 (   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
 ( X ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
