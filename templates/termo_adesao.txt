@@ -69,9 +69,9 @@ CARACTERÍSTICAS TÉCNICAS:
                               4. SERVICOS DE VALOR ADICIONADO (SVA)
 ================================================================================
 
-O CONTRATANTE declara cienciA de que Servicos de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
+O CONTRATANTE declara ciência de que Serviços de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
 
-Todos os detalhes, regras e condicoes dos SVA estao disponiveis no CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, disponivel no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
+Todos os detalhes, regras e condições dos SVA estão disponíveis no CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, disponível no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
 
 ================================================================================
                               5. EQUIPAMENTOS EM COMODATO
@@ -81,9 +81,9 @@ A CONTRATADA disponibiliza ao CONTRATANTE, em regime de comodato, o(s) seguinte(
 
 Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
 Modelo: {{ equipamento_modelo }}
-Acessorios: {{ equipamento_acessorios or 'Fonte de alimentacao, cabo Ethernet' }}
+Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação, cabo Ethernet' }}
 
-O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolvê-lo(s) no final do contrato nas condicoes em que lhe foram entregues, salvo desgaste natural.
+O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolvê-lo(s) no final do contrato nas condições em que lhe foram entregues, salvo desgaste natural.
 
 ================================================================================
                               6. CONTRATO DE PERMANENCIA / FIDELIDADE
@@ -95,45 +95,69 @@ O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO D
 ( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
 (   ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
 
-CONDICOES DA FIDELIDADE:
-- Prazo minimo: 12 meses
-- Beneficio Concedido: Isenção integral da taxa de instalação, no valor de R$ 320,00.
-- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa correspondente ao valor do benefício concedido, calculada de forma proporcional ao número de meses restantes para o fim do contrato.
-  - Formula de Calculo: (Valor Total do Beneficio / 12) x Meses Restantes
-  - Exemplo: Cancelamento no 6º mes (restando 6 meses), multa de R$ 160,00 (R$ 320,00 / 12 x 6).
+CONDIÇÕES DA FIDELIDADE:
+- Prazo mínimo: 12 meses
+- Benefício Concedido: Isenção integral da taxa de instalação, no valor de R$ 320,00 (trezentos e vinte reais).
+- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa calculada de forma decrescente, conforme a tabela abaixo, tendo como base o valor total dos benefícios concedidos (R$ 320,00).
+
+TABELA DE CÁLCULO DO VALOR DA MULTA RESCISÓRIA
+
+O VALOR DA MULTA PELA RESCISÃO DO CONTRATO POR PARTE DO CONTRATANTE SERÁ DECRESCENTE, DE ACORDO COM A TABELA:
+
++---------------------+----------------------------------------------+------------------+
+| TEMPO RESTANTE PARA | MULTA                                        | VALOR DA MULTA   |
+| CUMPRIMENTO DA      |                                              |                  |
+| FIDELIDADE          |                                              |                  |
++---------------------+----------------------------------------------+------------------+
+| 12 meses            | 100% do total dos benefícios concedidos.     | R$ 320,00        |
+| 11 meses            | 92% do total dos benefícios concedidos.      | R$ 294,40        |
+| 10 meses            | 83% do total dos benefícios concedidos.      | R$ 265,60        |
+| 9 meses             | 75% do total dos benefícios concedidos.      | R$ 240,00        |
+| 8 meses             | 67% do total dos benefícios concedidos.      | R$ 214,40        |
+| 7 meses             | 58% do total dos benefícios concedidos.      | R$ 185,60        |
+| 6 meses             | 50% do total dos benefícios concedidos.      | R$ 160,00        |
+| 5 meses             | 42% do total dos benefícios concedidos.      | R$ 134,40        |
+| 4 meses             | 33% do total dos benefícios concedidos.      | R$ 105,60        |
+| 3 meses             | 25% do total dos benefícios concedidos.      | R$ 80,00         |
+| 2 meses             | 17% do total dos benefícios concedidos.      | R$ 54,40         |
+| 1 mês               | 8% do total dos benefícios concedidos.       | R$ 25,60         |
++---------------------+----------------------------------------------+------------------+
+
 {% else %}
 (   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
 ( X ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
 
-CONDICOES SEM FIDELIDADE:
+CONDIÇÕES SEM FIDELIDADE:
 - Contrato por prazo indeterminado
 - Cancelamento a qualquer momento, sem multa
 - Valor integral do plano aplicado
 {% endif %}
 
 ================================================================================
-                              7. DISPOSICOES GERAIS E OBSERVACOES
+                              7. DISPOSIÇÕES GERAIS E OBSERVAÇÕES
 ================================================================================
 
-- A Contratada tera o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a analise de viabilidade tecnica. Caso constatada a inviabilidade tecnica, o contrato sera cancelado automaticamente sem qualquer onus para ambas as partes.
+- A Contratada terá o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a análise de viabilidade técnica. Caso constatada a inviabilidade técnica, o contrato será cancelado automaticamente sem qualquer ônus para ambas as partes.
 
-- O Contratante declara ter conhecimento que a medicao da banda contratada atraves de aparelhos WI-FI pode variar, e que o correto e medir por meio de equipamentos via cabo.
+- O Contratante declara ter conhecimento que a medição da banda contratada através de aparelhos WI-FI pode variar, e que o correto é medir por meio de equipamentos via cabo.
 
-- O Contratante esta ciente dos motivos que podem culminar na degradacao dos servicos, conforme previsto nos contratos disponiveis no site.
+- O Contratante está ciente dos motivos que podem culminar na degradação dos serviços, conforme previsto nos contratos disponíveis no site.
 
-- Este Termo de Adesao, juntamente com os CONTRATOS DE PRESTACAO DE SCM E SVA disponiveis no site da CONTRATADA, constituem o acordo integral entre as partes.
+- Este Termo de Adesão, juntamente com os CONTRATOS DE PRESTAÇÃO DE SCM E SVA disponíveis no site da CONTRATADA, constituem o acordo integral entre as partes.
+
+- Finalizado o prazo de permanência/fidelidade contratual, o CONTRATANTE declara estar ciente que não ficará mais sujeito ao prazo de permanência/fidelidade dos serviços, e que a concessão de outros benefícios ou mesmo a manutenção dos benefícios antes concedidos (exemplo: abatimento do valor da mensalidade), fica a critério de ambas as partes firmar NOVO CONTRATO DE PERMANÊNCIA/FIDELIDADE. Assim, com o fim da fidelidade, o CONTRATANTE está ciente que o plano voltará a ser cobrado em seu valor integral com correção do valor pela variação positiva do índice IGP-M acumulado dos últimos 12 (doze) meses.
 
 ================================================================================
-                              8. DECLARACAO DE CONCORDANCIA
+                              8. DECLARAÇÃO DE CONCORDÂNCIA
 ================================================================================
 
-Declaro, para os devidos fins, que sao corretos os dados cadastrais e informacoes por mim prestadas neste instrumento.
+Declaro, para os devidos fins, que são corretos os dados cadastrais e informações por mim prestadas neste instrumento.
 
-Declaro estar ciente que a assinatura deste instrumento representa expressa concordancia aos termos e condicoes dos CONTRATOS DE PRESTACAO DE SCM E SVA, disponiveis no site da Contratada.
+Declaro estar ciente que a assinatura deste instrumento representa expressa concordância aos termos e condições dos CONTRATOS DE PRESTAÇÃO DE SCM E SVA, disponíveis no site da Contratada.
 
-Declaro que tive previo acesso a todas as informacoes relativas aos contratos mencionados, bem como ao plano de servico por mim ora contratado.
+Declaro que tive prévio acesso a todas as informações relativas aos contratos mencionados, bem como ao plano de serviço por mim ora contratado.
 
-Declaro que o presente documento, juntamente com os contratos mencionados, formam um unico instrumento contratual.
+Declaro que o presente documento, juntamente com os contratos mencionados, formam um único instrumento contratual.
 
 ================================================================================
                                     9. ASSINATURA
@@ -160,7 +184,7 @@ Testemunha 2
 Nome: _________________________  CPF: __________________________
 
 ================================================================================
-                        10. FORO DE ELEICAO
+                        10. FORO DE ELEIÇÃO
 ================================================================================
 
-As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer duvidas ou controversias oriundas do presente contrato, com expressa renuncia a qualquer outro, por mais privilegiado que seja.
+As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer dúvidas ou controvérsias oriundas do presente contrato, com expressa renúncia a qualquer outro, por mais privilegiado que seja.
