@@ -7,6 +7,8 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - INTEGRAÇÃO COM MEUS ACOMPANHAMENTOS do módulo de prospecção
 - ANÁLISE DE CRESCIMENTO INDIVIDUAL POR CONDOMÍNIO COM FILTRO POR MÚLTIPLAS FASES
 - NOVA ABA: ANÁLISE DE CANCELAMENTOS POR CONDOMÍNIO E MÊS
+- NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
+- MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
 """
 import streamlit as st
 import pandas as pd
@@ -198,18 +200,22 @@ def render_seletor_usuario():
 
 # ==================== FUNÇÃO: ANÁLISE DE CANCELAMENTOS POR CONDOMÍNIO ====================
 
-def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inicio, data_fim):
+def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inicio, data_fim, regioes_filtro=None):
     """
     Analisa cancelamentos por condomínio e mês.
     Identifica clientes cancelados/desativados e agrupa por condomínio e mês.
     
+    NOVO: aceita filtro por regiões e retorna dados agregados por região.
+    NOVO: adiciona linha de Total Geral na tabela pivô.
+    
     Retorna:
-    - df_pivot: DataFrame pivotado (condomínio × mês) com totais
+    - df_pivot: DataFrame pivotado (condomínio × mês) com totais + linha Total Geral
     - df_detalhado: DataFrame com detalhes dos cancelamentos
     - df_resumo: Resumo por condomínio
+    - df_regiao: Resumo por região (NOVO)
     """
     if df_clientes is None or df_clientes.empty or df_condominios is None or df_condominios.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     df_clientes_temp = df_clientes.copy()
     df_condominios_temp = df_condominios.copy()
@@ -224,6 +230,15 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         df_condominios_temp['ID'] = pd.to_numeric(
             df_condominios_temp['ID'], errors='coerce'
         ).fillna(0).astype(int)
+    
+    # === NOVO: Filtro por região ===
+    if regioes_filtro and 'Região' in df_condominios_temp.columns:
+        df_condominios_temp = df_condominios_temp[
+            df_condominios_temp['Região'].isin(regioes_filtro)
+        ].copy()
+        
+        if df_condominios_temp.empty:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     # Identificar coluna de data de cancelamento
     data_cancel_col = None
@@ -249,7 +264,7 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         if data_cadastro_col:
             data_cancel_col = data_cadastro_col
         else:
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     # Converter data de cancelamento
     df_clientes_temp[data_cancel_col] = pd.to_datetime(
@@ -275,13 +290,13 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         df_cancelados = df_clientes_temp[mascara_cancel].copy()
     
     if df_cancelados.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     # Remover registros sem data de cancelamento válida
     df_cancelados = df_cancelados.dropna(subset=[data_cancel_col])
     
     if df_cancelados.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     # Filtrar por período
     df_cancelados = df_cancelados[
@@ -290,7 +305,7 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
     ].copy()
     
     if df_cancelados.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     # Adicionar colunas de mês/ano
     df_cancelados['ano_mes'] = df_cancelados[data_cancel_col].dt.to_period('M')
@@ -358,6 +373,17 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
     # Resetar index para ter Condomínio como coluna
     pivot = pivot.reset_index()
     
+    # === NOVO: Linha de Total Geral ===
+    colunas_numericas = [c for c in pivot.columns if c != 'Condomínio']
+    linha_total = {'Condomínio': '📊 TOTAL GERAL'}
+    for col in colunas_numericas:
+        linha_total[col] = int(pivot[col].sum())
+    
+    pivot_com_total = pd.concat(
+        [pivot, pd.DataFrame([linha_total])],
+        ignore_index=True
+    )
+    
     # === RESUMO POR CONDOMÍNIO ===
     df_resumo = df_cancelados.groupby('Condomínio').agg(
         total_cancelamentos=('CONDOMANIO', 'count'),
@@ -373,15 +399,32 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         mes_mais_cancel.columns = ['Condomínio', 'mes_mais_cancelamentos', 'qtd_mes_mais']
         df_resumo = df_resumo.merge(mes_mais_cancel, on='Condomínio', how='left')
     
-    return pivot, df_cancelados, df_resumo
+    # === NOVO: Agregação por região ===
+    df_regiao = pd.DataFrame()
+    if 'Região' in df_cancelados.columns:
+        df_regiao = df_cancelados.groupby('Região').agg(
+            total_cancelamentos=('CONDOMANIO', 'count'),
+            total_condominios=('Condomínio', 'nunique')
+        ).reset_index().sort_values('total_cancelamentos', ascending=False)
+        
+        df_regiao['media_por_condominio'] = (
+            df_regiao['total_cancelamentos'] / df_regiao['total_condominios']
+        ).round(1)
+        
+        total_geral = df_regiao['total_cancelamentos'].sum()
+        df_regiao['percentual'] = (
+            df_regiao['total_cancelamentos'] / total_geral * 100
+        ).round(1) if total_geral > 0 else 0
+    
+    return pivot_com_total, df_cancelados, df_resumo, df_regiao
 
 
-# ==================== FUNÇÃO: RENDERIZAR ABA DE CANCELAMENTOS ====================
+    # ==================== FUNÇÃO: RENDERIZAR ABA DE CANCELAMENTOS ====================
 
 def render_aba_cancelamentos(df_clientes, df_condominios):
     """
     Renderiza a aba de análise de cancelamentos por condomínio.
-    Mostra tabela pivô (condomínio × mês) com totais e gráficos.
+    NOVO: Total Geral, Filtro por Região, Top N configurável, Heatmap.
     """
     st.subheader("🚫 Análise de Cancelamentos por Condomínio")
     
@@ -397,6 +440,7 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         <li><strong>Total do Período:</strong> Soma total de cancelamentos no período selecionado</li>
         <li><strong>Média Mensal:</strong> Média de cancelamentos por mês</li>
         <li><strong>Mês com Mais Cancelamentos:</strong> Qual mês teve o pior desempenho</li>
+        <li><strong>Total Geral:</strong> Soma de todos os condomínios por mês (linha final da tabela)</li>
     </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -438,14 +482,14 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             return
         st.info(f"📌 Usando a coluna **'{data_cancel_col}'** como referência (proxy).")
     
-    # ========== FILTROS DE PERÍODO ==========
-    st.markdown("### 📅 Período de Análise")
+    # ========== FILTROS ==========
+    st.markdown("### 🎛️ Filtros de Análise")
     
-    col1, col2, col3 = st.columns([2, 2, 1])
+    col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
     
-    with col1:
+    with col_f1:
         periodo_preset = st.selectbox(
-            "Período:",
+            "📅 Período:",
             options=[
                 "Último trimestre",
                 "Último semestre",
@@ -459,56 +503,77 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             key="cancelamentos_periodo_preset"
         )
     
-    with col2:
-        if periodo_preset == "Personalizado":
-            col_data1, col_data2 = st.columns(2)
-            with col_data1:
-                data_inicio_date = st.date_input(
-                    "Data inicial:",
-                    value=datetime.now().date() - timedelta(days=180),
-                    key="cancelamentos_data_inicio"
-                )
-            with col_data2:
-                data_fim_date = st.date_input(
-                    "Data final:",
-                    value=datetime.now().date(),
-                    key="cancelamentos_data_fim"
-                )
-            data_inicio = datetime.combine(data_inicio_date, datetime.min.time())
-            data_fim = datetime.combine(data_fim_date, datetime.max.time())
+    with col_f2:
+        # === NOVO: Filtro por Região ===
+        regioes_disponiveis = []
+        if 'Região' in df_condominios.columns:
+            regioes_disponiveis = sorted(df_condominios['Região'].dropna().unique().tolist())
+        
+        if regioes_disponiveis:
+            regioes_selecionadas = st.multiselect(
+                "📍 Filtrar por Região:",
+                options=regioes_disponiveis,
+                default=[],
+                key="cancelamentos_regioes",
+                help="Deixe vazio para incluir todas as regiões"
+            )
         else:
-            data_fim = datetime.now().replace(tzinfo=None)
-            
-            if periodo_preset == "Último trimestre":
-                data_inicio = data_fim - timedelta(days=90)
-            elif periodo_preset == "Último semestre":
-                data_inicio = data_fim - timedelta(days=180)
-            elif periodo_preset == "Último ano":
-                data_inicio = data_fim - timedelta(days=365)
-            elif periodo_preset == "Últimos 2 anos":
-                data_inicio = data_fim - timedelta(days=730)
-            elif periodo_preset == "Ano atual":
-                data_inicio = datetime(data_fim.year, 1, 1)
-            else:  # Todos os dados
-                df_temp = df_clientes.copy()
-                df_temp[data_cancel_col] = pd.to_datetime(df_temp[data_cancel_col], errors='coerce')
-                data_inicio = df_temp[data_cancel_col].min()
-                if pd.isna(data_inicio):
-                    data_inicio = datetime(2020, 1, 1)
+            regioes_selecionadas = []
+            st.caption("📍 Região não disponível")
     
-    with col3:
+    with col_f3:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Atualizar", key="btn_atualizar_cancelamentos", use_container_width=True):
             st.rerun()
     
+    # Calcular período
+    if periodo_preset == "Personalizado":
+        col_data1, col_data2 = st.columns(2)
+        with col_data1:
+            data_inicio_date = st.date_input(
+                "Data inicial:",
+                value=datetime.now().date() - timedelta(days=180),
+                key="cancelamentos_data_inicio"
+            )
+        with col_data2:
+            data_fim_date = st.date_input(
+                "Data final:",
+                value=datetime.now().date(),
+                key="cancelamentos_data_fim"
+            )
+        data_inicio = datetime.combine(data_inicio_date, datetime.min.time())
+        data_fim = datetime.combine(data_fim_date, datetime.max.time())
+    else:
+        data_fim = datetime.now().replace(tzinfo=None)
+        
+        if periodo_preset == "Último trimestre":
+            data_inicio = data_fim - timedelta(days=90)
+        elif periodo_preset == "Último semestre":
+            data_inicio = data_fim - timedelta(days=180)
+        elif periodo_preset == "Último ano":
+            data_inicio = data_fim - timedelta(days=365)
+        elif periodo_preset == "Últimos 2 anos":
+            data_inicio = data_fim - timedelta(days=730)
+        elif periodo_preset == "Ano atual":
+            data_inicio = datetime(data_fim.year, 1, 1)
+        else:  # Todos os dados
+            df_temp = df_clientes.copy()
+            df_temp[data_cancel_col] = pd.to_datetime(df_temp[data_cancel_col], errors='coerce')
+            data_inicio = df_temp[data_cancel_col].min()
+            if pd.isna(data_inicio):
+                data_inicio = datetime(2020, 1, 1)
+    
     # Mostrar período selecionado
     if isinstance(data_inicio, datetime) and isinstance(data_fim, datetime):
         st.info(f"📅 Período: **{data_inicio.strftime('%d/%m/%Y')}** até **{data_fim.strftime('%d/%m/%Y')}**")
+        if regioes_selecionadas:
+            st.info(f"📍 Regiões filtradas: **{', '.join(regioes_selecionadas)}**")
     
     # ========== PROCESSAMENTO ==========
     with st.spinner("🔄 Analisando cancelamentos..."):
-        df_pivot, df_detalhado, df_resumo = analisar_cancelamentos_por_condominio(
-            df_clientes, df_condominios, data_inicio, data_fim
+        df_pivot, df_detalhado, df_resumo, df_regiao = analisar_cancelamentos_por_condominio(
+            df_clientes, df_condominios, data_inicio, data_fim,
+            regioes_filtro=regioes_selecionadas if regioes_selecionadas else None
         )
     
     if df_pivot.empty:
@@ -534,31 +599,134 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     
     st.markdown("---")
     
-    # ========== TABELA PIVÔ ==========
-    st.subheader("📋 Cancelamentos por Condomínio e Mês")
+    # ========== NOVO: ANÁLISE POR REGIÃO ==========
+    if not df_regiao.empty:
+        st.subheader("📍 Cancelamentos por Região")
+        
+        col_reg1, col_reg2 = st.columns([1, 1])
+        
+        with col_reg1:
+            fig_reg = px.bar(
+                df_regiao,
+                x='Região',
+                y='total_cancelamentos',
+                color='total_cancelamentos',
+                color_continuous_scale='Reds',
+                title='📊 Total de Cancelamentos por Região',
+                text='total_cancelamentos'
+            )
+            fig_reg.update_traces(texttemplate='%{text}', textposition='outside')
+            fig_reg.update_layout(height=400, coloraxis_showscale=False, xaxis_tickangle=-45)
+            st.plotly_chart(fig_reg, use_container_width=True, config={'displayModeBar': False})
+        
+        with col_reg2:
+            fig_pie_reg = px.pie(
+                df_regiao,
+                values='total_cancelamentos',
+                names='Região',
+                title='🥧 Distribuição Percentual por Região',
+                hole=0.4
+            )
+            fig_pie_reg.update_traces(textinfo='percent+label')
+            fig_pie_reg.update_layout(height=400)
+            st.plotly_chart(fig_pie_reg, use_container_width=True, config={'displayModeBar': False})
+        
+        with st.expander("📋 Ver tabela de cancelamentos por região"):
+            st.dataframe(
+                df_regiao,
+                use_container_width=True,
+                column_config={
+                    'total_cancelamentos': st.column_config.NumberColumn('Total Cancelamentos', format='%d'),
+                    'total_condominios': st.column_config.NumberColumn('Condomínios', format='%d'),
+                    'media_por_condominio': st.column_config.NumberColumn('Média/Condomínio', format='%.1f'),
+                    'percentual': st.column_config.ProgressColumn('Percentual', format='%.1f%%', min_value=0, max_value=100),
+                }
+            )
+        
+        st.markdown("---")
     
-    df_pivot_display = df_pivot.copy()
-    colunas_total = [c for c in df_pivot_display.columns if 'Total' in str(c)]
-    colunas_meses = [c for c in df_pivot_display.columns if c not in colunas_total and c != 'Condomínio']
+    # ========== TABELA PIVÔ COM TOGGLE ==========
+    st.subheader("📋 Detalhamento de Cancelamentos")
     
-    column_config = {
-        'Condomínio': st.column_config.TextColumn('Condomínio', width='medium'),
-    }
-    for col in colunas_meses:
-        column_config[col] = st.column_config.NumberColumn(col, format='%d', width='small')
-    for col in colunas_total:
-        column_config[col] = st.column_config.NumberColumn(col, format='%d', width='small')
+    col_toggle1, col_toggle2 = st.columns([1, 1])
     
-    df_exibir = df_pivot_display if len(df_pivot_display) <= 500 else df_pivot_display.head(500)
-    if len(df_pivot_display) > 500:
-        st.caption(f"⚠️ Exibindo apenas 500 de {len(df_pivot_display)} condomínios.")
+    with col_toggle1:
+        visualizacao = st.radio(
+            "Visualização:",
+            options=["📋 Tabela", "🔥 Heatmap"],
+            horizontal=True,
+            key="cancelamentos_visualizacao"
+        )
     
-    st.dataframe(
-        df_exibir,
-        use_container_width=True,
-        height=500,
-        column_config=column_config
-    )
+    with col_toggle2:
+        # === NOVO: Top N configurável ===
+        top_n = st.slider(
+            "🏆 Top N condomínios:",
+            min_value=5,
+            max_value=50,
+            value=15,
+            step=5,
+            key="cancelamentos_top_n",
+            help="Define quantos condomínios exibir na tabela e nos gráficos"
+        )
+    
+    # Separar colunas de meses e total
+    colunas_total = [c for c in df_pivot.columns if 'Total' in str(c)]
+    colunas_meses = [c for c in df_pivot.columns if c not in colunas_total and c != 'Condomínio']
+    
+    # Linha de total geral
+    df_sem_total = df_pivot[df_pivot['Condomínio'] != '📊 TOTAL GERAL']
+    df_total_geral = df_pivot[df_pivot['Condomínio'] == '📊 TOTAL GERAL']
+    
+    # Aplicar Top N
+    df_top_n = df_sem_total.head(top_n)
+    df_pivot_display = pd.concat([df_top_n, df_total_geral], ignore_index=True)
+    
+    if visualizacao == "📋 Tabela":
+        st.markdown(f"**Exibindo Top {top_n} condomínios + linha de Total Geral**")
+        
+        column_config = {
+            'Condomínio': st.column_config.TextColumn('Condomínio', width='medium'),
+        }
+        for col in colunas_meses:
+            column_config[col] = st.column_config.NumberColumn(col, format='%d', width='small')
+        for col in colunas_total:
+            column_config[col] = st.column_config.NumberColumn(col, format='%d', width='small')
+        
+        st.dataframe(
+            df_pivot_display,
+            use_container_width=True,
+            height=500,
+            column_config=column_config
+        )
+        
+        st.caption(f"📊 Mostrando {len(df_top_n)} de {len(df_sem_total)} condomínios. "
+                   f"A linha **📊 TOTAL GERAL** soma todos os {len(df_sem_total)} condomínios.")
+    
+    else:  # Heatmap
+        st.markdown(f"**Heatmap - Top {top_n} condomínios**")
+        
+        # Preparar dados para heatmap (sem total geral para não distorcer escala)
+        df_heatmap = df_sem_total.head(top_n).set_index('Condomínio')[colunas_meses]
+        
+        fig_heatmap = px.imshow(
+            df_heatmap,
+            labels=dict(x="Mês", y="Condomínio", color="Cancelamentos"),
+            color_continuous_scale='Reds',
+            aspect='auto',
+            title=f'🔥 Heatmap de Cancelamentos - Top {top_n} Condomínios',
+            text_auto=True
+        )
+        fig_heatmap.update_layout(
+            height=max(400, len(df_heatmap) * 25),
+            xaxis_tickangle=-45,
+            coloraxis_colorbar=dict(title="Cancel.")
+        )
+        fig_heatmap.update_xaxes(side="bottom")
+        st.plotly_chart(fig_heatmap, use_container_width=True, config={'displayModeBar': False})
+        
+        st.caption(f"🔥 Intensidade das cores = volume de cancelamentos. "
+                   f"Exibindo Top {top_n} de {len(df_sem_total)} condomínios.")
     
     st.markdown("---")
     
@@ -567,8 +735,15 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     
     with col_g1:
         if colunas_meses:
-            totais_por_mes = df_pivot[colunas_meses].sum().reset_index()
+            # Total por mês (incluindo total geral)
+            totais_por_mes = df_sem_total[colunas_meses].sum().reset_index()
             totais_por_mes.columns = ['Mês', 'Total Cancelamentos']
+            
+            # Ordenar por data
+            totais_por_mes['ordem'] = totais_por_mes['Mês'].apply(
+                lambda x: colunas_meses.index(x) if x in colunas_meses else 999
+            )
+            totais_por_mes = totais_por_mes.sort_values('ordem')
             
             fig_meses = px.bar(
                 totais_por_mes,
@@ -584,28 +759,29 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             st.plotly_chart(fig_meses, use_container_width=True, config={'displayModeBar': False})
     
     with col_g2:
-        df_top10 = df_resumo.head(10).copy()
+        # === NOVO: Top N configurável ===
+        df_top_n_resumo = df_resumo.head(top_n).copy()
         
-        fig_top10 = px.bar(
-            df_top10.sort_values('total_cancelamentos', ascending=True),
+        fig_top_n = px.bar(
+            df_top_n_resumo.sort_values('total_cancelamentos', ascending=True),
             x='total_cancelamentos',
             y='Condomínio',
             color='total_cancelamentos',
             color_continuous_scale='Reds',
-            title='🏆 Top 10 - Condomínios com Mais Cancelamentos',
+            title=f'🏆 Top {top_n} - Condomínios com Mais Cancelamentos',
             orientation='h',
             text='total_cancelamentos'
         )
-        fig_top10.update_traces(texttemplate='%{text}', textposition='outside')
-        fig_top10.update_layout(height=400, coloraxis_showscale=False)
-        st.plotly_chart(fig_top10, use_container_width=True, config={'displayModeBar': False})
+        fig_top_n.update_traces(texttemplate='%{text}', textposition='outside')
+        fig_top_n.update_layout(height=max(400, top_n * 25), coloraxis_showscale=False)
+        st.plotly_chart(fig_top_n, use_container_width=True, config={'displayModeBar': False})
     
     # ========== GRÁFICO DE EVOLUÇÃO MENSAL ==========
     st.markdown("---")
     st.subheader("📈 Evolução Mensal de Cancelamentos")
     
     if colunas_meses:
-        df_evolucao = df_pivot[['Condomínio'] + colunas_meses].copy()
+        df_evolucao = df_sem_total[['Condomínio'] + colunas_meses].copy()
         df_evolucao = df_evolucao.melt(
             id_vars=['Condomínio'],
             value_vars=colunas_meses,
@@ -700,6 +876,9 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             df_pivot.to_excel(writer, sheet_name='Cancelamentos_Por_Mes', index=False)
             df_resumo.to_excel(writer, sheet_name='Resumo_Por_Condominio', index=False)
             
+            if not df_regiao.empty:
+                df_regiao.to_excel(writer, sheet_name='Resumo_Por_Regiao', index=False)
+            
             if not df_detalhado.empty:
                 cols_export = [c for c in ['Condomínio', 'Região', data_cancel_col, 'mes_label', 
                                            'RAZAO SOCIAL/NOME', 'STATUS ACESSO'] 
@@ -719,8 +898,9 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     with col_exp2:
         st.info("""
         **📋 O que será exportado:**
-        - **Cancelamentos_Por_Mes**: Tabela pivô (condomínio × mês)
+        - **Cancelamentos_Por_Mes**: Tabela pivô com Total Geral
         - **Resumo_Por_Condominio**: Total e média por condomínio
+        - **Resumo_Por_Regiao**: Agregação por região
         - **Detalhamento**: Lista completa de clientes cancelados
         """)
     
@@ -731,7 +911,7 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     insights = []
     
     if colunas_meses:
-        total_por_mes = df_pivot[colunas_meses].sum()
+        total_por_mes = df_sem_total[colunas_meses].sum()
         if not total_por_mes.empty:
             mes_pior = total_por_mes.idxmax()
             qtd_pior = total_por_mes.max()
@@ -748,8 +928,8 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     if len(colunas_meses) >= 2:
         primeiro_mes = colunas_meses[0]
         ultimo_mes = colunas_meses[-1]
-        total_primeiro = df_pivot[primeiro_mes].sum()
-        total_ultimo = df_pivot[ultimo_mes].sum()
+        total_primeiro = df_sem_total[primeiro_mes].sum()
+        total_ultimo = df_sem_total[ultimo_mes].sum()
         
         if total_primeiro > 0:
             variacao = ((total_ultimo - total_primeiro) / total_primeiro * 100)
@@ -765,14 +945,532 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         concentracao = (top5_total / total_cancelamentos * 100)
         insights.append(f"🎯 **Concentração:** Top 5 condomínios representam {concentracao:.1f}% dos cancelamentos")
     
+    if not df_regiao.empty:
+        top_regiao = df_regiao.iloc[0]
+        insights.append(f"📍 **Região com mais cancelamentos:** {top_regiao['Região']} ({top_regiao['total_cancelamentos']} cancelamentos, {top_regiao['percentual']:.1f}%)")
+    
     for insight in insights:
         st.info(insight)
 
 
+# ==================== NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS ====================
+
+def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
+    """
+    NOVA ABA: Análise Avançada de Cancelamentos
+    - Comparação com período anterior
+    - Análise de tendência e sazonalidade
+    - Ranking de regiões
+    - Análise de coorte temporal
+    """
+    st.subheader("📊 Análise Avançada de Cancelamentos")
+    
+    st.markdown("""
+    <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
+    <strong>🎯 Análise Avançada:</strong><br>
+    Esta aba complementa a análise de cancelamentos com:
+    <ul>
+        <li><strong>Comparação com período anterior</strong> - Variação percentual vs. período anterior</li>
+        <li><strong>Análise de tendência</strong> - Identifica se cancelamentos estão aumentando ou diminuindo</li>
+        <li><strong>Sazonalidade</strong> - Detecta padrões mensais recorrentes</li>
+        <li><strong>Coorte temporal</strong> - Agrupa cancelamentos por trimestre/semestre</li>
+        <li><strong>Ranking de regiões</strong> - Performance por região</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if df_clientes is None or df_clientes.empty or df_condominios is None or df_condominios.empty:
+        st.warning("⚠️ Nenhum dado carregado para análise.")
+        return
+    
+    # Identificar coluna de cancelamento
+    data_cancel_col = None
+    possiveis_colunas_cancel = [
+        'data cancelamento', 'data_cancelamento', 'dt_cancelamento',
+        'cancelamento', 'data desativacao', 'data_desativacao',
+        'data cancel', 'dt_cancel', 'data de cancelamento',
+        'data cancelado', 'cancelado em'
+    ]
+    
+    for col in df_clientes.columns:
+        col_lower = col.lower().strip()
+        for possivel in possiveis_colunas_cancel:
+            if possivel in col_lower:
+                data_cancel_col = col
+                break
+        if data_cancel_col:
+            break
+    
+    if data_cancel_col is None:
+        data_cancel_col = identificar_coluna_data(df_clientes)
+        if data_cancel_col is None:
+            st.error("❌ Coluna de data de cancelamento não encontrada.")
+            return
+        st.info(f"📌 Usando a coluna **'{data_cancel_col}'** como referência (proxy).")
+    
+    # Preparar dados
+    df_clientes_temp = df_clientes.copy()
+    df_condominios_temp = df_condominios.copy()
+    
+    df_clientes_temp['CONDOMANIO'] = pd.to_numeric(df_clientes_temp['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
+    df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
+    df_clientes_temp[data_cancel_col] = pd.to_datetime(df_clientes_temp[data_cancel_col], errors='coerce')
+    df_clientes_temp = df_clientes_temp.dropna(subset=[data_cancel_col])
+    
+    df_clientes_temp['status_classificacao'] = classificar_status_serie(df_clientes_temp.get('STATUS ACESSO', pd.Series()))
+    
+    df_cancelados = df_clientes_temp[df_clientes_temp['status_classificacao'] == 'Desativado'].copy()
+    
+    if df_cancelados.empty:
+        s = df_clientes_temp['STATUS ACESSO'].fillna('').astype(str).str.lower()
+        mascara_cancel = s.str.contains('cancelado|desativado|inativo|encerrado|churn', na=False)
+        df_cancelados = df_clientes_temp[mascara_cancel].copy()
+    
+    if df_cancelados.empty:
+        st.warning("⚠️ Nenhum cancelamento encontrado.")
+        return
+    
+    df_cancelados = df_cancelados.merge(
+        df_condominios_temp[['ID', 'Condomínio', 'Região']].drop_duplicates(),
+        left_on='CONDOMANIO', right_on='ID', how='left'
+    )
+    df_cancelados['Condomínio'] = df_cancelados['Condomínio'].fillna(df_cancelados['CONDOMANIO'].astype(str))
+    
+    # ========== FILTROS ==========
+    st.markdown("### 🎛️ Configuração")
+    
+    col_cfg1, col_cfg2 = st.columns(2)
+    
+    with col_cfg1:
+        granularidade = st.selectbox(
+            "📅 Granularidade da análise:",
+            options=["Mensal", "Trimestral", "Semestral"],
+            index=0,
+            key="avancado_granularidade"
+        )
+    
+    with col_cfg2:
+        regioes_disp = sorted(df_condominios_temp['Região'].dropna().unique().tolist()) if 'Região' in df_condominios_temp.columns else []
+        regioes_filtro = st.multiselect(
+            "📍 Filtrar por Região:",
+            options=regioes_disp,
+            default=[],
+            key="avancado_regioes"
+        )
+    
+    if regioes_filtro:
+        df_cancelados = df_cancelados[df_cancelados['Região'].isin(regioes_filtro)]
+    
+    if df_cancelados.empty:
+        st.warning("⚠️ Nenhum dado encontrado com os filtros selecionados.")
+        return
+    
+    # Criar coluna de período
+    if granularidade == "Mensal":
+        df_cancelados['periodo'] = df_cancelados[data_cancel_col].dt.to_period('M')
+        df_cancelados['periodo_label'] = df_cancelados[data_cancel_col].dt.strftime('%b/%Y')
+    elif granularidade == "Trimestral":
+        df_cancelados['periodo'] = df_cancelados[data_cancel_col].dt.to_period('Q')
+        df_cancelados['periodo_label'] = df_cancelados['periodo'].apply(
+            lambda x: f"T{x.quarter}/{x.year}" if pd.notna(x) else ""
+        )
+    else:  # Semestral
+        df_cancelados['periodo'] = df_cancelados[data_cancel_col].dt.to_period('6M')
+        df_cancelados['periodo_label'] = df_cancelados['periodo'].apply(
+            lambda x: f"{'S1' if x.month <= 6 else 'S2'}/{x.year}" if pd.notna(x) else ""
+        )
+    
+    # ========== COMPARAÇÃO COM PERÍODO ANTERIOR ==========
+    st.markdown("---")
+    st.subheader("📊 Comparação com Período Anterior")
+    
+    periodos = sorted(df_cancelados['periodo'].dropna().unique())
+    
+    if len(periodos) >= 2:
+        periodo_atual = periodos[-1]
+        periodo_anterior = periodos[-2]
+        
+        dados_atual = df_cancelados[df_cancelados['periodo'] == periodo_atual]
+        dados_anterior = df_cancelados[df_cancelados['periodo'] == periodo_anterior]
+        
+        total_atual = len(dados_atual)
+        total_anterior = len(dados_anterior)
+        
+        if total_anterior > 0:
+            variacao = ((total_atual - total_anterior) / total_anterior * 100)
+        else:
+            variacao = 100 if total_atual > 0 else 0
+        
+        label_atual = dados_atual['periodo_label'].iloc[0] if not dados_atual.empty else str(periodo_atual)
+        label_anterior = dados_anterior['periodo_label'].iloc[0] if not dados_anterior.empty else str(periodo_anterior)
+        
+        col_comp1, col_comp2, col_comp3, col_comp4 = st.columns(4)
+        
+        with col_comp1:
+            st.metric(
+                f"📅 Período Atual ({label_atual})",
+                formatar_numero_br(total_atual)
+            )
+        with col_comp2:
+            st.metric(
+                f"📅 Período Anterior ({label_anterior})",
+                formatar_numero_br(total_anterior)
+            )
+        with col_comp3:
+            delta_color = "inverse" if variacao > 0 else "normal"
+            st.metric(
+                "📊 Variação",
+                f"{variacao:+.1f}%",
+                delta=f"{total_atual - total_anterior:+d}",
+                delta_color=delta_color
+            )
+        with col_comp4:
+            if variacao > 10:
+                st.error("📈 **AUMENTO** de cancelamentos")
+            elif variacao < -10:
+                st.success("📉 **REDUÇÃO** de cancelamentos")
+            else:
+                st.info("➡️ **ESTÁVEL**")
+        
+        # Gráfico de comparação por região
+        if 'Região' in df_cancelados.columns:
+            st.markdown("#### 📊 Comparação Período Atual vs. Anterior por Região")
+            
+            comp_regiao = pd.DataFrame({
+                'Região': sorted(set(dados_atual['Região'].dropna().unique()) | set(dados_anterior['Região'].dropna().unique())),
+            })
+            
+            comp_regiao['Período Atual'] = comp_regiao['Região'].apply(
+                lambda r: len(dados_atual[dados_atual['Região'] == r])
+            )
+            comp_regiao['Período Anterior'] = comp_regiao['Região'].apply(
+                lambda r: len(dados_anterior[dados_anterior['Região'] == r])
+            )
+            comp_regiao['Variação %'] = comp_regiao.apply(
+                lambda r: ((r['Período Atual'] - r['Período Anterior']) / r['Período Anterior'] * 100)
+                if r['Período Anterior'] > 0 else (100 if r['Período Atual'] > 0 else 0),
+                axis=1
+            ).round(1)
+            
+            fig_comp = px.bar(
+                comp_regiao.melt(id_vars=['Região'], value_vars=['Período Anterior', 'Período Atual'],
+                                 var_name='Período', value_name='Cancelamentos'),
+                x='Região',
+                y='Cancelamentos',
+                color='Período',
+                barmode='group',
+                title=f'📊 Cancelamentos por Região - {label_anterior} vs {label_atual}',
+                color_discrete_map={'Período Anterior': '#95a5a6', 'Período Atual': '#e74c3c'}
+            )
+            fig_comp.update_layout(height=400, xaxis_tickangle=-45)
+            st.plotly_chart(fig_comp, use_container_width=True, config={'displayModeBar': False})
+            
+            with st.expander("📋 Ver tabela comparativa"):
+                st.dataframe(
+                    comp_regiao,
+                    use_container_width=True,
+                    column_config={
+                        'Período Atual': st.column_config.NumberColumn(format='%d'),
+                        'Período Anterior': st.column_config.NumberColumn(format='%d'),
+                        'Variação %': st.column_config.NumberColumn(format='%.1f%%'),
+                    }
+                )
+    else:
+        st.info("ℹ️ Dados insuficientes para comparação. São necessários pelo menos 2 períodos.")
+    
+    # ========== ANÁLISE DE TENDÊNCIA ==========
+    st.markdown("---")
+    st.subheader("📈 Análise de Tendência")
+    
+    tendencia = df_cancelados.groupby('periodo').size().reset_index(name='cancelamentos')
+    tendencia['periodo_str'] = tendencia['periodo'].apply(lambda x: str(x) if pd.notna(x) else '')
+    tendencia = tendencia.sort_values('periodo')
+    
+    if len(tendencia) >= 3:
+        tendencia['media_movel_3'] = tendencia['cancelamentos'].rolling(window=3, min_periods=1).mean().round(1)
+        
+        fig_tend = go.Figure()
+        
+        fig_tend.add_trace(go.Scatter(
+            x=tendencia['periodo_str'],
+            y=tendencia['cancelamentos'],
+            mode='lines+markers',
+            name='Cancelamentos',
+            line=dict(color='#e74c3c', width=3),
+            marker=dict(size=10)
+        ))
+        
+        fig_tend.add_trace(go.Scatter(
+            x=tendencia['periodo_str'],
+            y=tendencia['media_movel_3'],
+            mode='lines',
+            name='Média Móvel (3 períodos)',
+            line=dict(color='#3498db', width=2, dash='dash')
+        ))
+        
+        fig_tend.update_layout(
+            title='📈 Tendência de Cancelamentos',
+            height=400,
+            xaxis_title='Período',
+            yaxis_title='Cancelamentos',
+            hovermode='x unified'
+        )
+        st.plotly_chart(fig_tend, use_container_width=True, config={'displayModeBar': False})
+        
+        # Análise textual
+        if len(tendencia) >= 2:
+            primeiro = tendencia.iloc[0]['cancelamentos']
+            ultimo = tendencia.iloc[-1]['cancelamentos']
+            
+            if primeiro > 0:
+                var_total = ((ultimo - primeiro) / primeiro * 100)
+            else:
+                var_total = 0
+            
+            insights_tendencia = []
+            
+            if var_total > 20:
+                insights_tendencia.append(f"🚨 **Tendência CRESCENTE:** Aumento de {var_total:.1f}% no período")
+            elif var_total > 5:
+                insights_tendencia.append(f"📈 **Tendência de alta moderada:** Aumento de {var_total:.1f}%")
+            elif var_total < -20:
+                insights_tendencia.append(f"✅ **Tendência DECRESCENTE:** Redução de {abs(var_total):.1f}% no período")
+            elif var_total < -5:
+                insights_tendencia.append(f"📉 **Tendência de queda moderada:** Redução de {abs(var_total):.1f}%")
+            else:
+                insights_tendencia.append(f"➡️ **Tendência ESTÁVEL:** Variação de {var_total:.1f}%")
+            
+            if len(tendencia) >= 4:
+                metade = len(tendencia) // 2
+                media_primeira = tendencia.head(metade)['cancelamentos'].mean()
+                media_segunda = tendencia.tail(metade)['cancelamentos'].mean()
+                
+                if media_segunda > media_primeira * 1.2:
+                    insights_tendencia.append("⚠️ **Aceleração detectada:** Cancelamentos aumentando nos períodos mais recentes")
+                elif media_segunda < media_primeira * 0.8:
+                    insights_tendencia.append("🎯 **Desaceleração detectada:** Cancelamentos diminuindo nos períodos mais recentes")
+            
+            for insight in insights_tendencia:
+                st.info(insight)
+    else:
+        st.info("ℹ️ Dados insuficientes para análise de tendência (mínimo 3 períodos).")
+    
+    # ========== SAZONALIDADE ==========
+    st.markdown("---")
+    st.subheader("🌊 Análise de Sazonalidade")
+    
+    if granularidade == "Mensal":
+        df_cancelados['mes'] = df_cancelados[data_cancel_col].dt.month
+        df_cancelados['ano'] = df_cancelados[data_cancel_col].dt.year
+        
+        meses_pt = {
+            1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr',
+            5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago',
+            9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
+        }
+        
+        sazonalidade = df_cancelados.groupby('mes').size().reset_index(name='total')
+        sazonalidade['mes_nome'] = sazonalidade['mes'].map(meses_pt)
+        sazonalidade = sazonalidade.sort_values('mes')
+        
+        media_geral = sazonalidade['total'].mean()
+        sazonalidade['desvio'] = sazonalidade['total'] - media_geral
+        sazonalidade['percentual_acima'] = ((sazonalidade['total'] / media_geral - 1) * 100).round(1)
+        
+        col_saz1, col_saz2 = st.columns([2, 1])
+        
+        with col_saz1:
+            fig_saz = px.bar(
+                sazonalidade,
+                x='mes_nome',
+                y='total',
+                color='percentual_acima',
+                color_continuous_scale='RdYlGn_r',
+                title='🌊 Sazonalidade dos Cancelamentos por Mês',
+                text='total',
+                labels={'mes_nome': 'Mês', 'total': 'Cancelamentos'}
+            )
+            fig_saz.update_traces(texttemplate='%{text}', textposition='outside')
+            fig_saz.update_layout(height=400, coloraxis_showscale=False)
+            st.plotly_chart(fig_saz, use_container_width=True, config={'displayModeBar': False})
+        
+        with col_saz2:
+            st.markdown("##### 🔍 Insights de Sazonalidade")
+            
+            pior_mes = sazonalidade.loc[sazonalidade['total'].idxmax()]
+            melhor_mes = sazonalidade.loc[sazonalidade['total'].idxmin()]
+            
+            st.metric("📛 Mês com Mais Cancel.", pior_mes['mes_nome'], 
+                     delta=f"{pior_mes['percentual_acima']:+.1f}% vs média")
+            st.metric("✅ Mês com Menos Cancel.", melhor_mes['mes_nome'],
+                     delta=f"{melhor_mes['percentual_acima']:+.1f}% vs média")
+            
+            st.markdown("---")
+            st.caption("**Desvios acima da média:**")
+            for _, row in sazonalidade[sazonalidade['percentual_acima'] > 10].iterrows():
+                st.warning(f"🔴 **{row['mes_nome']}**: {row['percentual_acima']:+.1f}% acima da média")
+            for _, row in sazonalidade[sazonalidade['percentual_acima'] < -10].iterrows():
+                st.success(f"🟢 **{row['mes_nome']}**: {row['percentual_acima']:+.1f}% abaixo da média")
+    else:
+        st.info("💡 Selecione a granularidade **Mensal** para análise de sazonalidade.")
+    
+    # ========== ANÁLISE DE COORTE TEMPORAL ==========
+    st.markdown("---")
+    st.subheader("📦 Análise de Coorte Temporal")
+    
+    st.markdown("""
+    <div style="background-color:#f8f9fa; padding:15px; border-radius:10px; margin-bottom:15px;">
+    <strong>📦 O que é uma coorte?</strong><br>
+    Agrupa cancelamentos por período de tempo (trimestre/semestre) para identificar 
+    tendências macro e padrões de longo prazo.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    df_cancelados['ano_trim'] = df_cancelados[data_cancel_col].dt.to_period('Q')
+    coorte = df_cancelados.groupby('ano_trim').agg(
+        total=('CONDOMANIO', 'count'),
+        condominios=('Condomínio', 'nunique')
+    ).reset_index()
+    coorte['label'] = coorte['ano_trim'].apply(lambda x: f"T{x.quarter}/{x.year}" if pd.notna(x) else '')
+    coorte = coorte.sort_values('ano_trim')
+    
+    if len(coorte) >= 2:
+        coorte['variacao'] = coorte['total'].pct_change() * 100
+        coorte['variacao'] = coorte['variacao'].fillna(0).round(1)
+        
+        col_coorte1, col_coorte2 = st.columns(2)
+        
+        with col_coorte1:
+            fig_coorte = go.Figure()
+            
+            fig_coorte.add_trace(go.Bar(
+                x=coorte['label'],
+                y=coorte['total'],
+                name='Cancelamentos',
+                marker_color='#e74c3c',
+                text=coorte['total'],
+                textposition='outside'
+            ))
+            
+            fig_coorte.add_trace(go.Scatter(
+                x=coorte['label'],
+                y=coorte['total'],
+                mode='lines+markers',
+                name='Tendência',
+                line=dict(color='#2c3e50', width=2, dash='dot'),
+                marker=dict(size=8)
+            ))
+            
+            fig_coorte.update_layout(
+                title='📦 Coorte Trimestral de Cancelamentos',
+                height=400,
+                xaxis_title='Trimestre',
+                yaxis_title='Cancelamentos',
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_coorte, use_container_width=True, config={'displayModeBar': False})
+        
+        with col_coorte2:
+            st.markdown("##### 📊 Variação Trimestre a Trimestre")
+            
+            for _, row in coorte.iterrows():
+                if row['variacao'] > 10:
+                    st.error(f"📈 **{row['label']}**: {row['total']} cancel. ({row['variacao']:+.1f}%)")
+                elif row['variacao'] < -10:
+                    st.success(f"📉 **{row['label']}**: {row['total']} cancel. ({row['variacao']:+.1f}%)")
+                else:
+                    st.info(f"➡️ **{row['label']}**: {row['total']} cancel. ({row['variacao']:+.1f}%)")
+        
+        with st.expander("📋 Ver dados completos da coorte"):
+            st.dataframe(
+                coorte[['label', 'total', 'condominios', 'variacao']],
+                use_container_width=True,
+                column_config={
+                    'label': 'Trimestre',
+                    'total': st.column_config.NumberColumn('Cancelamentos', format='%d'),
+                    'condominios': st.column_config.NumberColumn('Condomínios', format='%d'),
+                    'variacao': st.column_config.NumberColumn('Variação %', format='%.1f%%'),
+                }
+            )
+    else:
+        st.info("ℹ️ Dados insuficientes para análise de coorte (mínimo 2 trimestres).")
+    
+    # ========== RANKING DE REGIÕES ==========
+    st.markdown("---")
+    st.subheader("🏆 Ranking de Regiões por Cancelamento")
+    
+    if 'Região' in df_cancelados.columns:
+        regiao_stats = df_cancelados.groupby('Região').agg(
+            total_cancelamentos=('CONDOMANIO', 'count'),
+            total_condominios=('Condomínio', 'nunique')
+        ).reset_index()
+        
+        regiao_stats['media_por_condominio'] = (
+            regiao_stats['total_cancelamentos'] / regiao_stats['total_condominios']
+        ).round(1)
+        
+        total_geral = regiao_stats['total_cancelamentos'].sum()
+        regiao_stats['percentual'] = (
+            regiao_stats['total_cancelamentos'] / total_geral * 100
+        ).round(1) if total_geral > 0 else 0
+        
+        regiao_stats = regiao_stats.sort_values('total_cancelamentos', ascending=False)
+        
+        st.dataframe(
+            regiao_stats,
+            use_container_width=True,
+            column_config={
+                'Região': st.column_config.TextColumn('Região'),
+                'total_cancelamentos': st.column_config.NumberColumn('Total Cancelamentos', format='%d'),
+                'total_condominios': st.column_config.NumberColumn('Condomínios', format='%d'),
+                'media_por_condominio': st.column_config.NumberColumn('Média/Condomínio', format='%.1f'),
+                'percentual': st.column_config.ProgressColumn('Percentual', format='%.1f%%', min_value=0, max_value=100),
+            }
+        )
+        
+        fig_rank_reg = px.bar(
+            regiao_stats,
+            x='Região',
+            y='total_cancelamentos',
+            color='percentual',
+            color_continuous_scale='Reds',
+            title='🏆 Ranking de Regiões por Total de Cancelamentos',
+            text='total_cancelamentos'
+        )
+        fig_rank_reg.update_traces(texttemplate='%{text}', textposition='outside')
+        fig_rank_reg.update_layout(height=400, coloraxis_showscale=False, xaxis_tickangle=-45)
+        st.plotly_chart(fig_rank_reg, use_container_width=True, config={'displayModeBar': False})
+    
+    # ========== EXPORTAÇÃO ==========
+    st.markdown("---")
+    st.subheader("📎 Exportar Análise Avançada")
+    
+    output_avancado = io.BytesIO()
+    with pd.ExcelWriter(output_avancado, engine='openpyxl') as writer:
+        if 'tendencia' in locals() and not tendencia.empty:
+            tendencia.to_excel(writer, sheet_name='Tendencia', index=False)
+        
+        if 'sazonalidade' in locals() and not sazonalidade.empty:
+            sazonalidade.to_excel(writer, sheet_name='Sazonalidade', index=False)
+        
+        if 'coorte' in locals() and not coorte.empty:
+            coorte.to_excel(writer, sheet_name='Coorte_Trimestral', index=False)
+        
+        if 'regiao_stats' in locals() and not regiao_stats.empty:
+            regiao_stats.to_excel(writer, sheet_name='Ranking_Regioes', index=False)
+    
+    output_avancado.seek(0)
+    
+    st.download_button(
+        "📥 Exportar Análise Avançada de Cancelamentos",
+        output_avancado,
+        f"cancelamentos_avancado_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 
-
-        # ==================== FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
+    # ==================== FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
 
 def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_prospeccao, data_inicio_padrao=None):
     """
@@ -1229,6 +1927,7 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
         - Evolução mensal detalhada de cada um
         """)
 
+
 # ==================== FUNÇÕES OTIMIZADAS PARA CONSULTA DE CRÉDITO ====================
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1545,8 +2244,7 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
     )
 
 
-
-    # ==================== CONEXÃO MONGODB ====================
+# ==================== CONEXÃO MONGODB ====================
 @st.cache_resource
 def init_mongo():
     """Inicializa conexão MongoDB com índices"""
@@ -2526,7 +3224,7 @@ def preparar_dados_maturidade(df_clientes, df_condominios):
     return df_maturidade
 
 
-    # ==================== DASHBOARD MEUS ACOMPANHAMENTOS ====================
+# ==================== DASHBOARD MEUS ACOMPANHAMENTOS ====================
 
 def render_dashboard_meus_acompanhamentos(df_clientes, df_condominios, df_parcelas, meus_nomes, df_meus_prospeccao):
     """Renderiza dashboard completo com foco nos condomínios de acompanhamento."""
@@ -2940,7 +3638,8 @@ def gerenciamento_dados_mode(db):
                 st.session_state.confirm_delete_all = True
 
 
-# ==================== DASHBOARD PRINCIPAL ====================
+
+                # ==================== DASHBOARD PRINCIPAL ====================
 def exibir_dashboard_principal(db=None):
     """Exibe o dashboard principal com todas as abas"""
     subtitulo("📊 Dashboard de Condomínios")
@@ -3077,14 +3776,15 @@ def exibir_dashboard_principal(db=None):
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
     
-    # 12 ABAS (incluindo a nova de Cancelamentos)
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+    # 13 ABAS (incluindo a nova de Cancelamentos Avançado)
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
         "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", 
         "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", 
         "⏳ Maturidade", "🎯 Consulta de Crédito", "📈 Análise Temporal",
         "⭐ MEUS ACOMPANHAMENTOS",
         "📈 CRESCIMENTO POR CONDOMÍNIO",
-        "🚫 CANCELAMENTOS"
+        "🚫 CANCELAMENTOS",
+        "📊 CANCELAMENTOS AVANÇADO"
     ])
     
     # TAB 1: PENETRAÇÃO
@@ -4002,6 +4702,10 @@ def exibir_dashboard_principal(db=None):
     # ==================== TAB 12: CANCELAMENTOS ====================
     with tab12:
         render_aba_cancelamentos(df_clientes, df_condominios)
+    
+    # ==================== TAB 13: CANCELAMENTOS AVANÇADO (NOVA) ====================
+    with tab13:
+        render_aba_cancelamentos_avancado(df_clientes, df_condominios)
 
 
 # ==================== FUNÇÃO PRINCIPAL ====================
@@ -4011,7 +4715,13 @@ def render_relatorios_condominios():
     initialize_session_state()
     
     titulo_principal("🏢 Relatórios Estratégicos - Condomínios")
-    st.markdown("Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, maturidade, análise temporal por condomínio, integração com Meus Acompanhamentos, análise de crescimento individual com filtro por múltiplas fases e análise de cancelamentos por condomínio e mês")
+    st.markdown("""
+    Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, 
+    maturidade, análise temporal por condomínio, integração com Meus Acompanhamentos, 
+    análise de crescimento individual com filtro por múltiplas fases, 
+    análise de cancelamentos por condomínio e mês, 
+    e **análise avançada de cancelamentos** (comparação, tendência, sazonalidade e coorte)
+    """)
     
     db = init_mongo()
     
