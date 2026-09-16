@@ -1,5 +1,5 @@
 """
-cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM TERMO DE ADESÃO)
+cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM TERMO DE ADESÃO + CHECKBOX IXC)
 Correções aplicadas:
 - Obtenção correta do condominio_id_ixc antes de salvar
 - Logs detalhados para debug do condomínio
@@ -10,6 +10,7 @@ Correções aplicadas:
 - NOVO: Checkbox de fidelidade (12 meses)
 - NOVO: Multiselect de SVA (opcional)
 - NOVO: Valor mensal auto-preenchido do plano
+- NOVO: Checkbox "Integrar com IXC ao salvar" (marcado por padrão)
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -1194,6 +1195,18 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.session_state["mensagem_confirmacao_visualizar"] = mensagem
                 st.success("✅ Mensagem gerada!")
             
+            # ========== 🔌 CHECKBOX DE INTEGRAÇÃO IXC (VISUALIZAR/EDITAR) ==========
+            st.markdown("### 🔌 Integração com IXC")
+            integrar_ixc_editar = st.checkbox(
+                "Integrar com IXC ao atualizar",
+                value=True,
+                key="integrar_ixc_editar_checkbox",
+                help="Marcado (padrão): sincroniza o cadastro com o IXC. "
+                     "Desmarcado: atualiza apenas localmente, sem tocar no IXC."
+            )
+            if not integrar_ixc_editar:
+                st.warning("⚠️ A atualização será salva **apenas localmente**. Nenhuma chamada ao IXC será feita.")
+            
             atualizar = st.form_submit_button("🔄 Atualizar Cadastro", type="primary")
             
             if atualizar:
@@ -1311,9 +1324,11 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             clientes_collection.update_one({"_id": cliente["_id"]}, {"$set": update_data})
                             st.success("✅ Cadastro atualizado com sucesso!")
                             
-                            # ========== 🚀 TENTAR INTEGRAÇÃO COM IXC APÓS ATUALIZAÇÃO ==========
-                            # Se o cliente já estava integrado, manter o status
-                            if cliente.get("integrado_ixc") and cliente.get("id_ixc"):
+                            # ========== 🚀 INTEGRAÇÃO COM IXC APÓS ATUALIZAÇÃO ==========
+                            if not integrar_ixc_editar:
+                                # 🔕 Integração desabilitada pelo usuário
+                                st.info("ℹ️ Integração com IXC desabilitada. Nenhuma sincronização foi feita.")
+                            elif cliente.get("integrado_ixc") and cliente.get("id_ixc"):
                                 st.info(f"ℹ️ Cliente já integrado ao IXC (ID: {cliente.get('id_ixc')})")
                             elif cliente.get("integrado_ixc") is False or cliente.get("integrado_ixc") is None:
                                 # Verificar se cliente tem dados mínimos e tentar integrar
@@ -2316,6 +2331,23 @@ def render_cadastro(clientes_collection):
                 st.success("✅ Mensagem gerada!")
             
             # ==================================================================
+            # 🆕 CHECKBOX DE INTEGRAÇÃO IXC (NOVO CADASTRO)
+            # ==================================================================
+            integrar_ixc = True  # valor padrão caso não seja CRM
+            if tipo_cadastro == "Cadastro CRM":
+                st.markdown("---")
+                st.markdown("### 🔌 Integração com IXC")
+                integrar_ixc = st.checkbox(
+                    "Integrar com IXC ao salvar",
+                    value=True,
+                    key=f"integrar_ixc_novo_{st.session_state['form_key']}",
+                    help="Marcado (padrão): envia o cadastro automaticamente para o IXC. "
+                         "Desmarcado: o cadastro é salvo APENAS localmente, sem integração."
+                )
+                if not integrar_ixc:
+                    st.warning("⚠️ O cadastro será salvo **apenas localmente**. Nenhuma chamada ao IXC será feita.")
+            
+            # ==================================================================
             # 🟡 BOTÃO DE SALVAR - VERSÃO COM COR AMARELA PARA IXC EXISTENTE
             # ==================================================================
             # Primeiro, verificar se o cliente existe no IXC (fora do form para não travar)
@@ -2324,8 +2356,9 @@ def render_cadastro(clientes_collection):
             ixc_confirmado = False
             
             # Verificação do IXC - será executada quando o form for renderizado
+            # ⚠️ NOVO: só verifica se o usuário QUER integrar
             config = get_ixc_config()
-            if tipo_cadastro == "Cadastro CRM" and cpf and config:
+            if tipo_cadastro == "Cadastro CRM" and cpf and config and integrar_ixc:
                 cpf_digits = "".join(filter(str.isdigit, str(cpf)))
                 if len(cpf_digits) == 11:
                     # Usar cache para não repetir a verificação a cada rerun
@@ -2567,6 +2600,7 @@ def render_cadastro(clientes_collection):
                         "apartamento": dados_cond["apartamento"] if dados_cond["apartamento"] else None,
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         "integrado_ixc": False,
+                        "integracao_ixc_habilitada": integrar_ixc,  # 🆕 NOVO
                         "tentativas_integracao": 0,
                         # NOVOS CAMPOS
                         "valor_mensal": valor_mensal if tipo_cadastro == "Cadastro CRM" else "0,00",
@@ -2583,61 +2617,73 @@ def render_cadastro(clientes_collection):
                         
                         # ========== 🚀 INTEGRAÇÃO COM IXC ==========
                         if tipo_cadastro == "Cadastro CRM":
-                            try:
-                                if cliente_existe_ixc and id_ixc_existente:
-                                    # Cliente já existe no IXC - apenas vincular
-                                    update_fields = {
-                                        "integrado_ixc": True,
-                                        "data_integracao_ixc": datetime.now(),
-                                        "id_ixc": id_ixc_existente
-                                    }
-                                    clientes_collection.update_one(
-                                        {"_id": result.inserted_id},
-                                        {"$set": update_fields}
-                                    )
-                                    st.info(f"ℹ️ Cliente já existia no IXC (ID: {id_ixc_existente}). Nenhum dado foi alterado no IXC.")
-                                    st.success("✅ Cliente vinculado ao IXC com sucesso!")
-                                else:
-                                    # Tentar criar no IXC
-                                    sucesso_ixc, id_ixc, erro_ixc, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
-                                    
-                                    if sucesso_ixc:
+                            if not integrar_ixc:
+                                # 🔕 Integração desabilitada pelo usuário
+                                clientes_collection.update_one(
+                                    {"_id": result.inserted_id},
+                                    {"$set": {
+                                        "integrado_ixc": False,
+                                        "integracao_ixc_habilitada": False,
+                                        "motivo_nao_integracao": "Desabilitada manualmente no cadastro"
+                                    }}
+                                )
+                                st.info("ℹ️ Integração com IXC desabilitada. Cadastro salvo apenas localmente.")
+                            else:
+                                try:
+                                    if cliente_existe_ixc and id_ixc_existente:
+                                        # Cliente já existe no IXC - apenas vincular
                                         update_fields = {
                                             "integrado_ixc": True,
-                                            "data_integracao_ixc": datetime.now()
+                                            "data_integracao_ixc": datetime.now(),
+                                            "id_ixc": id_ixc_existente
                                         }
-                                        if id_ixc and id_ixc not in ["ok", "existente"]:
-                                            update_fields["id_ixc"] = id_ixc
-                                        
-                                        # Registra no Mongo se o condomínio não pôde ser
-                                        # vinculado no IXC, para dar pra filtrar/corrigir depois
-                                        if condominio_vinculado is False:
-                                            update_fields["condominio_vinculado_ixc"] = False
-                                        
                                         clientes_collection.update_one(
                                             {"_id": result.inserted_id},
                                             {"$set": update_fields}
                                         )
-                                        
-                                        # 👇 CRÍTICO: o cliente pode ter sido criado no IXC com
-                                        # sucesso, mas SEM o condomínio vinculado. Isso não pode
-                                        # mais passar em silêncio — avisa quem está cadastrando.
-                                        if condominio_vinculado is False:
-                                            st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
-                                            st.warning(
-                                                "⚠️ Atenção: o condomínio/bloco/apartamento informados "
-                                                "NÃO foram vinculados ao cliente no IXC. Verifique "
-                                                "manualmente o cadastro no IXC ou rode a sincronização "
-                                                "de condomínios e reenvie."
-                                            )
-                                        else:
-                                            st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                                        st.info(f"ℹ️ Cliente já existia no IXC (ID: {id_ixc_existente}). Nenhum dado foi alterado no IXC.")
+                                        st.success("✅ Cliente vinculado ao IXC com sucesso!")
                                     else:
-                                        registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
-                                        st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
-                                        st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
-                            except Exception as e:
-                                st.warning(f"⚠️ Erro na integração com IXC (cadastro salvo localmente): {str(e)[:100]}")
+                                        # Tentar criar no IXC
+                                        sucesso_ixc, id_ixc, erro_ixc, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
+                                        
+                                        if sucesso_ixc:
+                                            update_fields = {
+                                                "integrado_ixc": True,
+                                                "data_integracao_ixc": datetime.now()
+                                            }
+                                            if id_ixc and id_ixc not in ["ok", "existente"]:
+                                                update_fields["id_ixc"] = id_ixc
+                                            
+                                            # Registra no Mongo se o condomínio não pôde ser
+                                            # vinculado no IXC, para dar pra filtrar/corrigir depois
+                                            if condominio_vinculado is False:
+                                                update_fields["condominio_vinculado_ixc"] = False
+                                            
+                                            clientes_collection.update_one(
+                                                {"_id": result.inserted_id},
+                                                {"$set": update_fields}
+                                            )
+                                            
+                                            # 👇 CRÍTICO: o cliente pode ter sido criado no IXC com
+                                            # sucesso, mas SEM o condomínio vinculado. Isso não pode
+                                            # mais passar em silêncio — avisa quem está cadastrando.
+                                            if condominio_vinculado is False:
+                                                st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                                                st.warning(
+                                                    "⚠️ Atenção: o condomínio/bloco/apartamento informados "
+                                                    "NÃO foram vinculados ao cliente no IXC. Verifique "
+                                                    "manualmente o cadastro no IXC ou rode a sincronização "
+                                                    "de condomínios e reenvie."
+                                                )
+                                            else:
+                                                st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
+                                        else:
+                                            registrar_pendencia_integracao(result.inserted_id, cliente_data, erro_ixc)
+                                            st.warning(f"⚠️ Cliente salvo localmente. Falha na integração com IXC: {erro_ixc[:150] if erro_ixc else 'Erro desconhecido'}")
+                                            st.info("🔄 O sistema tentará sincronizar automaticamente mais tarde.")
+                                except Exception as e:
+                                    st.warning(f"⚠️ Erro na integração com IXC (cadastro salvo localmente): {str(e)[:100]}")
                         else:
                             # Cadastro Simples - não integra com IXC
                             st.info("💡 Cadastro simples salvo. Para integrar com o IXC, complete o cadastro usando a opção 'Completar Cadastro Existente'.")
@@ -2849,12 +2895,18 @@ def render_cadastro(clientes_collection):
                 "dados_temp_comodato_completar", "nome_arquivo_comodato_completar",
                 "dados_temp_termo_completar", "nome_arquivo_termo_completar",
                 "dados_temp_bloqueio", "ignorar_bloqueio", "endereco_bloqueado_confirmado",
-                "confirmar_ixc_existente"
+                "confirmar_ixc_existente",
+                "integrar_ixc_editar_checkbox"  # 🆕 Limpar o checkbox de edição
             ]
             
             # Limpar também os caches do IXC
             ixc_cache_keys = [k for k in st.session_state.keys() if k.startswith("ixc_verification_")]
             for key in ixc_cache_keys:
+                del st.session_state[key]
+            
+            # Limpar também os checkboxes de integração IXC (eles têm o form_key no nome)
+            integrar_keys = [k for k in st.session_state.keys() if k.startswith("integrar_ixc_novo_")]
+            for key in integrar_keys:
                 del st.session_state[key]
             
             suffixes = ["", "_completar", "_dialog", "_editar", "_visualizar", "_principal"]
