@@ -1156,7 +1156,7 @@ def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual, modo_de
                 st.rerun()
 
 # ============================================================================
-# ✅ FUNÇÃO PRINCIPAL: render_followup (ATUALIZADO COM FILTRO DE VENDEDORA)
+# ✅ FUNÇÃO PRINCIPAL: render_followup (ATUALIZADO COM FILTRO DE VENDEDORA E AGRUPAMENTO POR DATA)
 # ============================================================================
 def render_followup(clientes_collection):
     """Renderiza o módulo de Follow-up com tracking de touches"""
@@ -1243,6 +1243,13 @@ def render_followup(clientes_collection):
                 ["Todos ", "Com data definida ", "Sem data definida ", "Vencidas ", "Hoje ", "Próximos 7 dias "],
                 index=0
             )
+            # ✅ NOVO: Opção de ordenação por data de cadastro
+            ordenacao_tab1 = st.selectbox(
+                "Ordenar por: ",
+                ["Data de cadastro (mais recente) ", "Data de cadastro (mais antiga) ", "Nome (A-Z) "],
+                index=0,
+                key="followup_ordenacao_tab1"
+            )
         
         with col_origem:
             filtro_origem = st.multiselect(
@@ -1328,14 +1335,66 @@ def render_followup(clientes_collection):
             if condominios_selecionados:
                 query["condominio_nome"] = { "$in": condominios_selecionados}
 
-        clientes_followup = list(clientes_collection.find(query).sort("retorno_agendado", 1))
+        # ✅ NOVO: Lógica de ordenação dinâmica
+        if ordenacao_tab1 == "Data de cadastro (mais recente) ":
+            sort_field = "data_cadastro"
+            sort_direction = -1
+        elif ordenacao_tab1 == "Data de cadastro (mais antiga) ":
+            sort_field = "data_cadastro"
+            sort_direction = 1
+        elif ordenacao_tab1 == "Nome (A-Z) ":
+            sort_field = "nome_completo"
+            sort_direction = 1
+        else:
+            sort_field = "retorno_agendado"
+            sort_direction = 1
+
+        clientes_followup = list(clientes_collection.find(query).sort(sort_field, sort_direction))
 
         if not clientes_followup:
             st.warning("📭 Nenhum cliente encontrado com os filtros selecionados. ")
         else:
             st.success(f"✅ {len(clientes_followup)} cliente(s) para follow-up! ")
+            
+            # ✅ NOVO: Agrupar clientes por data de cadastro
+            clientes_por_data = defaultdict(list)
             for cliente in clientes_followup:
-                exibir_cliente_detalhe(cliente, clientes_collection, key_suffix="tab1")
+                # Pega a data de cadastro e formata para YYYY-MM-DD (para ordenar)
+                data_cad = cliente.get("data_cadastro")
+                if isinstance(data_cad, datetime):
+                    data_key = data_cad.strftime("%Y-%m-%d")
+                elif isinstance(data_cad, str) and len(data_cad) >= 10:
+                    data_key = data_cad[:10]
+                else:
+                    data_key = "Data Desconhecida"
+                
+                clientes_por_data[data_key].append(cliente)
+            
+            # Ordenar as datas (mais recente primeiro, se a ordenação for por data)
+            if ordenacao_tab1 == "Data de cadastro (mais antiga) ":
+                datas_ordenadas = sorted(clientes_por_data.keys(), reverse=False)
+            else:
+                datas_ordenadas = sorted(clientes_por_data.keys(), reverse=True)
+            
+            # Exibir agrupado
+            for data_key in datas_ordenadas:
+                # Formatar o cabeçalho da data
+                if data_key == "Data Desconhecida":
+                    header_data = "📅 Data Desconhecida"
+                else:
+                    try:
+                        dt_obj = datetime.strptime(data_key, "%Y-%m-%d")
+                        header_data = f"📅 {dt_obj.strftime('%d/%m/%Y')}"
+                    except:
+                        header_data = f"📅 {data_key}"
+                
+                st.markdown(f"### {header_data}")
+                st.markdown("---")
+                
+                for cliente in clientes_por_data[data_key]:
+                    exibir_cliente_detalhe(cliente, clientes_collection, key_suffix="tab1")
+                
+                st.markdown("") # Espaçamento entre grupos
             
             # ✅ NOVO: EXPORTAÇÃO COMPLETA NA TAB 1
             st.markdown("---")
