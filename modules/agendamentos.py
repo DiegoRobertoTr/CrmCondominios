@@ -74,6 +74,52 @@ def get_condominios_com_contagem_agendamentos(clientes_collection, forcar_atuali
     return st.session_state.get(cache_key, {"Todos": "Todos"})
 
 # ============================================================================
+# ✅ NOVO: FUNÇÃO AUXILIAR - Obter lista de vendedoras com contagem (Pool)
+# ============================================================================
+def get_vendedoras_pool(clientes_collection):
+    """
+    Retorna lista de vendedoras com contagem de leads no Pool (sem agendamento).
+    """
+    try:
+        pipeline = [
+            {
+                "$match": {
+                    "seguiu_ativacao": "Sim",
+                    "$or": [
+                        {"retorno_agendado": {"$exists": False}},
+                        {"retorno_agendado": {"$in": [None, ""]}},
+                        {"retorno_agendado": {"$not": {"$regex": r"^\d{4}-\d{2}-\d{2}$"}}}
+                    ],
+                    "cadastrado_por": {"$ne": None, "$ne": ""}
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$cadastrado_por",
+                    "count": {"$sum": 1}
+                }
+            },
+            {"$sort": {"_id": 1}}
+        ]
+        
+        resultados = list(clientes_collection.aggregate(pipeline))
+        
+        vendedoras_formatadas = {}
+        for r in resultados:
+            nome = r["_id"]
+            count = r["count"]
+            vendedoras_formatadas[f"{nome} ({count})"] = nome
+        
+        opcoes_finais = {"Todas": "Todas"}
+        opcoes_finais.update(vendedoras_formatadas)
+        
+        return opcoes_finais
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar vendedoras: {e}")
+        return {"Todas": "Todas"}
+
+# ============================================================================
 # FUNÇÃO PRINCIPAL: render_agendamentos
 # ============================================================================
 def render_agendamentos(clientes_collection):
@@ -102,10 +148,34 @@ def render_agendamentos(clientes_collection):
         mostrar_calendario(clientes_collection)
 
 # ============================================================================
-# FUNÇÃO: mostrar_pool (MODIFICADA)
+# ✅ FUNÇÃO: mostrar_pool (MODIFICADA COM FILTRO DE VENDEDORA E AGRUPAMENTO POR DATA)
 # ============================================================================
 def mostrar_pool(clientes_collection):
     st.subheader("📋 Clientes que seguiram para ativação (sem agendamento)")
+    
+    # ✅ NOVO: Filtros de Vendedora e Ordenação
+    col_vendedora, col_ordenacao = st.columns([2, 2])
+    
+    with col_vendedora:
+        vendedoras_opcoes = get_vendedoras_pool(clientes_collection)
+        opcoes_display_vendedoras = list(vendedoras_opcoes.keys())
+        
+        filtro_vendedora = st.selectbox(
+            "👤 Filtrar por vendedora:",
+            options=opcoes_display_vendedoras,
+            index=0,
+            key="pool_filtro_vendedora"
+        )
+    
+    with col_ordenacao:
+        ordenacao_pool = st.selectbox(
+            "Ordenar por:",
+            ["Data de cadastro (mais recente)", "Data de cadastro (mais antiga)", "Nome (A-Z)"],
+            index=0,
+            key="pool_ordenacao"
+        )
+    
+    # Query base
     query = {
         "seguiu_ativacao": "Sim",
         "$or": [
@@ -115,9 +185,15 @@ def mostrar_pool(clientes_collection):
         ]
     }
     
-    # 🔥 MODIFICAÇÃO: Ordenar por _id decrescente (mais recentes primeiro)
-    clientes = list(clientes_collection.find(query).sort("_id", -1))
+    # ✅ NOVO: Aplicar filtro de vendedora
+    vendedora_selecionada = vendedoras_opcoes.get(filtro_vendedora, "Todas")
+    if vendedora_selecionada != "Todas":
+        query["cadastrado_por"] = vendedora_selecionada
     
+    # Buscar clientes
+    clientes = list(clientes_collection.find(query))
+    
+    # Filtrar válidos
     pool_valido = []
     for c in clientes:
         data = c.get("retorno_agendado")
@@ -128,75 +204,131 @@ def mostrar_pool(clientes_collection):
         st.info("✅ Todos os clientes já estão agendados!")
         return
 
+    # ✅ NOVO: Ordenação dinâmica
+    if ordenacao_pool == "Data de cadastro (mais recente)":
+        pool_valido.sort(key=lambda x: str(x.get("data_cadastro", "")), reverse=True)
+    elif ordenacao_pool == "Data de cadastro (mais antiga)":
+        pool_valido.sort(key=lambda x: str(x.get("data_cadastro", "")), reverse=False)
+    elif ordenacao_pool == "Nome (A-Z)":
+        pool_valido.sort(key=lambda x: x.get("nome_completo", "").lower())
+
+    # ✅ NOVO: Agrupar por data de cadastro
+    clientes_por_data = defaultdict(list)
     for cliente in pool_valido:
-        with st.expander(f"📞 {cliente['nome_completo']} - {cliente['celular']}", expanded=False):
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.write(f"**Origem:** {cliente.get('origem', 'N/A')}")
-                st.write(f"**Plano:** {cliente.get('plano_escolhido', 'N/A')}")
-                st.write(f"**Cadastrado por:** {cliente.get('cadastrado_por', 'N/A')}")
-                
-                if cliente.get("condominio_nome"):
-                    st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')}")
-                if cliente.get("bloco") or cliente.get("apartamento"):
-                    bloco = cliente.get("bloco", "")
-                    apto = cliente.get("apartamento", "")
-                    unidade_parts = []
-                    if bloco:
-                        unidade_parts.append(f"Bloco {bloco}")
-                    if apto:
-                        unidade_parts.append(f"Apto {apto}")
-                    if unidade_parts:
-                        st.write(f"**Unidade:** {' / '.join(unidade_parts)}")
-                
-                if cliente.get("observacoes"):
-                    st.write(f"**Observações:** {cliente['observacoes']}")
-            
-            with col2:
-                data_agendamento = st.date_input(
-                    "Agendar para:  ",
-                    min_value=datetime.today().date(),
-                    key=f"data_{cliente['_id']}"
-                )
-                periodo = st.selectbox(
-                    "Período:  ",
-                    ["Selecione...", "Horário Comercial", "Manhã", "Tarde"],
-                    index=0,
-                    key=f"periodo_{cliente['_id']}"
-                )
-                
-                observacao_agendamento = st.text_input(
-                    "📝 Observações específicas:  ",
-                    placeholder="Ex: Após 14 horas, Cliente em casa até 15h, etc.  ",
-                    key=f"obs_{cliente['_id']}"
-                )
-                
-                contrato_titular = st.checkbox(
-                    "✅ Contrato deverá ser assinado obrigatoriamente pelo Titular  ",
-                    key=f"contrato_{cliente['_id']}"
-                )
-                
-                if st.button("✅ Agendar", key=f"agendar_{cliente['_id']}"):
-                    if periodo == "Selecione...":
-                        st.error("⚠️ Selecione um período!")
-                        continue
+        data_cad = cliente.get("data_cadastro")
+        if isinstance(data_cad, datetime):
+            data_key = data_cad.strftime("%Y-%m-%d")
+        elif isinstance(data_cad, str) and len(data_cad) >= 10:
+            data_key = data_cad[:10]
+        else:
+            data_key = "Data Desconhecida"
+        
+        clientes_por_data[data_key].append(cliente)
+    
+    # Ordenar as datas
+    if ordenacao_pool == "Data de cadastro (mais antiga)":
+        datas_ordenadas = sorted(clientes_por_data.keys(), reverse=False)
+    else:
+        datas_ordenadas = sorted(clientes_por_data.keys(), reverse=True)
+    
+    # ✅ NOVO: Exibir agrupado por data
+    st.markdown(f"**Total: {len(pool_valido)} cliente(s)**")
+    st.markdown("---")
+    
+    for data_key in datas_ordenadas:
+        # Formatar cabeçalho
+        if data_key == "Data Desconhecida":
+            header_data = "📅 Data Desconhecida"
+        else:
+            try:
+                dt_obj = datetime.strptime(data_key, "%Y-%m-%d")
+                header_data = f"📅 {dt_obj.strftime('%d/%m/%Y')}"
+            except:
+                header_data = f"📅 {data_key}"
+        
+        st.markdown(f"### {header_data}")
+        st.markdown("---")
+        
+        for cliente in clientes_por_data[data_key]:
+            with st.expander(f"📞 {cliente['nome_completo']} - {cliente['celular']}", expanded=False):
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.write(f"**Origem:** {cliente.get('origem', 'N/A')}")
+                    st.write(f"**Plano:** {cliente.get('plano_escolhido', 'N/A')}")
+                    st.write(f"**Cadastrado por:** {cliente.get('cadastrado_por', 'N/A')}")
                     
-                    try:
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {"$set": {
-                                "retorno_agendado": data_agendamento.isoformat(),
-                                "periodo": periodo,
-                                "observacoes_agendamento": observacao_agendamento.strip() if observacao_agendamento else None,
-                                "contrato_titular": contrato_titular,
-                                "ativo": False,
-                                "reagendado_para": None
-                            }}
-                        )
-                        st.success(f"✅ {cliente['nome_completo']} agendado para {data_agendamento.strftime('%d/%m/%Y')} ({periodo})!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Erro ao agendar: {e}")
+                    # ✅ NOVO: Exibir data de cadastro
+                    data_cad_exibir = cliente.get("data_cadastro")
+                    if isinstance(data_cad_exibir, datetime):
+                        data_cad_exibir = data_cad_exibir.strftime("%d/%m/%Y")
+                    elif isinstance(data_cad_exibir, str) and len(data_cad_exibir) >= 10:
+                        try:
+                            data_cad_exibir = datetime.strptime(data_cad_exibir[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+                        except:
+                            pass
+                    st.write(f"**Data de Cadastro:** {data_cad_exibir or 'N/A'}")
+                    
+                    if cliente.get("condominio_nome"):
+                        st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')}")
+                    if cliente.get("bloco") or cliente.get("apartamento"):
+                        bloco = cliente.get("bloco", "")
+                        apto = cliente.get("apartamento", "")
+                        unidade_parts = []
+                        if bloco:
+                            unidade_parts.append(f"Bloco {bloco}")
+                        if apto:
+                            unidade_parts.append(f"Apto {apto}")
+                        if unidade_parts:
+                            st.write(f"**Unidade:** {' / '.join(unidade_parts)}")
+                    
+                    if cliente.get("observacoes"):
+                        st.write(f"**Observações:** {cliente['observacoes']}")
+                
+                with col2:
+                    data_agendamento = st.date_input(
+                        "Agendar para:  ",
+                        min_value=datetime.today().date(),
+                        key=f"data_{cliente['_id']}"
+                    )
+                    periodo = st.selectbox(
+                        "Período:  ",
+                        ["Selecione...", "Horário Comercial", "Manhã", "Tarde"],
+                        index=0,
+                        key=f"periodo_{cliente['_id']}"
+                    )
+                    
+                    observacao_agendamento = st.text_input(
+                        "📝 Observações específicas:  ",
+                        placeholder="Ex: Após 14 horas, Cliente em casa até 15h, etc.  ",
+                        key=f"obs_{cliente['_id']}"
+                    )
+                    
+                    contrato_titular = st.checkbox(
+                        "✅ Contrato deverá ser assinado obrigatoriamente pelo Titular  ",
+                        key=f"contrato_{cliente['_id']}"
+                    )
+                    
+                    if st.button("✅ Agendar", key=f"agendar_{cliente['_id']}"):
+                        if periodo == "Selecione...":
+                            st.error("⚠️ Selecione um período!")
+                            continue
+                        
+                        try:
+                            clientes_collection.update_one(
+                                {"_id": cliente["_id"]},
+                                {"$set": {
+                                    "retorno_agendado": data_agendamento.isoformat(),
+                                    "periodo": periodo,
+                                    "observacoes_agendamento": observacao_agendamento.strip() if observacao_agendamento else None,
+                                    "contrato_titular": contrato_titular,
+                                    "ativo": False,
+                                    "reagendado_para": None
+                                }}
+                            )
+                            st.success(f"✅ {cliente['nome_completo']} agendado para {data_agendamento.strftime('%d/%m/%Y')} ({periodo})!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Erro ao agendar: {e}")
 
 # ============================================================================
 # FUNÇÃO: mostrar_agendados
