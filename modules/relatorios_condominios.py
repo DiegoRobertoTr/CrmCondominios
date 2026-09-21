@@ -12,6 +12,10 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVO: Exportação de Clientes para Win-Back com Filtro de Saúde do Cliente (Health Score)
 - CORREÇÃO CRÍTICA: Health Score agora aceita "Recebida", "Paga", "Pago", "Recebido"
 - OTIMIZAÇÃO: Cache de Health Score, carregamento em batch, prospecção cacheada
+- OTIMIZAÇÃO DE IMPORTAÇÃO: planilha lida uma única vez (engine calamine quando disponível) e
+  aba 'Base Parcelas' salva como Parquet no GridFS (em vez de ~186k documentos no MongoDB).
+  Requer: python-calamine e pyarrow no requirements.txt. Lotes antigos (parcelas em documentos)
+  continuam sendo lidos normalmente.
 """
 import streamlit as st
 import pandas as pd
@@ -29,6 +33,7 @@ import traceback
 import warnings
 import calendar
 import hashlib
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -59,6 +64,9 @@ CONDOMINIOS_CONFIG = {
     'meses_maturidade_limite': 18,
     'limite_preview_tabela': 500
 }
+
+# Identificador (campo 'module') dos arquivos Parquet de parcelas guardados no GridFS
+PARCELAS_GRIDFS_MODULE = 'condominios_parcelas'
 
 # ==================== CONSTANTES DE STATUS DE PAGAMENTO ====================
 # 🔑 CORREÇÃO CRÍTICA: aceitar múltiplos sinônimos de pagamento
@@ -2474,6 +2482,112 @@ def load_excel_from_gridfs(file_id):
         return None
 
 
+# ==================== LEITURA OTIMIZADA DO EXCEL ====================
+def _abrir_excel(arquivo):
+    """
+    Abre a planilha UMA única vez (o pd.ExcelFile é reaproveitado para todas as abas).
+    Usa o engine 'calamine' (bem mais rápido que openpyxl) quando disponível; caso contrário
+    (pandas < 2.2 ou python-calamine não instalado) cai para o engine padrão.
+    """
+    try:
+        arquivo.seek(0)
+        return pd.ExcelFile(arquivo, engine="calamine")
+    except Exception:
+        arquivo.seek(0)
+        return pd.ExcelFile(arquivo)
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
+def _preview_planilha(conteudo: bytes):
+    """Preview (5 linhas por aba), cacheado pelo conteúdo do arquivo para não reler a cada rerun."""
+    xls = _abrir_excel(io.BytesIO(conteudo))
+    return {
+        "Dados": xls.parse("Dados", nrows=5),
+        "Condominios": xls.parse("Condominios", nrows=5),
+        "Base Parcelas": xls.parse("Base Parcelas", nrows=5) if "Base Parcelas" in xls.sheet_names else None,
+    }
+
+
+# ==================== PARCELAS EM PARQUET (GRIDFS) ====================
+def _parcelas_para_parquet_bytes(df):
+    """Serializa o DataFrame de parcelas em Parquet, saneando colunas que o pyarrow rejeitaria."""
+    df = df.copy()
+    df.columns = [str(c) for c in df.columns]
+
+    for col in df.columns:
+        s = df[col]
+        if pd.api.types.is_datetime64_any_dtype(s) or s.dtype != object:
+            continue
+        tipo = pd.api.types.infer_dtype(s, skipna=True)
+        if tipo in ("datetime", "datetime64", "date"):
+            df[col] = pd.to_datetime(s, errors="coerce")
+        elif tipo in ("integer", "floating", "mixed-integer-float", "string", "boolean", "empty"):
+            continue
+        else:
+            # tipos mistos (ex.: números e textos na mesma coluna) -> texto, preservando nulos
+            df[col] = s.where(s.isna(), s.astype(str))
+
+    buf = io.BytesIO()
+    df.to_parquet(buf, index=False)
+    return buf.getvalue()
+
+
+def salvar_parcelas_parquet_gridfs(df_parcelas, batch_id):
+    """Salva a aba de parcelas como um único arquivo Parquet no GridFS. Retorna o file_id (str)."""
+    conteudo = _parcelas_para_parquet_bytes(df_parcelas)
+    file_id = get_gridfs().put(
+        conteudo,
+        filename=f"parcelas_{batch_id}.parquet",
+        module=PARCELAS_GRIDFS_MODULE,
+        batch_id=batch_id,
+        upload_date=datetime.now().replace(tzinfo=None),
+        content_type="application/octet-stream",
+    )
+    return str(file_id)
+
+
+def carregar_parcelas_parquet_gridfs(parcelas_file_id):
+    """Lê o Parquet de parcelas do GridFS e devolve um DataFrame."""
+    dados = get_gridfs().get(ObjectId(parcelas_file_id)).read()
+    return pd.read_parquet(io.BytesIO(dados))
+
+
+def remover_parcelas_parquet_gridfs(db, batch_id=None, exceto_batch_id=None):
+    """Remove Parquets de parcelas: de um lote, de todos os lotes, ou de todos exceto um. Retorna a quantidade."""
+    fs = GridFS(db)
+    filtro = {"module": PARCELAS_GRIDFS_MODULE}
+    if batch_id:
+        filtro["batch_id"] = batch_id
+    elif exceto_batch_id:
+        filtro["batch_id"] = {"$ne": exceto_batch_id}
+    ids = [f._id for f in fs.find(filtro)]
+    for _id in ids:
+        fs.delete(_id)
+    return len(ids)
+
+
+def _separar_clientes_parcelas(df_all, meta):
+    """
+    Separa clientes e parcelas de um lote carregado do MongoDB.
+    - Lotes novos: parcelas vêm do Parquet no GridFS (meta['parcelas_file_id']).
+    - Lotes antigos: parcelas estavam misturadas nos documentos (identificadas por 'DATA DO VENCIMENTO').
+    """
+    if 'CONDOMANIO' in df_all.columns:
+        df_clientes = df_all[df_all['CONDOMANIO'].notna()].copy()
+    else:
+        df_clientes = pd.DataFrame()
+
+    parcelas_file_id = (meta or {}).get('parcelas_file_id')
+    if parcelas_file_id:
+        df_parcelas = carregar_parcelas_parquet_gridfs(parcelas_file_id)
+    elif 'DATA DO VENCIMENTO' in df_all.columns:
+        df_parcelas = df_all[df_all['DATA DO VENCIMENTO'].notna()].copy()
+    else:
+        df_parcelas = pd.DataFrame()
+
+    return df_clientes, df_parcelas
+
+
 # ==================== FUNÇÕES UTILITÁRIAS ====================
 def limpar_valor_data(valor):
     """Limpa e padroniza valores de data"""
@@ -2637,8 +2751,11 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
         "module": module
     }).deleted_count
     
-    if count_clientes_del > 0 or count_meta_del > 0:
-        print(f"🧹 Limpeza: {count_clientes_del} clientes e {count_meta_del} metadados antigos removidos.")
+    count_parquet_del = remover_parcelas_parquet_gridfs(db, exceto_batch_id=batch_id)
+    
+    if count_clientes_del > 0 or count_meta_del > 0 or count_parquet_del > 0:
+        print(f"🧹 Limpeza: {count_clientes_del} clientes, {count_meta_del} metadados e "
+              f"{count_parquet_del} arquivos de parcelas antigos removidos.")
     
     df_clientes_limpo = converter_dataframe_dates(df_clientes)
     df_clientes_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
@@ -2654,17 +2771,30 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
             collection_clientes.insert_many(docs[i:i + _BATCH], ordered=False)
     
     if df_parcelas is not None and not df_parcelas.empty:
-        df_parcelas_limpo = converter_dataframe_dates(df_parcelas)
-        df_parcelas_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
-        df_parcelas_limpo["_import_batch"] = batch_id
-        df_parcelas_limpo["source_file_id"] = metadata["source_file_id"]
-        df_parcelas_limpo["module"] = module
-        
-        parcelas_docs = safe_mongo_docs(df_parcelas_limpo)
-        if parcelas_docs:
-            _BATCH = 5000
-            for i in range(0, len(parcelas_docs), _BATCH):
-                collection_clientes.insert_many(parcelas_docs[i:i + _BATCH], ordered=False)
+        # ⚡ Parcelas (~186k linhas) vão como UM arquivo Parquet no GridFS, não como documentos
+        parcelas_file_id = None
+        try:
+            parcelas_file_id = salvar_parcelas_parquet_gridfs(df_parcelas, batch_id)
+        except Exception as e:
+            print(f"⚠️ Parquet indisponível ({type(e).__name__}: {e}). Usando formato legado.")
+            st.warning("⚠️ Não foi possível salvar as parcelas em Parquet (verifique se `pyarrow` está instalado). "
+                       "Usando o formato antigo, que é bem mais lento.")
+
+        if parcelas_file_id:
+            metadata["parcelas_file_id"] = parcelas_file_id
+        else:
+            # Fallback legado: parcelas como documentos na coleção
+            df_parcelas_limpo = converter_dataframe_dates(df_parcelas)
+            df_parcelas_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
+            df_parcelas_limpo["_import_batch"] = batch_id
+            df_parcelas_limpo["source_file_id"] = metadata["source_file_id"]
+            df_parcelas_limpo["module"] = module
+            
+            parcelas_docs = safe_mongo_docs(df_parcelas_limpo)
+            if parcelas_docs:
+                _BATCH = 5000
+                for i in range(0, len(parcelas_docs), _BATCH):
+                    collection_clientes.insert_many(parcelas_docs[i:i + _BATCH], ordered=False)
     
     condominios_records = safe_mongo_docs(df_condominios)
     metadata["condominios"] = condominios_records
@@ -2716,15 +2846,7 @@ def carregar_dados_mais_recentes(db):
         if df_all.empty:
             return False
         
-        if 'CONDOMANIO' in df_all.columns:
-            df_clientes = df_all[df_all['CONDOMANIO'].notna()].copy()
-        else:
-            df_clientes = pd.DataFrame()
-        
-        if 'DATA DO VENCIMENTO' in df_all.columns:
-            df_parcelas = df_all[df_all['DATA DO VENCIMENTO'].notna()].copy()
-        else:
-            df_parcelas = pd.DataFrame()
+        df_clientes, df_parcelas = _separar_clientes_parcelas(df_all, meta)
         
         del df_all
         
@@ -2769,16 +2891,19 @@ def clear_condominio_data(db, batch_id=None, module="condominios"):
     if batch_id:
         result_clientes = collection_clientes.delete_many({"_import_batch": batch_id, "module": module})
         result_meta = collection_meta.delete_many({"batch_id": batch_id, "module": module})
+        parquets = remover_parcelas_parquet_gridfs(db, batch_id=batch_id)
     else:
         result_clientes = collection_clientes.delete_many({"module": module})
         result_meta = collection_meta.delete_many({"module": module})
+        parquets = remover_parcelas_parquet_gridfs(db)
     
-    return result_clientes.deleted_count + result_meta.deleted_count
+    return result_clientes.deleted_count + result_meta.deleted_count + parquets
 
 
 # ==================== PROCESSAMENTO DE UPLOAD ====================
 def processar_upload_condominios(db, uploaded_file):
     """Processa upload de planilha e salva no GridFS + MongoDB"""
+    _t0 = time.perf_counter()
     with st.spinner('💾 Salvando arquivo no GridFS...'):
         file_id = save_excel_to_gridfs(uploaded_file, "condominios")
         
@@ -2790,15 +2915,19 @@ def processar_upload_condominios(db, uploaded_file):
     
     with st.spinner('🔄 Processando planilha...'):
         try:
-            df_clientes = pd.read_excel(uploaded_file, sheet_name="Dados")
-            df_condominios = pd.read_excel(uploaded_file, sheet_name="Condominios")
+            # ⚡ Planilha aberta UMA vez; todas as abas reaproveitam o mesmo arquivo já aberto
+            xls = _abrir_excel(uploaded_file)
+            df_clientes = xls.parse("Dados")
+            df_condominios = xls.parse("Condominios")
             
-            try:
-                df_parcelas = pd.read_excel(uploaded_file, sheet_name="Base Parcelas")
+            if "Base Parcelas" in xls.sheet_names:
+                df_parcelas = xls.parse("Base Parcelas")
                 st.info(f"📋 Aba 'Base Parcelas' encontrada com {len(df_parcelas):,} registros")
-            except Exception:
+            else:
                 df_parcelas = pd.DataFrame()
                 st.warning("⚠️ Aba 'Base Parcelas' não encontrada.")
+            
+            _t_leitura = time.perf_counter() - _t0
             
             df_clientes = df_clientes.replace({pd.NaT: None, np.nan: None})
             df_condominios = df_condominios.replace({pd.NaT: None, np.nan: None})
@@ -2848,6 +2977,8 @@ def processar_upload_condominios(db, uploaded_file):
                 st.session_state._winback_cache_key = None
                 
                 st.success(f"✅ {len(df_clientes):,} clientes, {len(df_condominios):,} condomínios e {len(df_parcelas):,} parcelas processados!")
+                st.caption(f"⏱️ Importação concluída em {time.perf_counter() - _t0:.1f}s "
+                           f"(leitura do Excel até {_t_leitura:.1f}s)")
                 st.balloons()
                 return True
             else:
@@ -3459,19 +3590,18 @@ def upload_mode(db):
     if uploaded_file is not None:
         with st.expander("👁️ Visualizar planilha antes de processar"):
             try:
-                df_preview_dados = pd.read_excel(uploaded_file, sheet_name="Dados", nrows=5)
-                df_preview_cond = pd.read_excel(uploaded_file, sheet_name="Condominios", nrows=5)
+                # ⚡ Preview cacheado pelo conteúdo do arquivo (não relê a planilha a cada rerun)
+                preview = _preview_planilha(uploaded_file.getvalue())
                 
                 st.markdown("**Aba Dados:**")
-                st.dataframe(df_preview_dados, use_container_width=True)
+                st.dataframe(preview["Dados"], use_container_width=True)
                 st.markdown("**Aba Condominios:**")
-                st.dataframe(df_preview_cond, use_container_width=True)
+                st.dataframe(preview["Condominios"], use_container_width=True)
                 
-                try:
-                    df_preview_parcelas = pd.read_excel(uploaded_file, sheet_name="Base Parcelas", nrows=5)
+                if preview["Base Parcelas"] is not None:
                     st.markdown("**Aba Base Parcelas:**")
-                    st.dataframe(df_preview_parcelas, use_container_width=True)
-                except:
+                    st.dataframe(preview["Base Parcelas"], use_container_width=True)
+                else:
                     st.warning("⚠️ Aba 'Base Parcelas' não encontrada.")
             except Exception as e:
                 st.warning(f"Não foi possível visualizar: {e}")
@@ -3517,15 +3647,7 @@ def dados_existentes_mode(db):
                         cursor = db["condominios_relatorios"].find({"_import_batch": arq['batch_id'], "module": "condominios"}).batch_size(5000)
                         df_all = pd.DataFrame(list(cursor))
                         
-                        if 'CONDOMANIO' in df_all.columns:
-                            df_clientes = df_all[df_all['CONDOMANIO'].notna()].copy()
-                        else:
-                            df_clientes = pd.DataFrame()
-                        
-                        if 'DATA DO VENCIMENTO' in df_all.columns:
-                            df_parcelas = df_all[df_all['DATA DO VENCIMENTO'].notna()].copy()
-                        else:
-                            df_parcelas = pd.DataFrame()
+                        df_clientes, df_parcelas = _separar_clientes_parcelas(df_all, arq)
                         
                         for col in ['_id', '_import_timestamp', '_import_batch', 'source_file_id', 'module']:
                             if col in df_clientes.columns:
