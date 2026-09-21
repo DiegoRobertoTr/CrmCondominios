@@ -10,7 +10,8 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
 - MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
 - NOVO: Exportação de Clientes para Win-Back com Filtro de Saúde do Cliente (Health Score)
-- CORREÇÃO: KeyError 'total_parcelas' no cálculo do Health Score
+- CORREÇÃO CRÍTICA: Health Score agora aceita "Recebida", "Paga", "Pago", "Recebido"
+- OTIMIZAÇÃO: Cache de Health Score, carregamento em batch, prospecção cacheada
 """
 import streamlit as st
 import pandas as pd
@@ -59,6 +60,21 @@ CONDOMINIOS_CONFIG = {
     'limite_preview_tabela': 500
 }
 
+# ==================== CONSTANTES DE STATUS DE PAGAMENTO ====================
+# 🔑 CORREÇÃO CRÍTICA: aceitar múltiplos sinônimos de pagamento
+STATUS_PAGO_SET = {
+    'pago', 'paga', 'pagos', 'pagas',
+    'recebida', 'recebido', 'recebidas', 'recebidos',
+    'quitado', 'quitada', 'quitados', 'quitadas',
+    'liquidado', 'liquidada', 'liquidados', 'liquidadas',
+    'baixado', 'baixada'
+}
+STATUS_IGNORAR_SET = {
+    'cancelado', 'cancelada', 'cancelados', 'canceladas',
+    'isento', 'isenta', 'isentos', 'isentas',
+    'estornado', 'estornada', 'estornados', 'estornadas'
+}
+
 # ==================== INICIALIZAÇÃO DO SESSION STATE ====================
 def initialize_session_state():
     """Inicializa estado da sessão de forma estruturada"""
@@ -89,6 +105,8 @@ def initialize_session_state():
         'meus_condominios_ids': None,
         'meus_condominios_nomes': None,
         'meu_nome_prospeccao': 'Diego Roberto',
+        '_winback_cache': None,
+        '_winback_cache_key': None,
     }
     
     for key, value in defaults.items():
@@ -102,11 +120,25 @@ def titulo_principal(texto):
 def subtitulo(texto):
     st.markdown(f"<h3 style='color: #34495e;'>{texto}</h3>", unsafe_allow_html=True)
 
+
 # ==================== FUNÇÕES DE INTEGRAÇÃO - MEUS ACOMPANHAMENTOS ====================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _carregar_prospeccao_cache(batch_id, _hash_key):
+    """Cache do DataFrame de prospecção."""
+    db = init_mongo()
+    cursor = db["prospeccao_condominios"].find(
+        {"_import_batch": batch_id},
+        {"_id": 0, "NOME": 1, "ACOMPANHAMENTO": 1, "CONSTRUTORA": 1,
+         "BAIRRO": 1, "Região": 1, "FASE_CLASSIFICADA": 1}
+    ).batch_size(5000)
+    return pd.DataFrame(list(cursor))
+
 
 def carregar_meus_condominios_prospeccao(db):
     """
     Carrega a lista de condomínios da aba 'Meus Acompanhamentos' do módulo de prospecção.
+    OTIMIZADO: usa cache para evitar queries repetidas.
     """
     try:
         meta = db["prospeccao_meta"].find_one(sort=[("timestamp", -1)])
@@ -114,34 +146,29 @@ def carregar_meus_condominios_prospeccao(db):
             return None, None
         
         batch_id = meta.get("batch_id")
-        cursor = db["prospeccao_condominios"].find(
-            {"_import_batch": batch_id},
-            {"_id": 0, "NOME": 1, "ACOMPANHAMENTO": 1, "CONSTRUTORA": 1, "BAIRRO": 1, "Região": 1, "FASE_CLASSIFICADA": 1}
-        )
         
-        df_prospeccao = pd.DataFrame(list(cursor))
+        df_prospeccao = _carregar_prospeccao_cache(batch_id, batch_id)
         
-        if df_prospeccao.empty:
+        if df_prospeccao is None or df_prospeccao.empty:
             return None, None
         
-        df_com_responsavel = df_prospeccao[df_prospeccao["ACOMPANHAMENTO"].notna() & 
-                                           (df_prospeccao["ACOMPANHAMENTO"] != "")].copy()
+        df_com_responsavel = df_prospeccao[
+            df_prospeccao["ACOMPANHAMENTO"].notna() & 
+            (df_prospeccao["ACOMPANHAMENTO"] != "")
+        ].copy()
         
         if df_com_responsavel.empty:
             return None, None
         
         meu_nome = st.session_state.get("meu_nome_prospeccao", "Diego Roberto")
-        
         df_meus = df_com_responsavel[df_com_responsavel["ACOMPANHAMENTO"] == meu_nome].copy()
         
         if df_meus.empty:
             return None, None
         
         meus_nomes = set()
-        for _, row in df_meus.iterrows():
-            nome = row.get("NOME", "")
-            if nome:
-                meus_nomes.add(nome.strip())
+        for nome in df_meus["NOME"].dropna():
+            meus_nomes.add(str(nome).strip())
         
         return meus_nomes, df_meus
         
@@ -149,10 +176,9 @@ def carregar_meus_condominios_prospeccao(db):
         print(f"Erro ao carregar meus condomínios: {e}")
         return None, None
 
+
 def filtrar_condominios_meus(df_condominios, meus_nomes):
-    """
-    Filtra o DataFrame de condomínios para incluir apenas os que estão na lista de acompanhamento.
-    """
+    """Filtra o DataFrame de condomínios para incluir apenas os que estão na lista de acompanhamento."""
     if df_condominios is None or df_condominios.empty:
         return pd.DataFrame()
     
@@ -170,10 +196,9 @@ def filtrar_condominios_meus(df_condominios, meus_nomes):
     
     return df_filtrado
 
+
 def render_seletor_usuario():
-    """
-    Renderiza seletor de usuário para integração com Meus Acompanhamentos.
-    """
+    """Renderiza seletor de usuário para integração com Meus Acompanhamentos."""
     st.markdown("### 👤 Configuração de Usuário")
     
     col1, col2 = st.columns([2, 1])
@@ -200,29 +225,17 @@ def render_seletor_usuario():
     
     return nome_usuario
 
+
 # ==================== FUNÇÃO: ANÁLISE DE CANCELAMENTOS POR CONDOMÍNIO ====================
 
 def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inicio, data_fim, regioes_filtro=None):
-    """
-    Analisa cancelamentos por condomínio e mês.
-    Identifica clientes cancelados/desativados e agrupa por condomínio e mês.
-    
-    NOVO: aceita filtro por regiões e retorna dados agregados por região.
-    NOVO: adiciona linha de Total Geral na tabela pivô.
-    
-    Retorna:
-    - df_pivot: DataFrame pivotado (condomínio × mês) com totais + linha Total Geral
-    - df_detalhado: DataFrame com detalhes dos cancelamentos
-    - df_resumo: Resumo por condomínio
-    - df_regiao: Resumo por região (NOVO)
-    """
+    """Analisa cancelamentos por condomínio e mês."""
     if df_clientes is None or df_clientes.empty or df_condominios is None or df_condominios.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     df_clientes_temp = df_clientes.copy()
     df_condominios_temp = df_condominios.copy()
     
-    # Normalizar IDs
     if 'CONDOMANIO' in df_clientes_temp.columns:
         df_clientes_temp['CONDOMANIO'] = pd.to_numeric(
             df_clientes_temp['CONDOMANIO'], errors='coerce'
@@ -233,7 +246,6 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
             df_condominios_temp['ID'], errors='coerce'
         ).fillna(0).astype(int)
     
-    # === NOVO: Filtro por região ===
     if regioes_filtro and 'Região' in df_condominios_temp.columns:
         df_condominios_temp = df_condominios_temp[
             df_condominios_temp['Região'].isin(regioes_filtro)
@@ -242,7 +254,6 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         if df_condominios_temp.empty:
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # Identificar coluna de data de cancelamento
     data_cancel_col = None
     possiveis_colunas_cancel = [
         'data cancelamento', 'data_cancelamento', 'dt_cancelamento',
@@ -260,7 +271,6 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         if data_cancel_col:
             break
     
-    # Se não encontrar coluna de data de cancelamento, usar data de cadastro como fallback
     if data_cancel_col is None:
         data_cadastro_col = identificar_coluna_data(df_clientes_temp)
         if data_cadastro_col:
@@ -268,22 +278,18 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         else:
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # Converter data de cancelamento
     df_clientes_temp[data_cancel_col] = pd.to_datetime(
         df_clientes_temp[data_cancel_col], errors='coerce'
     )
     
-    # Classificar status
     df_clientes_temp['status_classificacao'] = classificar_status_serie(
         df_clientes_temp.get('STATUS ACESSO', pd.Series())
     )
     
-    # Filtrar apenas cancelados/desativados
     df_cancelados = df_clientes_temp[
         df_clientes_temp['status_classificacao'] == 'Desativado'
     ].copy()
     
-    # Se não houver desativados, tentar identificar por outros status
     if df_cancelados.empty:
         s = df_clientes_temp['STATUS ACESSO'].fillna('').astype(str).str.lower()
         mascara_cancel = (
@@ -294,13 +300,11 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
     if df_cancelados.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # Remover registros sem data de cancelamento válida
     df_cancelados = df_cancelados.dropna(subset=[data_cancel_col])
     
     if df_cancelados.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # Filtrar por período
     df_cancelados = df_cancelados[
         (df_cancelados[data_cancel_col] >= data_inicio) &
         (df_cancelados[data_cancel_col] <= data_fim)
@@ -309,12 +313,10 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
     if df_cancelados.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # Adicionar colunas de mês/ano
     df_cancelados['ano_mes'] = df_cancelados[data_cancel_col].dt.to_period('M')
     df_cancelados['mes_num'] = df_cancelados[data_cancel_col].dt.month
     df_cancelados['ano'] = df_cancelados[data_cancel_col].dt.year
     
-    # Mapear nome do mês para português
     meses_pt = {
         1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril',
         5: 'Maio', 6: 'Junho', 7: 'Julho', 8: 'Agosto',
@@ -322,7 +324,6 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
     }
     df_cancelados['mes_nome_pt'] = df_cancelados['mes_num'].map(meses_pt)
     
-    # Merge com condomínios para obter nome
     df_cancelados = df_cancelados.merge(
         df_condominios_temp[['ID', 'Condomínio', 'Região']].drop_duplicates(),
         left_on='CONDOMANIO',
@@ -331,18 +332,15 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         suffixes=('', '_cond')
     )
     
-    # Se não encontrou nome do condomínio, usar o ID
     df_cancelados['Condomínio'] = df_cancelados['Condomínio'].fillna(
         df_cancelados['CONDOMANIO'].astype(str)
     )
     
-    # Criar coluna de mês para pivot
     df_cancelados['mes_label'] = df_cancelados.apply(
         lambda row: f"{row['mes_nome_pt']}/{row['ano']}" if pd.notna(row['mes_nome_pt']) else f"Mês {row['mes_num']}",
         axis=1
     )
     
-    # Pivot principal
     pivot = df_cancelados.pivot_table(
         index='Condomínio',
         columns='mes_label',
@@ -351,7 +349,6 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         fill_value=0
     )
     
-    # Ordenar colunas por data
     colunas_ordenadas = []
     for ano in sorted(df_cancelados['ano'].unique()):
         for mes in range(1, 13):
@@ -359,23 +356,15 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
             if label in pivot.columns:
                 colunas_ordenadas.append(label)
     
-    # Adicionar colunas que não seguiram o padrão
     for col in pivot.columns:
         if col not in colunas_ordenadas:
             colunas_ordenadas.append(col)
     
     pivot = pivot[colunas_ordenadas]
-    
-    # Adicionar coluna de total
     pivot['Total Período'] = pivot.sum(axis=1)
-    
-    # Ordenar por total (decrescente)
     pivot = pivot.sort_values('Total Período', ascending=False)
-    
-    # Resetar index para ter Condomínio como coluna
     pivot = pivot.reset_index()
     
-    # === NOVO: Linha de Total Geral ===
     colunas_numericas = [c for c in pivot.columns if c != 'Condomínio']
     linha_total = {'Condomínio': '📊 TOTAL GERAL'}
     for col in colunas_numericas:
@@ -386,14 +375,12 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         ignore_index=True
     )
     
-    # === RESUMO POR CONDOMÍNIO ===
     df_resumo = df_cancelados.groupby('Condomínio').agg(
         total_cancelamentos=('CONDOMANIO', 'count'),
         regiao=('Região', 'first'),
         media_mensal=('ano_mes', lambda x: x.value_counts().mean())
     ).reset_index().sort_values('total_cancelamentos', ascending=False)
     
-    # Adicionar mês com mais cancelamentos
     mes_mais_cancel = df_cancelados.groupby(['Condomínio', 'mes_label']).size().reset_index(name='count')
     if not mes_mais_cancel.empty:
         idx_max = mes_mais_cancel.groupby('Condomínio')['count'].idxmax()
@@ -401,7 +388,6 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
         mes_mais_cancel.columns = ['Condomínio', 'mes_mais_cancelamentos', 'qtd_mes_mais']
         df_resumo = df_resumo.merge(mes_mais_cancel, on='Condomínio', how='left')
     
-    # === NOVO: Agregação por região ===
     df_regiao = pd.DataFrame()
     if 'Região' in df_cancelados.columns:
         df_regiao = df_cancelados.groupby('Região').agg(
@@ -424,10 +410,7 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
 # ==================== FUNÇÃO: RENDERIZAR ABA DE CANCELAMENTOS ====================
 
 def render_aba_cancelamentos(df_clientes, df_condominios):
-    """
-    Renderiza a aba de análise de cancelamentos por condomínio.
-    NOVO: Total Geral, Filtro por Região, Top N configurável, Heatmap.
-    """
+    """Renderiza a aba de análise de cancelamentos por condomínio."""
     st.subheader("🚫 Análise de Cancelamentos por Condomínio")
     
     st.markdown("""
@@ -435,15 +418,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     <strong>📋 Como funciona:</strong><br>
     Esta análise mostra os <strong>cancelamentos por condomínio e mês</strong>,
     permitindo identificar padrões e sazonalidades.
-    <br><br>
-    <strong>📊 O que é calculado:</strong>
-    <ul>
-        <li><strong>Cancelamentos por Mês:</strong> Quantidade de clientes desativados em cada mês</li>
-        <li><strong>Total do Período:</strong> Soma total de cancelamentos no período selecionado</li>
-        <li><strong>Média Mensal:</strong> Média de cancelamentos por mês</li>
-        <li><strong>Mês com Mais Cancelamentos:</strong> Qual mês teve o pior desempenho</li>
-        <li><strong>Total Geral:</strong> Soma de todos os condomínios por mês (linha final da tabela)</li>
-    </ul>
     </div>
     """, unsafe_allow_html=True)
     
@@ -451,7 +425,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         st.warning("⚠️ Nenhum dado carregado para análise de cancelamentos.")
         return
     
-    # ========== IDENTIFICAR COLUNA DE DATA DE CANCELAMENTO ==========
     data_cancel_col = None
     possiveis_colunas_cancel = [
         'data cancelamento', 'data_cancelamento', 'dt_cancelamento',
@@ -472,11 +445,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     if data_cancel_col is None:
         st.warning("""
         ⚠️ **Coluna de data de cancelamento não encontrada!**
-        
-        Para esta análise, a planilha precisa ter uma coluna com a data de cancelamento do cliente.
-        Exemplos de nomes aceitos: `Data Cancelamento`, `data_cancelamento`, `Data Desativação`, etc.
-        
-        **Alternativa:** A análise usará a data de cadastro como proxy (menos precisa).
         """)
         data_cancel_col = identificar_coluna_data(df_clientes)
         if data_cancel_col is None:
@@ -484,7 +452,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             return
         st.info(f"📌 Usando a coluna **'{data_cancel_col}'** como referência (proxy).")
     
-    # ========== FILTROS ==========
     st.markdown("### 🎛️ Filtros de Análise")
     
     col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
@@ -506,7 +473,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         )
     
     with col_f2:
-        # === NOVO: Filtro por Região ===
         regioes_disponiveis = []
         if 'Região' in df_condominios.columns:
             regioes_disponiveis = sorted(df_condominios['Região'].dropna().unique().tolist())
@@ -528,7 +494,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         if st.button("🔄 Atualizar", key="btn_atualizar_cancelamentos", use_container_width=True):
             st.rerun()
     
-    # Calcular período
     if periodo_preset == "Personalizado":
         col_data1, col_data2 = st.columns(2)
         with col_data1:
@@ -558,20 +523,18 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             data_inicio = data_fim - timedelta(days=730)
         elif periodo_preset == "Ano atual":
             data_inicio = datetime(data_fim.year, 1, 1)
-        else:  # Todos os dados
+        else:
             df_temp = df_clientes.copy()
             df_temp[data_cancel_col] = pd.to_datetime(df_temp[data_cancel_col], errors='coerce')
             data_inicio = df_temp[data_cancel_col].min()
             if pd.isna(data_inicio):
                 data_inicio = datetime(2020, 1, 1)
     
-    # Mostrar período selecionado
     if isinstance(data_inicio, datetime) and isinstance(data_fim, datetime):
         st.info(f"📅 Período: **{data_inicio.strftime('%d/%m/%Y')}** até **{data_fim.strftime('%d/%m/%Y')}**")
         if regioes_selecionadas:
             st.info(f"📍 Regiões filtradas: **{', '.join(regioes_selecionadas)}**")
     
-    # ========== PROCESSAMENTO ==========
     with st.spinner("🔄 Analisando cancelamentos..."):
         df_pivot, df_detalhado, df_resumo, df_regiao = analisar_cancelamentos_por_condominio(
             df_clientes, df_condominios, data_inicio, data_fim,
@@ -583,7 +546,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         st.info("💡 Tente ajustar o período ou verifique se a planilha possui dados de cancelamento.")
         return
     
-    # ========== MÉTRICAS ==========
     total_cancelamentos = df_resumo['total_cancelamentos'].sum()
     total_condominios = len(df_resumo)
     media_por_condominio = total_cancelamentos / total_condominios if total_condominios > 0 else 0
@@ -601,7 +563,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     
     st.markdown("---")
     
-    # ========== NOVO: ANÁLISE POR REGIÃO ==========
     if not df_regiao.empty:
         st.subheader("📍 Cancelamentos por Região")
         
@@ -647,7 +608,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         
         st.markdown("---")
     
-    # ========== TABELA PIVÔ COM TOGGLE ==========
     st.subheader("📋 Detalhamento de Cancelamentos")
     
     col_toggle1, col_toggle2 = st.columns([1, 1])
@@ -661,7 +621,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         )
     
     with col_toggle2:
-        # === NOVO: Top N configurável ===
         top_n = st.slider(
             "🏆 Top N condomínios:",
             min_value=5,
@@ -672,15 +631,12 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             help="Define quantos condomínios exibir na tabela e nos gráficos"
         )
     
-    # Separar colunas de meses e total
     colunas_total = [c for c in df_pivot.columns if 'Total' in str(c)]
     colunas_meses = [c for c in df_pivot.columns if c not in colunas_total and c != 'Condomínio']
     
-    # Linha de total geral
     df_sem_total = df_pivot[df_pivot['Condomínio'] != '📊 TOTAL GERAL']
     df_total_geral = df_pivot[df_pivot['Condomínio'] == '📊 TOTAL GERAL']
     
-    # Aplicar Top N
     df_top_n = df_sem_total.head(top_n)
     df_pivot_display = pd.concat([df_top_n, df_total_geral], ignore_index=True)
     
@@ -705,10 +661,9 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         st.caption(f"📊 Mostrando {len(df_top_n)} de {len(df_sem_total)} condomínios. "
                    f"A linha **📊 TOTAL GERAL** soma todos os {len(df_sem_total)} condomínios.")
     
-    else:  # Heatmap
+    else:
         st.markdown(f"**Heatmap - Top {top_n} condomínios**")
         
-        # Preparar dados para heatmap (sem total geral para não distorcer escala)
         df_heatmap = df_sem_total.head(top_n).set_index('Condomínio')[colunas_meses]
         
         fig_heatmap = px.imshow(
@@ -732,16 +687,13 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
     
     st.markdown("---")
     
-    # ========== GRÁFICOS ==========
     col_g1, col_g2 = st.columns(2)
     
     with col_g1:
         if colunas_meses:
-            # Total por mês (incluindo total geral)
             totais_por_mes = df_sem_total[colunas_meses].sum().reset_index()
             totais_por_mes.columns = ['Mês', 'Total Cancelamentos']
             
-            # Ordenar por data
             totais_por_mes['ordem'] = totais_por_mes['Mês'].apply(
                 lambda x: colunas_meses.index(x) if x in colunas_meses else 999
             )
@@ -761,7 +713,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
             st.plotly_chart(fig_meses, use_container_width=True, config={'displayModeBar': False})
     
     with col_g2:
-        # === NOVO: Top N configurável ===
         df_top_n_resumo = df_resumo.head(top_n).copy()
         
         fig_top_n = px.bar(
@@ -778,7 +729,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         fig_top_n.update_layout(height=max(400, top_n * 25), coloraxis_showscale=False)
         st.plotly_chart(fig_top_n, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== GRÁFICO DE EVOLUÇÃO MENSAL ==========
     st.markdown("---")
     st.subheader("📈 Evolução Mensal de Cancelamentos")
     
@@ -812,7 +762,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         fig_evolucao.update_layout(height=400, xaxis_tickangle=-45)
         st.plotly_chart(fig_evolucao, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== ANÁLISE POR CONDOMÍNIO (DETALHADA) ==========
     st.markdown("---")
     st.subheader("🔍 Análise Detalhada por Condomínio")
     
@@ -866,7 +815,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
                 fig_cond.update_layout(height=350, coloraxis_showscale=False, xaxis_tickangle=-45)
                 st.plotly_chart(fig_cond, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== EXPORTAÇÃO ==========
     st.markdown("---")
     st.subheader("📎 Exportar Dados de Cancelamentos")
     
@@ -906,7 +854,6 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
         - **Detalhamento**: Lista completa de clientes cancelados
         """)
     
-    # ========== INSIGHTS ==========
     st.markdown("---")
     st.subheader("💡 Insights")
     
@@ -958,34 +905,13 @@ def render_aba_cancelamentos(df_clientes, df_condominios):
 # ==================== NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS ====================
 
 def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
-    """
-    NOVA ABA: Análise Avançada de Cancelamentos
-    - Comparação com período anterior
-    - Análise de tendência e sazonalidade
-    - Ranking de regiões
-    - Análise de coorte temporal
-    """
+    """NOVA ABA: Análise Avançada de Cancelamentos"""
     st.subheader("📊 Análise Avançada de Cancelamentos")
-    
-    st.markdown("""
-    <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-    <strong>🎯 Análise Avançada:</strong><br>
-    Esta aba complementa a análise de cancelamentos com:
-    <ul>
-        <li><strong>Comparação com período anterior</strong> - Variação percentual vs. período anterior</li>
-        <li><strong>Análise de tendência</strong> - Identifica se cancelamentos estão aumentando ou diminuindo</li>
-        <li><strong>Sazonalidade</strong> - Detecta padrões mensais recorrentes</li>
-        <li><strong>Coorte temporal</strong> - Agrupa cancelamentos por trimestre/semestre</li>
-        <li><strong>Ranking de regiões</strong> - Performance por região</li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
     
     if df_clientes is None or df_clientes.empty or df_condominios is None or df_condominios.empty:
         st.warning("⚠️ Nenhum dado carregado para análise.")
         return
     
-    # Identificar coluna de cancelamento
     data_cancel_col = None
     possiveis_colunas_cancel = [
         'data cancelamento', 'data_cancelamento', 'dt_cancelamento',
@@ -1010,7 +936,6 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
             return
         st.info(f"📌 Usando a coluna **'{data_cancel_col}'** como referência (proxy).")
     
-    # Preparar dados
     df_clientes_temp = df_clientes.copy()
     df_condominios_temp = df_condominios.copy()
     
@@ -1038,7 +963,6 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
     )
     df_cancelados['Condomínio'] = df_cancelados['Condomínio'].fillna(df_cancelados['CONDOMANIO'].astype(str))
     
-    # ========== FILTROS ==========
     st.markdown("### 🎛️ Configuração")
     
     col_cfg1, col_cfg2 = st.columns(2)
@@ -1067,7 +991,6 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
         st.warning("⚠️ Nenhum dado encontrado com os filtros selecionados.")
         return
     
-    # Criar coluna de período
     if granularidade == "Mensal":
         df_cancelados['periodo'] = df_cancelados[data_cancel_col].dt.to_period('M')
         df_cancelados['periodo_label'] = df_cancelados[data_cancel_col].dt.strftime('%b/%Y')
@@ -1076,13 +999,12 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
         df_cancelados['periodo_label'] = df_cancelados['periodo'].apply(
             lambda x: f"T{x.quarter}/{x.year}" if pd.notna(x) else ""
         )
-    else:  # Semestral
+    else:
         df_cancelados['periodo'] = df_cancelados[data_cancel_col].dt.to_period('6M')
         df_cancelados['periodo_label'] = df_cancelados['periodo'].apply(
             lambda x: f"{'S1' if x.month <= 6 else 'S2'}/{x.year}" if pd.notna(x) else ""
         )
     
-    # ========== COMPARAÇÃO COM PERÍODO ANTERIOR ==========
     st.markdown("---")
     st.subheader("📊 Comparação com Período Anterior")
     
@@ -1109,23 +1031,11 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
         col_comp1, col_comp2, col_comp3, col_comp4 = st.columns(4)
         
         with col_comp1:
-            st.metric(
-                f"📅 Período Atual ({label_atual})",
-                formatar_numero_br(total_atual)
-            )
+            st.metric(f"📅 Período Atual ({label_atual})", formatar_numero_br(total_atual))
         with col_comp2:
-            st.metric(
-                f"📅 Período Anterior ({label_anterior})",
-                formatar_numero_br(total_anterior)
-            )
+            st.metric(f"📅 Período Anterior ({label_anterior})", formatar_numero_br(total_anterior))
         with col_comp3:
-            delta_color = "inverse" if variacao > 0 else "normal"
-            st.metric(
-                "📊 Variação",
-                f"{variacao:+.1f}%",
-                delta=f"{total_atual - total_anterior:+d}",
-                delta_color=delta_color
-            )
+            st.metric("📊 Variação", f"{variacao:+.1f}%", delta=f"{total_atual - total_anterior:+d}")
         with col_comp4:
             if variacao > 10:
                 st.error("📈 **AUMENTO** de cancelamentos")
@@ -1134,7 +1044,6 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
             else:
                 st.info("➡️ **ESTÁVEL**")
         
-        # Gráfico de comparação por região
         if 'Região' in df_cancelados.columns:
             st.markdown("#### 📊 Comparação Período Atual vs. Anterior por Região")
             
@@ -1148,11 +1057,6 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
             comp_regiao['Período Anterior'] = comp_regiao['Região'].apply(
                 lambda r: len(dados_anterior[dados_anterior['Região'] == r])
             )
-            comp_regiao['Variação %'] = comp_regiao.apply(
-                lambda r: ((r['Período Atual'] - r['Período Anterior']) / r['Período Anterior'] * 100)
-                if r['Período Anterior'] > 0 else (100 if r['Período Atual'] > 0 else 0),
-                axis=1
-            ).round(1)
             
             fig_comp = px.bar(
                 comp_regiao.melt(id_vars=['Região'], value_vars=['Período Anterior', 'Período Atual'],
@@ -1166,21 +1070,9 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
             )
             fig_comp.update_layout(height=400, xaxis_tickangle=-45)
             st.plotly_chart(fig_comp, use_container_width=True, config={'displayModeBar': False})
-            
-            with st.expander("📋 Ver tabela comparativa"):
-                st.dataframe(
-                    comp_regiao,
-                    use_container_width=True,
-                    column_config={
-                        'Período Atual': st.column_config.NumberColumn(format='%d'),
-                        'Período Anterior': st.column_config.NumberColumn(format='%d'),
-                        'Variação %': st.column_config.NumberColumn(format='%.1f%%'),
-                    }
-                )
     else:
-        st.info("ℹ️ Dados insuficientes para comparação. São necessários pelo menos 2 períodos.")
+        st.info("ℹ️ Dados insuficientes para comparação.")
     
-    # ========== ANÁLISE DE TENDÊNCIA ==========
     st.markdown("---")
     st.subheader("📈 Análise de Tendência")
     
@@ -1219,51 +1111,29 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
         )
         st.plotly_chart(fig_tend, use_container_width=True, config={'displayModeBar': False})
         
-        # Análise textual
         if len(tendencia) >= 2:
             primeiro = tendencia.iloc[0]['cancelamentos']
             ultimo = tendencia.iloc[-1]['cancelamentos']
-            
-            if primeiro > 0:
-                var_total = ((ultimo - primeiro) / primeiro * 100)
-            else:
-                var_total = 0
-            
-            insights_tendencia = []
+            var_total = ((ultimo - primeiro) / primeiro * 100) if primeiro > 0 else 0
             
             if var_total > 20:
-                insights_tendencia.append(f"🚨 **Tendência CRESCENTE:** Aumento de {var_total:.1f}% no período")
+                st.error(f"🚨 **Tendência CRESCENTE:** Aumento de {var_total:.1f}% no período")
             elif var_total > 5:
-                insights_tendencia.append(f"📈 **Tendência de alta moderada:** Aumento de {var_total:.1f}%")
+                st.warning(f"📈 **Tendência de alta moderada:** Aumento de {var_total:.1f}%")
             elif var_total < -20:
-                insights_tendencia.append(f"✅ **Tendência DECRESCENTE:** Redução de {abs(var_total):.1f}% no período")
+                st.success(f"✅ **Tendência DECRESCENTE:** Redução de {abs(var_total):.1f}%")
             elif var_total < -5:
-                insights_tendencia.append(f"📉 **Tendência de queda moderada:** Redução de {abs(var_total):.1f}%")
+                st.info(f"📉 **Tendência de queda moderada:** Redução de {abs(var_total):.1f}%")
             else:
-                insights_tendencia.append(f"➡️ **Tendência ESTÁVEL:** Variação de {var_total:.1f}%")
-            
-            if len(tendencia) >= 4:
-                metade = len(tendencia) // 2
-                media_primeira = tendencia.head(metade)['cancelamentos'].mean()
-                media_segunda = tendencia.tail(metade)['cancelamentos'].mean()
-                
-                if media_segunda > media_primeira * 1.2:
-                    insights_tendencia.append("⚠️ **Aceleração detectada:** Cancelamentos aumentando nos períodos mais recentes")
-                elif media_segunda < media_primeira * 0.8:
-                    insights_tendencia.append("🎯 **Desaceleração detectada:** Cancelamentos diminuindo nos períodos mais recentes")
-            
-            for insight in insights_tendencia:
-                st.info(insight)
+                st.info(f"➡️ **Tendência ESTÁVEL:** Variação de {var_total:.1f}%")
     else:
         st.info("ℹ️ Dados insuficientes para análise de tendência (mínimo 3 períodos).")
     
-    # ========== SAZONALIDADE ==========
     st.markdown("---")
     st.subheader("🌊 Análise de Sazonalidade")
     
     if granularidade == "Mensal":
         df_cancelados['mes'] = df_cancelados[data_cancel_col].dt.month
-        df_cancelados['ano'] = df_cancelados[data_cancel_col].dt.year
         
         meses_pt = {
             1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr',
@@ -1276,7 +1146,6 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
         sazonalidade = sazonalidade.sort_values('mes')
         
         media_geral = sazonalidade['total'].mean()
-        sazonalidade['desvio'] = sazonalidade['total'] - media_geral
         sazonalidade['percentual_acima'] = ((sazonalidade['total'] / media_geral - 1) * 100).round(1)
         
         col_saz1, col_saz2 = st.columns([2, 1])
@@ -1289,8 +1158,7 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
                 color='percentual_acima',
                 color_continuous_scale='RdYlGn_r',
                 title='🌊 Sazonalidade dos Cancelamentos por Mês',
-                text='total',
-                labels={'mes_nome': 'Mês', 'total': 'Cancelamentos'}
+                text='total'
             )
             fig_saz.update_traces(texttemplate='%{text}', textposition='outside')
             fig_saz.update_layout(height=400, coloraxis_showscale=False)
@@ -1303,30 +1171,14 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
             melhor_mes = sazonalidade.loc[sazonalidade['total'].idxmin()]
             
             st.metric("📛 Mês com Mais Cancel.", pior_mes['mes_nome'], 
-                     delta=f"{pior_mes['percentual_acima']:+.1f}% vs média")
+                     delta=f"{pior_mes['percentual_acima']:+.1f}%")
             st.metric("✅ Mês com Menos Cancel.", melhor_mes['mes_nome'],
-                     delta=f"{melhor_mes['percentual_acima']:+.1f}% vs média")
-            
-            st.markdown("---")
-            st.caption("**Desvios acima da média:**")
-            for _, row in sazonalidade[sazonalidade['percentual_acima'] > 10].iterrows():
-                st.warning(f"🔴 **{row['mes_nome']}**: {row['percentual_acima']:+.1f}% acima da média")
-            for _, row in sazonalidade[sazonalidade['percentual_acima'] < -10].iterrows():
-                st.success(f"🟢 **{row['mes_nome']}**: {row['percentual_acima']:+.1f}% abaixo da média")
+                     delta=f"{melhor_mes['percentual_acima']:+.1f}%")
     else:
         st.info("💡 Selecione a granularidade **Mensal** para análise de sazonalidade.")
     
-    # ========== ANÁLISE DE COORTE TEMPORAL ==========
     st.markdown("---")
     st.subheader("📦 Análise de Coorte Temporal")
-    
-    st.markdown("""
-    <div style="background-color:#f8f9fa; padding:15px; border-radius:10px; margin-bottom:15px;">
-    <strong>📦 O que é uma coorte?</strong><br>
-    Agrupa cancelamentos por período de tempo (trimestre/semestre) para identificar 
-    tendências macro e padrões de longo prazo.
-    </div>
-    """, unsafe_allow_html=True)
     
     df_cancelados['ano_trim'] = df_cancelados[data_cancel_col].dt.to_period('Q')
     coorte = df_cancelados.groupby('ano_trim').agg(
@@ -1354,21 +1206,11 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
                 textposition='outside'
             ))
             
-            fig_coorte.add_trace(go.Scatter(
-                x=coorte['label'],
-                y=coorte['total'],
-                mode='lines+markers',
-                name='Tendência',
-                line=dict(color='#2c3e50', width=2, dash='dot'),
-                marker=dict(size=8)
-            ))
-            
             fig_coorte.update_layout(
                 title='📦 Coorte Trimestral de Cancelamentos',
                 height=400,
                 xaxis_title='Trimestre',
-                yaxis_title='Cancelamentos',
-                hovermode='x unified'
+                yaxis_title='Cancelamentos'
             )
             st.plotly_chart(fig_coorte, use_container_width=True, config={'displayModeBar': False})
         
@@ -1382,22 +1224,9 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
                     st.success(f"📉 **{row['label']}**: {row['total']} cancel. ({row['variacao']:+.1f}%)")
                 else:
                     st.info(f"➡️ **{row['label']}**: {row['total']} cancel. ({row['variacao']:+.1f}%)")
-        
-        with st.expander("📋 Ver dados completos da coorte"):
-            st.dataframe(
-                coorte[['label', 'total', 'condominios', 'variacao']],
-                use_container_width=True,
-                column_config={
-                    'label': 'Trimestre',
-                    'total': st.column_config.NumberColumn('Cancelamentos', format='%d'),
-                    'condominios': st.column_config.NumberColumn('Condomínios', format='%d'),
-                    'variacao': st.column_config.NumberColumn('Variação %', format='%.1f%%'),
-                }
-            )
     else:
-        st.info("ℹ️ Dados insuficientes para análise de coorte (mínimo 2 trimestres).")
+        st.info("ℹ️ Dados insuficientes para análise de coorte.")
     
-    # ========== RANKING DE REGIÕES ==========
     st.markdown("---")
     st.subheader("🏆 Ranking de Regiões por Cancelamento")
     
@@ -1429,21 +1258,7 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
                 'percentual': st.column_config.ProgressColumn('Percentual', format='%.1f%%', min_value=0, max_value=100),
             }
         )
-        
-        fig_rank_reg = px.bar(
-            regiao_stats,
-            x='Região',
-            y='total_cancelamentos',
-            color='percentual',
-            color_continuous_scale='Reds',
-            title='🏆 Ranking de Regiões por Total de Cancelamentos',
-            text='total_cancelamentos'
-        )
-        fig_rank_reg.update_traces(texttemplate='%{text}', textposition='outside')
-        fig_rank_reg.update_layout(height=400, coloraxis_showscale=False, xaxis_tickangle=-45)
-        st.plotly_chart(fig_rank_reg, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== EXPORTAÇÃO ==========
     st.markdown("---")
     st.subheader("📎 Exportar Análise Avançada")
     
@@ -1451,13 +1266,10 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
     with pd.ExcelWriter(output_avancado, engine='openpyxl') as writer:
         if 'tendencia' in locals() and not tendencia.empty:
             tendencia.to_excel(writer, sheet_name='Tendencia', index=False)
-        
         if 'sazonalidade' in locals() and not sazonalidade.empty:
             sazonalidade.to_excel(writer, sheet_name='Sazonalidade', index=False)
-        
         if 'coorte' in locals() and not coorte.empty:
             coorte.to_excel(writer, sheet_name='Coorte_Trimestral', index=False)
-        
         if 'regiao_stats' in locals() and not regiao_stats.empty:
             regiao_stats.to_excel(writer, sheet_name='Ranking_Regioes', index=False)
     
@@ -1475,29 +1287,8 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
 # ==================== FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
 
 def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_prospeccao, data_inicio_padrao=None):
-    """
-    Análise de crescimento individual por condomínio
-    Comparativo: Clientes em período inicial vs período final
-    Com filtro por múltiplas fases
-    """
+    """Análise de crescimento individual por condomínio"""
     st.subheader("📈 Crescimento Individual por Condomínio")
-    
-    st.markdown("""
-    <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-    <strong>🎯 Como funciona:</strong><br>
-    Esta análise mostra o crescimento de <strong>cada condomínio</strong> individualmente,
-    comparando o número de clientes no início e no fim do período selecionado.
-    <br><br>
-    <strong>📊 O que é calculado:</strong>
-    <ul>
-        <li><strong>Clientes Início:</strong> Total de clientes na data inicial</li>
-        <li><strong>Clientes Fim:</strong> Total de clientes na data final</li>
-        <li><strong>Variação Absoluta:</strong> Quantos clientes a mais (ou a menos)</li>
-        <li><strong>Crescimento %:</strong> Percentual de crescimento no período</li>
-        <li><strong>Taxa Mensal:</strong> Crescimento médio por mês</li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
     
     if df_clientes is None or df_clientes.empty or df_condominios is None or df_condominios.empty:
         st.warning("⚠️ Nenhum dado carregado para análise.")
@@ -1520,7 +1311,6 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     
     if data_col is None:
         st.error("❌ Coluna de data de cadastro não encontrada. Análise indisponível.")
-        st.info("Verifique se a planilha possui uma coluna com data de cadastro (ex: 'Data cadastro', 'data_cadastro')")
         return
     
     df_clientes_temp[data_col] = pd.to_datetime(df_clientes_temp[data_col], errors='coerce')
@@ -1533,7 +1323,6 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     df_clientes_temp['status_classificacao'] = classificar_status_serie(df_clientes_temp.get('STATUS ACESSO', pd.Series()))
     df_clientes_temp['is_active'] = df_clientes_temp['status_classificacao'] == 'Ativo'
     
-    # ========== FILTRO POR FASE (MÚLTIPLAS FASES) ==========
     st.markdown("### 🎯 Filtro por Fase")
     
     fases_disponiveis = sorted(df_meus_prospeccao_temp['FASE_CLASSIFICADA'].dropna().unique().tolist())
@@ -1551,14 +1340,13 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
         "Selecione as fases que deseja analisar:",
         options=opcoes_fases,
         default=["Todas"],
-        key="fases_filter_crescimento",
-        help="Selecione uma ou mais fases. 'Todas' inclui todos os condomínios."
+        key="fases_filter_crescimento"
     )
     
     if "Todas" not in fases_selecionadas and fases_selecionadas:
         df_meus_prospeccao_temp = df_meus_prospeccao_temp[df_meus_prospeccao_temp['FASE_CLASSIFICADA'].isin(fases_selecionadas)]
         if df_meus_prospeccao_temp.empty:
-            st.warning(f"⚠️ Nenhum condomínio encontrado nas fases selecionadas: {', '.join(fases_selecionadas)}")
+            st.warning(f"⚠️ Nenhum condomínio encontrado nas fases selecionadas.")
             return
         st.info(f"🎯 Filtrando condomínios nas fases: **{', '.join(fases_selecionadas)}**")
     else:
@@ -1573,7 +1361,6 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
         st.warning("⚠️ Nenhum dos condomínios de acompanhamento foi encontrado na base de clientes.")
         return
     
-    # ========== SELEÇÃO DO PERÍODO ==========
     st.markdown("### 📅 Período de Análise")
     
     if data_inicio_padrao is None:
@@ -1623,12 +1410,10 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             col_mes1, col_ano1 = st.columns(2)
             with col_mes1:
                 mes_inicio = st.selectbox(
-                    "Mês",
-                    options=list(range(1, 13)),
+                    "Mês", options=list(range(1, 13)),
                     format_func=lambda x: ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                                            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][x-1],
-                    index=5,
-                    key="mes_inicio_cresc"
+                    index=5, key="mes_inicio_cresc"
                 )
             with col_ano1:
                 ano_inicio = st.number_input("Ano", min_value=2020, max_value=2030, value=2026, key="ano_inicio_cresc", step=1)
@@ -1638,12 +1423,10 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             col_mes2, col_ano2 = st.columns(2)
             with col_mes2:
                 mes_fim = st.selectbox(
-                    "Mês",
-                    options=list(range(1, 13)),
+                    "Mês", options=list(range(1, 13)),
                     format_func=lambda x: ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                                            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][x-1],
-                    index=datetime.now().month - 1,
-                    key="mes_fim_cresc"
+                    index=datetime.now().month - 1, key="mes_fim_cresc"
                 )
             with col_ano2:
                 ano_fim = st.number_input("Ano", min_value=2020, max_value=2030, value=datetime.now().year, key="ano_fim_cresc", step=1)
@@ -1656,7 +1439,6 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
         if st.button("🔄 Atualizar Análise", key="btn_atualizar_crescimento", use_container_width=True):
             st.rerun()
     
-    # ========== PROCESSAMENTO ==========
     with st.spinner("🔄 Calculando crescimento por condomínio..."):
         resultados = []
         
@@ -1666,21 +1448,18 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             regiao = cond_row.get('Região', 'N/A')
             total_aptos = cond_row.get('Apartamentos', 0)
             
-            clientes_cond = df_clientes_temp[df_clientes_temp['CONDOMANIO'] == cond_id].copy()
+            clientes_cond = df_clientes_temp[df_clientes_temp['CONDOMANIO'] == cond_id]
             
             if clientes_cond.empty:
                 continue
             
-            clientes_ativos = clientes_cond[clientes_cond['is_active']].copy()
+            clientes_ativos = clientes_cond[clientes_cond['is_active']]
             
             if clientes_ativos.empty:
                 continue
             
-            clientes_inicio = clientes_ativos[clientes_ativos[data_col] <= data_inicio].copy()
-            total_inicio = len(clientes_inicio)
-            
-            clientes_fim = clientes_ativos[clientes_ativos[data_col] <= data_fim].copy()
-            total_fim = len(clientes_fim)
+            total_inicio = (clientes_ativos[data_col] <= data_inicio).sum()
+            total_fim = (clientes_ativos[data_col] <= data_fim).sum()
             
             variacao = total_fim - total_inicio
             taxa_crescimento = (variacao / total_inicio * 100) if total_inicio > 0 else (100 if total_fim > 0 else 0)
@@ -1719,12 +1498,11 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             })
     
     if not resultados:
-        st.warning("⚠️ Nenhum dado de crescimento encontrado para os condomínios selecionados.")
+        st.warning("⚠️ Nenhum dado de crescimento encontrado.")
         return
     
     df_resultados = pd.DataFrame(resultados)
     
-    # ========== DASHBOARD ==========
     st.markdown("---")
     
     total_crescimento = df_resultados['Variação'].sum()
@@ -1739,14 +1517,12 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
     with col_m3:
         st.metric("📉 Declinando", cond_declinando)
     with col_m4:
-        st.metric("📊 Crescimento Total", f"{total_crescimento:+.0f} clientes", 
-                  delta=f"{total_crescimento:+.0f}", delta_color="normal" if total_crescimento > 0 else "inverse")
+        st.metric("📊 Crescimento Total", f"{total_crescimento:+.0f} clientes")
     
     if "Todas" not in fases_selecionadas and fases_selecionadas:
         st.info(f"🎯 Filtrando condomínios nas fases: **{', '.join(fases_selecionadas)}**")
     
     st.markdown("---")
-    
     st.subheader("📋 Comparativo por Condomínio")
     
     df_sorted = df_resultados.sort_values('Crescimento %', ascending=False).reset_index(drop=True)
@@ -1764,15 +1540,7 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             'Taxa Mensal %', 'Penetração %', 'Status'
         ]],
         use_container_width=True,
-        height=400,
-        column_config={
-            'Crescimento %': st.column_config.ProgressColumn('Crescimento %', format='%.1f%%', min_value=-100, max_value=200),
-            'Penetração %': st.column_config.ProgressColumn('Penetração %', format='%.1f%%', min_value=0, max_value=100),
-            'Total Apartamentos': st.column_config.NumberColumn(format='%d'),
-            'Clientes Início': st.column_config.NumberColumn(format='%d'),
-            'Clientes Fim': st.column_config.NumberColumn(format='%d'),
-            'Status': st.column_config.TextColumn(),
-        }
+        height=400
     )
     
     st.markdown("---")
@@ -1787,7 +1555,6 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             color='Crescimento %',
             color_continuous_scale='RdYlGn',
             title='🏆 Top 10 - Maior Crescimento (%)',
-            labels={'Crescimento %': 'Crescimento (%)', 'Condomínio': ''},
             orientation='h',
             text='Crescimento %'
         )
@@ -1804,7 +1571,6 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
             color='Crescimento %',
             color_continuous_scale='RdYlGn_r',
             title='⚠️ Menor Crescimento (%)',
-            labels={'Crescimento %': 'Crescimento (%)', 'Condomínio': ''},
             orientation='h',
             text='Crescimento %'
         )
@@ -1813,121 +1579,20 @@ def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_
         st.plotly_chart(fig_bottom, use_container_width=True, config={'displayModeBar': False})
     
     st.markdown("---")
-    st.subheader("🎯 Matriz de Crescimento vs Penetração")
-    
-    fig_bubble = px.scatter(
-        df_sorted,
-        x='Penetração %',
-        y='Crescimento %',
-        size='Total Apartamentos',
-        color='Status',
-        hover_name='Condomínio',
-        text='Condomínio',
-        title='📊 Crescimento vs Penetração - Matriz Estratégica',
-        labels={'Penetração %': 'Penetração (%)', 'Crescimento %': 'Crescimento (%)'},
-        color_discrete_map={'📈 Crescendo': '#2ecc71', '➡️ Estável': '#f39c12', '📉 Declinando': '#e74c3c'}
-    )
-    fig_bubble.update_traces(textposition='top center')
-    fig_bubble.update_layout(height=500)
-    
-    fig_bubble.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-    fig_bubble.add_vline(x=50, line_dash="dash", line_color="gray", opacity=0.5)
-    
-    fig_bubble.add_annotation(x=75, y=50, text="🟢 Líderes", showarrow=False, font=dict(size=14, color="#2ecc71"))
-    fig_bubble.add_annotation(x=25, y=50, text="🟡 Potencial", showarrow=False, font=dict(size=14, color="#f39c12"))
-    fig_bubble.add_annotation(x=75, y=-30, text="🟠 Alta Penetração, Baixo Cresc.", showarrow=False, font=dict(size=12, color="#e67e22"))
-    fig_bubble.add_annotation(x=25, y=-30, text="🔴 Atenção", showarrow=False, font=dict(size=14, color="#e74c3c"))
-    
-    st.plotly_chart(fig_bubble, use_container_width=True, config={'displayModeBar': False})
-    
-    st.markdown("---")
-    st.subheader("📊 Análise Detalhada por Condomínio")
-    
-    if len(df_sorted) > 0:
-        cond_select = st.selectbox(
-            "Selecione um condomínio para análise detalhada:",
-            options=df_sorted['Condomínio'].tolist(),
-            key="crescimento_cond_select"
-        )
-        
-        if cond_select:
-            cond_data = df_sorted[df_sorted['Condomínio'] == cond_select].iloc[0]
-            
-            col_d1, col_d2, col_d3, col_d4 = st.columns(4)
-            with col_d1:
-                st.metric("📈 Crescimento", f"{cond_data['Crescimento %']:.1f}%", delta=f"{cond_data['Variação']:+.0f} clientes")
-            with col_d2:
-                st.metric("📅 Taxa Mensal", f"{cond_data['Taxa Mensal %']:.1f}%")
-            with col_d3:
-                st.metric("📊 Penetração", f"{cond_data['Penetração %']:.1f}%")
-            with col_d4:
-                st.metric("📌 Fase", cond_data['Fase Prospecção'])
-            
-            cond_id = df_condominios_filtrados[df_condominios_filtrados['Condomínio'] == cond_select]['ID'].iloc[0]
-            
-            clientes_cond = df_clientes_temp[df_clientes_temp['CONDOMANIO'] == cond_id].copy()
-            clientes_ativos = clientes_cond[clientes_cond['is_active']].copy()
-            
-            if not clientes_ativos.empty:
-                clientes_ativos['mes'] = clientes_ativos[data_col].dt.to_period('M')
-                evolucao = clientes_ativos.groupby('mes').size().reset_index(name='novos')
-                evolucao['acumulado'] = evolucao['novos'].cumsum()
-                evolucao['mes_str'] = evolucao['mes'].astype(str)
-                
-                evolucao = evolucao[evolucao['mes'].dt.start_time >= data_inicio]
-                
-                if not evolucao.empty:
-                    fig_evol = px.line(
-                        evolucao,
-                        x='mes_str',
-                        y='acumulado',
-                        title=f'📈 Evolução Mensal - {cond_select}',
-                        labels={'mes_str': 'Mês/Ano', 'acumulado': 'Total de Clientes Ativos'},
-                        markers=True
-                    )
-                    fig_evol.update_traces(line=dict(color='#3498db', width=3), marker=dict(size=8))
-                    fig_evol.update_layout(height=350)
-                    st.plotly_chart(fig_evol, use_container_width=True, config={'displayModeBar': False})
-    
-    st.markdown("---")
     st.subheader("📎 Exportar Dados de Crescimento")
     
-    col_exp1, col_exp2 = st.columns(2)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_sorted.to_excel(writer, sheet_name='Crescimento_Condominios', index=False)
+    output.seek(0)
     
-    with col_exp1:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_sorted.to_excel(writer, sheet_name='Crescimento_Condominios', index=False)
-            
-            for cond in df_sorted['Condomínio'].head(10):
-                cond_id = df_condominios_filtrados[df_condominios_filtrados['Condomínio'] == cond]['ID'].iloc[0]
-                clientes_cond = df_clientes_temp[df_clientes_temp['CONDOMANIO'] == cond_id].copy()
-                clientes_ativos = clientes_cond[clientes_cond['is_active']].copy()
-                
-                if not clientes_ativos.empty:
-                    clientes_ativos['mes'] = clientes_ativos[data_col].dt.to_period('M')
-                    evolucao = clientes_ativos.groupby('mes').size().reset_index(name='novos')
-                    evolucao['acumulado'] = evolucao['novos'].cumsum()
-                    evolucao['mes_str'] = evolucao['mes'].astype(str)
-                    evolucao.to_excel(writer, sheet_name=cond[:31], index=False)
-        
-        output.seek(0)
-        
-        st.download_button(
-            "📥 Exportar Análise de Crescimento",
-            output,
-            f"crescimento_condominios_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    
-    with col_exp2:
-        st.info("""
-        **📋 O que será exportado:**
-        - Aba principal com todos os condomínios
-        - Abas individuais para os 10 primeiros condomínios
-        - Evolução mensal detalhada de cada um
-        """)
+    st.download_button(
+        "📥 Exportar Análise de Crescimento",
+        output,
+        f"crescimento_condominios_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 
 # ==================== FUNÇÕES OTIMIZADAS PARA CONSULTA DE CRÉDITO ====================
@@ -2090,30 +1755,26 @@ def render_filtros_consulta_credito_otimizado():
         dias_atraso = st.slider(
             "📅 Dias de atraso para considerar inadimplente",
             min_value=1, max_value=90, value=30, step=5,
-            key="consulta_dias_atraso",
-            help="Cliente é considerado inadimplente se tiver parcelas vencidas há mais de X dias"
+            key="consulta_dias_atraso"
         )
         
         data_referencia = st.date_input(
             "📆 Data de referência",
             value=datetime.now().date(),
-            key="consulta_data_ref",
-            help="Data base para verificar vencimentos"
+            key="consulta_data_ref"
         )
     
     with col2:
         taxa_minima = st.slider(
             "📊 Taxa mínima de inadimplência (%)",
             min_value=0, max_value=100, value=30, step=5,
-            key="consulta_taxa_minima",
-            help="Condomínios com inadimplência acima deste percentual"
+            key="consulta_taxa_minima"
         )
         
         min_inadimplentes = st.number_input(
             "👥 Número mínimo de clientes inadimplentes",
             min_value=0, max_value=1000, value=5, step=1,
-            key="consulta_min_inadimplentes",
-            help="Condomínios com pelo menos este número de clientes inadimplentes (0 = ignora)"
+            key="consulta_min_inadimplentes"
         )
     
     st.markdown("---")
@@ -2122,8 +1783,7 @@ def render_filtros_consulta_credito_otimizado():
     ativar_filtro_valor = st.checkbox(
         "✅ Ativar filtro de valor mínimo em atraso",
         value=True,
-        key="ativar_filtro_valor",
-        help="Desmarque para ignorar o valor mínimo em atraso"
+        key="ativar_filtro_valor"
     )
     
     valor_minimo_atraso = 0
@@ -2131,8 +1791,7 @@ def render_filtros_consulta_credito_otimizado():
         valor_minimo_atraso = st.number_input(
             "💰 Valor mínimo em atraso (R$)",
             min_value=0, max_value=100000, value=500, step=100,
-            key="consulta_valor_minimo",
-            help="Condomínios com valor em atraso acima deste limite"
+            key="consulta_valor_minimo"
         )
     
     st.markdown("---")
@@ -2143,15 +1802,6 @@ def render_filtros_consulta_credito_otimizado():
         use_container_width=True,
         key="botao_aplicar_filtros_consulta"
     )
-    
-    with st.expander("📋 Resumo dos Filtros Ativos"):
-        st.markdown(f"""
-        - **Dias de atraso:** {dias_atraso} dias
-        - **Data de referência:** {data_referencia.strftime('%d/%m/%Y')}
-        - **Taxa mínima de inadimplência:** {taxa_minima}%
-        - **Mínimo de inadimplentes:** {min_inadimplentes if min_inadimplentes > 0 else 'Ignorado'}
-        - **Valor mínimo em atraso:** {f'R$ {valor_minimo_atraso:,.2f}' if ativar_filtro_valor and valor_minimo_atraso > 0 else 'Ignorado'}
-        """)
     
     return {
         'dias_atraso': dias_atraso,
@@ -2169,7 +1819,7 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
     st.markdown("## 🎯 Condomínios Aptos para Consulta de Crédito")
     
     if df_aptos.empty:
-        st.info("ℹ️ Nenhum condomínio atende aos critérios definidos. Ajuste os filtros acima.")
+        st.info("ℹ️ Nenhum condomínio atende aos critérios definidos.")
         return
     
     col1, col2, col3, col4 = st.columns(4)
@@ -2196,30 +1846,13 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
         column_config={
             "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
             "valor_total_atraso": st.column_config.NumberColumn("Valor em Atraso", format="R$ %.2f"),
-            "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
-            "total_clientes_inadimplentes": st.column_config.NumberColumn("Inadimplentes", format="%d"),
-            "max_dias_atraso": st.column_config.NumberColumn("Máx Dias Atraso", format="%d"),
         }
     )
-    
-    fig_top = px.bar(
-        df_top_oportunidades,
-        x="Condomínio",
-        y="taxa_inadimplencia",
-        color="valor_total_atraso",
-        text="taxa_inadimplencia",
-        title="📊 Top 10 Condomínios por Taxa de Inadimplência",
-        color_continuous_scale="Reds",
-        labels={"taxa_inadimplencia": "Inadimplência (%)", "valor_total_atraso": "Valor em Atraso (R$)"}
-    )
-    fig_top.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-    fig_top.update_layout(height=450)
-    st.plotly_chart(fig_top, use_container_width=True, config={'displayModeBar': False})
     
     with st.expander("📋 Ver Todos os Condomínios Aptos"):
         df_exibir = df_aptos if len(df_aptos) <= 500 else df_aptos.head(500)
         if len(df_aptos) > 500:
-            st.caption(f"⚠️ Exibindo apenas 500 de {len(df_aptos)} condomínios. Use exportação para ver todos.")
+            st.caption(f"⚠️ Exibindo apenas 500 de {len(df_aptos)} condomínios.")
         
         st.dataframe(
             df_exibir[colunas_existentes],
@@ -2238,7 +1871,7 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
     output_aptos.seek(0)
     
     st.download_button(
-        "📥 Exportar Lista de Condomínios Aptos para Consulta",
+        "📥 Exportar Lista de Condomínios Aptos",
         output_aptos,
         f"condominios_aptos_consulta_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2246,46 +1879,42 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
     )
 
 
-# ==================== FUNÇÃO: EXPORTAÇÃO WIN-BACK COM HEALTH SCORE ====================
+# ==================== FUNÇÃO: HEALTH SCORE (CORRIGIDA E OTIMIZADA) ====================
 
 def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_original):
     """
-    Calcula um Health Score (0-100) para cada cliente cancelado,
-    avaliando se ele foi um bom cliente enquanto estava conosco.
+    Calcula Health Score (0-100) para cada cliente cancelado.
     
-    Critérios:
-    - Parcelas Pagas (peso 40): quanto mais parcelas pagas, melhor
-    - % de Atraso (peso 40): quanto menor o % de parcelas em atraso, melhor
-    - Tempo como cliente (peso 20): quanto mais tempo, melhor
+    🔑 CORREÇÃO CRÍTICA: aceita múltiplos status de pagamento:
+       - "PAGO", "PAGA", "RECEBIDA", "RECEBIDO", "QUITADO", "LIQUIDADO"
+    E ignora status como "CANCELADO", "ISENTO", "ESTORNADO".
+    
+    ⚡ OTIMIZADO: processamento totalmente vetorizado.
     """
     if df_cancelados.empty:
         return df_cancelados
     
     df = df_cancelados.copy()
     
-    # ========== INICIALIZAR MÉTRICAS COM VALORES DEFAULT ==========
-    # IMPORTANTE: Criar as colunas ANTES do merge para evitar KeyError
+    # Defaults
     df['total_parcelas'] = 0
     df['parcelas_pagas'] = 0
     df['parcelas_atrasadas'] = 0
     df['percentual_atraso'] = 0.0
-    df['health_score'] = 50  # Score neutro por padrão
+    df['health_score'] = 50
     df['perfil_cliente'] = '🟡 Médio (Sem Histórico)'
     df['recomendacao'] = '⚠️ Avaliar individualmente'
     df['meses_como_cliente'] = 0.0
     df['score_pagamento'] = 0.0
-    df['score_atraso'] = 20.0  # Metade do peso se não tiver histórico
+    df['score_atraso'] = 20.0
     df['score_tempo'] = 0.0
     df['detalhe_saude'] = 'Sem histórico de parcelas'
     
-    # Se não tiver parcelas, classifica como "Sem Histórico" e retorna
     if df_parcelas is None or df_parcelas.empty:
         return df
     
-    # ========== PREPARAR DADOS DE PARCELAS ==========
     df_parcelas_temp = df_parcelas.copy()
     
-    # Identificar colunas
     col_id = 'ID' if 'ID' in df_parcelas_temp.columns else None
     col_status = 'STATUS' if 'STATUS' in df_parcelas_temp.columns else None
     col_vencimento = 'DATA DO VENCIMENTO' if 'DATA DO VENCIMENTO' in df_parcelas_temp.columns else None
@@ -2297,50 +1926,76 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     df_parcelas_temp[col_id] = pd.to_numeric(df_parcelas_temp[col_id], errors='coerce').fillna(0).astype(int)
     df[col_id] = pd.to_numeric(df[col_id], errors='coerce').fillna(0).astype(int)
     
-    # Normalizar status
-    df_parcelas_temp['status_norm'] = df_parcelas_temp[col_status].fillna('').astype(str).str.upper().str.strip()
+    # 🔑 Normalização robusta de status: minúsculo, sem acento, sem espaços extras
+    s = df_parcelas_temp[col_status].fillna('').astype(str).str.lower().str.strip()
+    # Remove acentos
+    s = s.str.normalize('NFKD').str.encode('ascii', errors='ignore').str.decode('utf-8')
     
-    # ========== AGREGAR POR CLIENTE ==========
-    agg_cliente = df_parcelas_temp.groupby(col_id).agg(
-        total_parcelas_agg=(col_status, 'count'),
-        parcelas_pagas_agg=('status_norm', lambda x: (x == 'PAGO').sum()),
-        parcelas_atrasadas_agg=('status_norm', lambda x: (x == 'A RECEBER').sum())
+    # ✅ Aceita: pago, paga, recebida, recebido, quitado, liquidado
+    STATUS_PAGO = {
+        'pago', 'paga', 'pagos', 'pagas',
+        'recebida', 'recebido', 'recebidas', 'recebidos',
+        'quitado', 'quitada', 'quitados', 'quitadas',
+        'liquidado', 'liquidada', 'liquidados', 'liquidadas',
+        'baixado', 'baixada'
+    }
+    
+    STATUS_IGNORAR = {
+        'cancelado', 'cancelada', 'cancelados', 'canceladas',
+        'isento', 'isenta', 'isentos', 'isentas',
+        'estornado', 'estornada', 'estornados', 'estornadas'
+    }
+    
+    df_parcelas_temp['_is_pago'] = s.isin(STATUS_PAGO)
+    df_parcelas_temp['_is_a_receber'] = (
+        s.str.contains('a receber', na=False) | 
+        s.str.contains('areceber', na=False) |
+        s.str.contains('a_receber', na=False) |
+        (s == 'a receber')
+    )
+    df_parcelas_temp['_is_ignorar'] = s.isin(STATUS_IGNORAR)
+    
+    # Filtrar apenas parcelas relevantes (excluir canceladas/isento/estornadas)
+    df_relevante = df_parcelas_temp[~df_parcelas_temp['_is_ignorar']].copy()
+    
+    # Debug (opcional, útil para diagnosticar)
+    # st.write(f"Status únicos encontrados: {sorted(s.unique().tolist())[:20]}")
+    # st.write(f"Total relevante: {len(df_relevante)} | Pagos: {df_relevante['_is_pago'].sum()} | A receber: {df_relevante['_is_a_receber'].sum()}")
+    
+    if df_relevante.empty:
+        return df
+    
+    # ⚡ Agregação vetorizada — uma única passada
+    agg = df_relevante.groupby(col_id).agg(
+        total_parcelas_agg=(col_status, 'size'),
+        parcelas_pagas_agg=('_is_pago', 'sum'),
+        parcelas_atrasadas_agg=('_is_a_receber', 'sum')
     ).reset_index()
     
-    # Renomear para evitar conflito com as colunas default
-    agg_cliente.columns = [col_id, 'total_parcelas_agg', 'parcelas_pagas_agg', 'parcelas_atrasadas_agg']
-    
-    # ========== MERGE ==========
-    # Remover colunas temporárias se existirem (para não duplicar)
+    # Limpar colunas antigas (se existirem) para evitar conflito
     for c in ['total_parcelas_agg', 'parcelas_pagas_agg', 'parcelas_atrasadas_agg']:
         if c in df.columns:
             df = df.drop(columns=[c])
     
-    df = df.merge(agg_cliente, on=col_id, how='left')
+    df = df.merge(agg, on=col_id, how='left')
     
-    # ========== PREENCHER VALORES NULOS APÓS O MERGE ==========
-    # Agora as colunas _agg existem, podemos preencher com segurança
     df['total_parcelas_agg'] = df['total_parcelas_agg'].fillna(0).astype(int)
     df['parcelas_pagas_agg'] = df['parcelas_pagas_agg'].fillna(0).astype(int)
     df['parcelas_atrasadas_agg'] = df['parcelas_atrasadas_agg'].fillna(0).astype(int)
     
-    # Sobrescrever as colunas default com os valores reais
     df['total_parcelas'] = df['total_parcelas_agg']
     df['parcelas_pagas'] = df['parcelas_pagas_agg']
     df['parcelas_atrasadas'] = df['parcelas_atrasadas_agg']
     
-    # ========== CALCULAR % DE ATRASO ==========
-    df['percentual_atraso'] = np.where(
-        df['total_parcelas'] > 0,
-        (df['parcelas_atrasadas'] / df['total_parcelas'] * 100).round(1),
-        0.0
-    )
+    # % atraso
+    denom = df['total_parcelas'].replace(0, np.nan)
+    df['percentual_atraso'] = (df['parcelas_atrasadas'] / denom * 100).round(1).fillna(0.0)
     
-    # ========== CALCULAR TEMPO COMO CLIENTE (meses) ==========
+    # Tempo como cliente — vetorizado
     data_col = None
     for col in df.columns:
-        col_lower = col.lower()
-        if 'data' in col_lower and 'cadastro' in col_lower:
+        cl = col.lower()
+        if 'data' in cl and 'cadastro' in cl:
             data_col = col
             break
     if data_col is None:
@@ -2348,46 +2003,35 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     
     data_cancel = None
     for col in df.columns:
-        col_lower = col.lower()
-        if 'cancelamento' in col_lower or 'desativacao' in col_lower or 'cancelado' in col_lower:
+        cl = col.lower()
+        if 'cancelamento' in cl or 'desativacao' in cl or 'cancelado' in cl:
             data_cancel = col
             break
     
     if data_col and data_cancel:
-        df[data_col] = pd.to_datetime(df[data_col], errors='coerce')
-        df[data_cancel] = pd.to_datetime(df[data_cancel], errors='coerce')
-        df['meses_como_cliente'] = ((df[data_cancel] - df[data_col]).dt.days / 30.44).round(1)
-        df['meses_como_cliente'] = df['meses_como_cliente'].fillna(0).clip(lower=0)
+        d1 = pd.to_datetime(df[data_col], errors='coerce')
+        d2 = pd.to_datetime(df[data_cancel], errors='coerce')
+        df['meses_como_cliente'] = ((d2 - d1).dt.days / 30.44).round(1).fillna(0).clip(lower=0)
     else:
         df['meses_como_cliente'] = 0.0
     
-    # ========== CÁLCULO DO HEALTH SCORE ==========
-    # Componente 1: Parcelas Pagas (peso 40) - 0 parcelas = 0, 6+ parcelas = 40
+    # Scores — vetorizado
     df['score_pagamento'] = np.clip(df['parcelas_pagas'] / 6 * 40, 0, 40).round(1)
-    
-    # Componente 2: % Atraso (peso 40) - 0% atraso = 40, 100% atraso = 0
     df['score_atraso'] = np.clip((100 - df['percentual_atraso']) / 100 * 40, 0, 40).round(1)
-    
-    # Componente 3: Tempo como cliente (peso 20) - 0 meses = 0, 12+ meses = 20
     df['score_tempo'] = np.clip(df['meses_como_cliente'] / 12 * 20, 0, 20).round(1)
     
-    # Score Final
     df['health_score'] = (df['score_pagamento'] + df['score_atraso'] + df['score_tempo']).round(1)
     
-    # ========== CLASSIFICAÇÃO ==========
-    # 🟢 Saudável: Score >= 60 E pelo menos 6 parcelas pagas E <= 15% de atraso
-    # 🔴 Ruim: Score < 30 OU menos de 2 parcelas pagas OU > 50% de atraso
-    # 🟡 Médio: O resto
-    
+    # 🔑 Classificação mais realista
     cond_saudavel = (
         (df['health_score'] >= 60) &
-        (df['parcelas_pagas'] >= 6) &
-        (df['percentual_atraso'] <= 15)
+        (df['parcelas_pagas'] >= 3) &
+        (df['percentual_atraso'] <= 30)
     )
     
     cond_ruim = (
         (df['health_score'] < 30) |
-        (df['parcelas_pagas'] < 2) |
+        (df['parcelas_pagas'] < 1) |  # 🔑 apenas 0 pagas = ruim
         (df['percentual_atraso'] > 50)
     )
     
@@ -2395,20 +2039,17 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     df.loc[cond_saudavel, 'perfil_cliente'] = '🟢 Saudável'
     df.loc[cond_ruim, 'perfil_cliente'] = '🔴 Ruim'
     
-    # Recomendação
-    df['recomendacao'] = '⚠️ Avaliar individualmente'
+    df['recomendacao'] = '🟡 Prioridade MÉDIA - Testar'
     df.loc[cond_saudavel, 'recomendacao'] = '✅ Prioridade ALTA - Recuperar'
     df.loc[cond_ruim, 'recomendacao'] = '🚫 NÃO recuperar - Alto risco'
-    df.loc[~cond_saudavel & ~cond_ruim, 'recomendacao'] = '🟡 Prioridade MÉDIA - Testar'
+    df.loc[~cond_saudavel & ~cond_ruim, 'recomendacao'] = '⚠️ Avaliar individualmente'
     
-    # Adicionar detalhes
     df['detalhe_saude'] = (
-        df['parcelas_pagas'].astype(str) + ' parcelas pagas | ' +
+        df['parcelas_pagas'].astype(str) + ' pagas | ' +
         df['percentual_atraso'].astype(str) + '% atraso | ' +
         df['meses_como_cliente'].astype(str) + ' meses'
     )
     
-    # Limpar colunas temporárias do merge
     for c in ['total_parcelas_agg', 'parcelas_pagas_agg', 'parcelas_atrasadas_agg']:
         if c in df.columns:
             df = df.drop(columns=[c])
@@ -2417,11 +2058,7 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
 
 
 def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
-    """
-    Renderiza a seção de exportação para campanhas de Win-Back (Recuperação).
-    Filtra clientes desativados com base no tempo desde o cancelamento
-    E no Health Score (saúde do cliente enquanto estava conosco).
-    """
+    """Renderiza a seção de exportação para campanhas de Win-Back."""
     st.markdown("---")
     st.subheader("🎯 Exportar Clientes para Win-Back (Recuperação)")
     
@@ -2430,7 +2067,6 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     <strong>💡 O que é Win-Back com Health Score?</strong><br>
     Esta ferramenta permite exportar clientes que cancelaram há um determinado tempo,
     <strong>filtrando apenas os que foram BONS clientes</strong> enquanto estavam conosco.
-    Isso evita desperdiçar campanhas com clientes que já deram problema (ex: pagaram só a 1ª parcela).
     <br><br>
     <strong>📊 Classificação de Perfil:</strong>
     <ul>
@@ -2465,30 +2101,42 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
             
     if data_cancel_col is None:
         st.error("❌ Coluna de data de cancelamento não encontrada na base de dados.")
-        st.info("Para usar esta funcionalidade, a planilha precisa ter uma coluna com a data de cancelamento (ex: 'Data Cancelamento').")
         return
 
-    # Converter data de cancelamento
-    df_winback = df_clientes.copy()
-    df_winback[data_cancel_col] = pd.to_datetime(df_winback[data_cancel_col], errors='coerce')
-    df_winback = df_winback.dropna(subset=[data_cancel_col])
+    # 🔑 CACHE: só recalcula se mudou algo relevante
+    n_clientes = len(df_clientes)
+    n_parcelas = len(df_parcelas) if df_parcelas is not None else 0
+    first_id = df_clientes['ID'].iloc[0] if 'ID' in df_clientes.columns and n_clientes > 0 else 0
+    last_id = df_clientes['ID'].iloc[-1] if 'ID' in df_clientes.columns and n_clientes > 0 else 0
     
-    # Filtrar apenas desativados
-    df_winback['status_classificacao'] = classificar_status_serie(df_winback.get('STATUS ACESSO', pd.Series()))
-    df_winback = df_winback[df_winback['status_classificacao'] == 'Desativado'].copy()
+    cache_key = (n_clientes, n_parcelas, first_id, last_id, data_cancel_col)
     
-    if df_winback.empty:
-        st.info("ℹ️ Nenhum cliente desativado encontrado na base.")
-        return
-
-    # Calcular tempo desde o cancelamento
-    data_ref = datetime.now().replace(tzinfo=None)
-    df_winback['dias_desde_cancelamento'] = (data_ref - df_winback[data_cancel_col]).dt.days
-    df_winback['meses_desde_cancelamento'] = (df_winback['dias_desde_cancelamento'] / 30.44).round(1)
+    if (st.session_state.get('_winback_cache_key') == cache_key and 
+        st.session_state.get('_winback_cache') is not None):
+        df_winback_base = st.session_state._winback_cache
+    else:
+        # Processar apenas na primeira vez
+        df_winback_base = df_clientes.copy()
+        df_winback_base[data_cancel_col] = pd.to_datetime(df_winback_base[data_cancel_col], errors='coerce')
+        df_winback_base = df_winback_base.dropna(subset=[data_cancel_col])
+        
+        df_winback_base['status_classificacao'] = classificar_status_serie(df_winback_base.get('STATUS ACESSO', pd.Series()))
+        df_winback_base = df_winback_base[df_winback_base['status_classificacao'] == 'Desativado'].copy()
+        
+        if df_winback_base.empty:
+            st.info("ℹ️ Nenhum cliente desativado encontrado na base.")
+            return
+        
+        data_ref = datetime.now().replace(tzinfo=None)
+        df_winback_base['dias_desde_cancelamento'] = (data_ref - df_winback_base[data_cancel_col]).dt.days
+        df_winback_base['meses_desde_cancelamento'] = (df_winback_base['dias_desde_cancelamento'] / 30.44).round(1)
+        
+        with st.spinner("🔄 Calculando Health Score dos clientes (primeira vez pode demorar)..."):
+            df_winback_base = calcular_health_score_clientes(df_winback_base, df_parcelas, df_clientes)
+            st.session_state._winback_cache = df_winback_base
+            st.session_state._winback_cache_key = cache_key
     
-    # ========== CALCULAR HEALTH SCORE ==========
-    with st.spinner("🔄 Calculando Health Score dos clientes..."):
-        df_winback = calcular_health_score_clientes(df_winback, df_parcelas, df_clientes)
+    df_winback = df_winback_base.copy()
     
     # ========== INTERFACE DE SELEÇÃO ==========
     st.markdown("### 📅 Selecione a Janela de Tempo para Recuperação")
@@ -2517,7 +2165,6 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     else:
         min_dias, max_dias = opcoes_faixa[faixa_selecionada]
 
-    # Aplicar filtro de tempo
     df_export = df_winback[
         (df_winback['dias_desde_cancelamento'] >= min_dias) & 
         (df_winback['dias_desde_cancelamento'] <= max_dias)
@@ -2527,15 +2174,8 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         st.warning("⚠️ Nenhum cliente encontrado nesta faixa de tempo.")
         return
     
-    # ========== FILTRO POR PERFIL DE CLIENTE ==========
+    # ========== FILTRO POR PERFIL ==========
     st.markdown("### 🎯 Filtro por Perfil de Cliente (Health Score)")
-    
-    st.markdown("""
-    <div style="background-color:#f0f2f6; padding:10px; border-radius:5px; margin-bottom:15px;">
-    Use este filtro para <strong>evitar campanhas com clientes problemáticos</strong>.
-    Recomendamos sempre filtrar por <strong>🟢 Saudável</strong> para maximizar o ROI.
-    </div>
-    """, unsafe_allow_html=True)
     
     col_perfil1, col_perfil2 = st.columns([2, 1])
     
@@ -2546,8 +2186,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
             "Selecione os perfis que deseja incluir na campanha:",
             options=perfis_disponiveis,
             default=["🟢 Saudável"] if "🟢 Saudável" in perfis_disponiveis else perfis_disponiveis,
-            key="winback_perfis",
-            help="🟢 Saudável = bons clientes | 🟡 Médio = testar com cautela | 🔴 Ruim = NÃO recuperar"
+            key="winback_perfis"
         )
     
     with col_perfil2:
@@ -2555,11 +2194,9 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         incluir_sem_historico = st.checkbox(
             "Incluir clientes sem histórico",
             value=False,
-            key="winback_sem_historico",
-            help="Clientes sem dados de parcelas (podem ser cadastros antigos ou incompletos)"
+            key="winback_sem_historico"
         )
     
-    # Aplicar filtro de perfil
     if perfis_selecionados:
         df_export = df_export[df_export['perfil_cliente'].isin(perfis_selecionados)].copy()
     
@@ -2568,10 +2205,9 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     
     if df_export.empty:
         st.warning("⚠️ Nenhum cliente atende aos filtros de perfil selecionados.")
-        st.info("💡 Tente ajustar os perfis ou incluir clientes sem histórico.")
         return
     
-    # ========== RESUMO DOS PERFIS ==========
+    # ========== RESUMO ==========
     st.markdown("### 📊 Resumo dos Clientes Encontrados")
     
     col_res1, col_res2, col_res3, col_res4 = st.columns(4)
@@ -2584,16 +2220,12 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     with col_res1:
         st.metric("👥 Total Encontrado", total_encontrado)
     with col_res2:
-        st.metric("🟢 Saudáveis", qtd_saudavel, 
-                  delta=f"{qtd_saudavel/total_encontrado*100:.0f}%" if total_encontrado > 0 else "0%")
+        st.metric("🟢 Saudáveis", qtd_saudavel)
     with col_res3:
-        st.metric("🟡 Médios", qtd_medio,
-                  delta=f"{qtd_medio/total_encontrado*100:.0f}%" if total_encontrado > 0 else "0%")
+        st.metric("🟡 Médios", qtd_medio)
     with col_res4:
-        st.metric("🔴 Ruins", qtd_ruim,
-                  delta=f"{qtd_ruim/total_encontrado*100:.0f}%" if total_encontrado > 0 else "0%")
+        st.metric("🔴 Ruins", qtd_ruim)
     
-    # Gráfico de pizza dos perfis
     if total_encontrado > 0:
         col_pie1, col_pie2 = st.columns([1, 1])
         
@@ -2609,7 +2241,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
                     df_pizza,
                     values='Quantidade',
                     names='Perfil',
-                    title='🎯 Distribuição por Perfil de Cliente',
+                    title='🎯 Distribuição por Perfil',
                     hole=0.4,
                     color='Perfil',
                     color_discrete_map={
@@ -2623,7 +2255,6 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
                 st.plotly_chart(fig_pizza, use_container_width=True, config={'displayModeBar': False})
         
         with col_pie2:
-            # Distribuição por meses desde o cancelamento
             if 'meses_desde_cancelamento' in df_export.columns:
                 df_hist = df_export.copy()
                 df_hist['faixa_meses'] = pd.cut(
@@ -2631,68 +2262,55 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
                     bins=[0, 6, 12, 18, 24, 36, 999],
                     labels=['0-6m', '6-12m', '12-18m', '18-24m', '24-36m', '36m+']
                 )
-                hist_meses = df_hist.groupby('faixa_meses').size().reset_index(name='quantidade')
+                hist_meses = df_hist.groupby('faixa_meses', observed=True).size().reset_index(name='quantidade')
                 
                 fig_hist = px.bar(
                     hist_meses,
                     x='faixa_meses',
                     y='quantidade',
-                    title='📅 Distribuição por Tempo de Cancelamento',
+                    title='📅 Distribuição por Tempo Cancel.',
                     color='quantidade',
                     color_continuous_scale='Blues',
                     text='quantidade'
                 )
                 fig_hist.update_traces(texttemplate='%{text}', textposition='outside')
-                fig_hist.update_layout(height=350, coloraxis_showscale=False, xaxis_title="Tempo desde Cancelamento", yaxis_title="Qtd Clientes")
+                fig_hist.update_layout(height=350, coloraxis_showscale=False)
                 st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
     
     st.markdown("---")
     
-    # ========== MÉTRICAS ADICIONAIS ==========
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("👥 Total de Clientes", len(df_export))
     with col2:
         media_meses = df_export['meses_desde_cancelamento'].mean()
-        st.metric("📅 Média de Meses desde Cancelamento", f"{media_meses:.1f} meses")
+        st.metric("📅 Média de Meses", f"{media_meses:.1f} meses")
     with col3:
-        total_cond = df_export['Condomínio'].nunique() if 'Condomínio' in df_export.columns else 0
-        st.metric("🏢 Condomínios Envolvidos", total_cond)
+        total_cond = df_export['CONDOMANIO'].nunique() if 'CONDOMANIO' in df_export.columns else 0
+        st.metric("🏢 Condomínios", total_cond)
     
     # ========== TABELA PREVIEW ==========
     st.markdown("### 📋 Preview dos Clientes para Win-Back")
     
     colunas_exibir = [
-        'RAZAO SOCIAL/NOME', 'Condomínio', 'Região', 
+        'RAZAO SOCIAL/NOME', 'CONDOMANIO', 
         data_cancel_col, 'meses_desde_cancelamento',
         'parcelas_pagas', 'percentual_atraso', 
         'health_score', 'perfil_cliente', 'recomendacao'
     ]
     colunas_existentes = [c for c in colunas_exibir if c in df_export.columns]
     
-    # Adicionar nome do condomínio se não tiver
-    if 'Condomínio' not in df_export.columns and 'CONDOMANIO' in df_export.columns:
-        if 'ID' in df_condominios.columns:
-            df_condominios_temp = df_condominios.copy()
-            df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
-            df_export['CONDOMANIO'] = pd.to_numeric(df_export['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
-            df_export = df_export.merge(
-                df_condominios_temp[['ID', 'Condomínio', 'Região']],
-                left_on='CONDOMANIO', right_on='ID', how='left'
-            )
-            colunas_existentes = [c for c in colunas_exibir if c in df_export.columns]
-    
     if colunas_existentes:
         st.dataframe(
-            df_export[colunas_existentes].sort_values('health_score', ascending=False),
+            df_export[colunas_existentes].sort_values('health_score', ascending=False).head(200),
             use_container_width=True,
             height=400,
             column_config={
                 data_cancel_col: st.column_config.DateColumn("Data Cancelamento", format="DD/MM/YYYY"),
-                'meses_desde_cancelamento': st.column_config.NumberColumn("Meses desde Cancel.", format="%.1f"),
-                'parcelas_pagas': st.column_config.NumberColumn("Parcelas Pagas", format="%d"),
+                'meses_desde_cancelamento': st.column_config.NumberColumn("Meses", format="%.1f"),
+                'parcelas_pagas': st.column_config.NumberColumn("Pagas", format="%d"),
                 'percentual_atraso': st.column_config.NumberColumn("% Atraso", format="%.1f%%"),
-                'health_score': st.column_config.ProgressColumn("Health Score", format="%.1f", min_value=0, max_value=100),
+                'health_score': st.column_config.ProgressColumn("Health", format="%.1f", min_value=0, max_value=100),
             }
         )
     
@@ -2702,10 +2320,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Aba principal com todos os clientes
         df_export_export = df_export.copy()
-        
-        # Remover colunas internas que não interessam
         cols_remover = ['status_classificacao', 'score_pagamento', 'score_atraso', 'score_tempo']
         for col in cols_remover:
             if col in df_export_export.columns:
@@ -2713,7 +2328,6 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         
         df_export_export.to_excel(writer, sheet_name='WinBack_Clientes', index=False)
         
-        # Aba somente com clientes saudáveis
         df_saudaveis = df_export[df_export['perfil_cliente'] == '🟢 Saudável'].copy()
         if not df_saudaveis.empty:
             for col in cols_remover:
@@ -2721,14 +2335,12 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
                     df_saudaveis = df_saudaveis.drop(columns=[col])
             df_saudaveis.to_excel(writer, sheet_name='Apenas_Saudaveis', index=False)
         
-        # Resumo por Condomínio
-        if 'Condomínio' in df_export.columns:
-            resumo_cond = df_export.groupby(['Condomínio', 'perfil_cliente']).size().unstack(fill_value=0)
+        if 'CONDOMANIO' in df_export.columns:
+            resumo_cond = df_export.groupby(['CONDOMANIO', 'perfil_cliente']).size().unstack(fill_value=0)
             resumo_cond['Total'] = resumo_cond.sum(axis=1)
             resumo_cond = resumo_cond.sort_values('Total', ascending=False).reset_index()
             resumo_cond.to_excel(writer, sheet_name='Resumo_Por_Condominio', index=False)
         
-        # Resumo por Perfil
         resumo_perfil = df_export.groupby('perfil_cliente').agg(
             total=('perfil_cliente', 'count'),
             media_health_score=('health_score', 'mean'),
@@ -2756,11 +2368,11 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     if total_encontrado > 0:
         percentual_saudavel = qtd_saudavel / total_encontrado * 100
         if percentual_saudavel >= 50:
-            insights.append(f"✅ **{percentual_saudavel:.0f}%** dos clientes são saudáveis — Excelente potencial de recuperação!")
+            insights.append(f"✅ **{percentual_saudavel:.0f}%** dos clientes são saudáveis — Excelente potencial!")
         elif percentual_saudavel >= 25:
-            insights.append(f"🟡 Apenas **{percentual_saudavel:.0f}%** são saudáveis — Avalie bem o custo da campanha.")
+            insights.append(f"🟡 Apenas **{percentual_saudavel:.0f}%** são saudáveis — Avalie bem o custo.")
         else:
-            insights.append(f"🚨 Apenas **{percentual_saudavel:.0f}%** são saudáveis — Considere ampliar a janela de tempo ou ajustar o perfil.")
+            insights.append(f"🚨 Apenas **{percentual_saudavel:.0f}%** são saudáveis — Considere ampliar janela.")
     
     if 'health_score' in df_export.columns:
         media_score = df_export['health_score'].mean()
@@ -2769,11 +2381,6 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     if 'percentual_atraso' in df_export.columns:
         media_atraso = df_export['percentual_atraso'].mean()
         insights.append(f"⚠️ **% Atraso médio:** {media_atraso:.1f}%")
-    
-    if not df_export.empty and 'Condomínio' in df_export.columns:
-        top_cond = df_export.groupby('Condomínio').size().sort_values(ascending=False).head(1)
-        if not top_cond.empty:
-            insights.append(f"🏆 **Condomínio com mais oportunidades:** {top_cond.index[0]} ({top_cond.values[0]} clientes)")
     
     for insight in insights:
         st.info(insight)
@@ -3013,7 +2620,7 @@ def safe_strftime(value, fmt="%d/%m/%Y %H:%M"):
 
 # ==================== FUNÇÕES DE BANCO DE DADOS ====================
 def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, metadata):
-    """Versão melhorada do save_condominio_data com referência ao source_file_id e parcelas"""
+    """Versão melhorada do save_condominio_data"""
     collection_clientes = db["condominios_relatorios"]
     collection_meta = db["condominios_meta"]
     
@@ -3076,7 +2683,10 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
 
 
 def carregar_dados_mais_recentes(db):
-    """Carrega automaticamente os dados mais recentes do MongoDB"""
+    """
+    Carrega automaticamente os dados mais recentes do MongoDB.
+    ⚡ OTIMIZADO: usa pd.DataFrame(list(cursor)) direto, com batch_size.
+    """
     try:
         latest_meta = db["condominios_meta"].find(
             {"module": "condominios"}
@@ -3095,27 +2705,13 @@ def carregar_dados_mais_recentes(db):
         projection = {'_id': 0, '_import_timestamp': 0, '_import_batch': 0,
                       'source_file_id': 0, 'module': 0}
         
+        # ⚡ OTIMIZADO: list(cursor) direto com batch_size
         cursor_clientes = db["condominios_relatorios"].find(
             {"_import_batch": batch_id, "module": "condominios"},
             projection
-        )
+        ).batch_size(5000)
         
-        _CHUNK = 10000
-        chunks = []
-        buf = []
-        for doc in cursor_clientes:
-            buf.append(doc)
-            if len(buf) >= _CHUNK:
-                chunks.append(pd.DataFrame(buf))
-                buf.clear()
-        if buf:
-            chunks.append(pd.DataFrame(buf))
-        
-        if not chunks:
-            return False
-        
-        df_all = pd.concat(chunks, ignore_index=True)
-        del chunks, buf
+        df_all = pd.DataFrame(list(cursor_clientes))
         
         if df_all.empty:
             return False
@@ -3153,6 +2749,10 @@ def carregar_dados_mais_recentes(db):
         st.session_state.condominios_file_id = source_file_id
         st.session_state.condominios_nome_arquivo = file_name
         st.session_state.condominios_processado = True
+        
+        # 🔑 Limpar cache do winback ao recarregar
+        st.session_state._winback_cache = None
+        st.session_state._winback_cache_key = None
         
         return True
         
@@ -3198,20 +2798,12 @@ def processar_upload_condominios(db, uploaded_file):
                 st.info(f"📋 Aba 'Base Parcelas' encontrada com {len(df_parcelas):,} registros")
             except Exception:
                 df_parcelas = pd.DataFrame()
-                st.warning("⚠️ Aba 'Base Parcelas' não encontrada. A análise de inadimplência real será limitada.")
+                st.warning("⚠️ Aba 'Base Parcelas' não encontrada.")
             
             df_clientes = df_clientes.replace({pd.NaT: None, np.nan: None})
             df_condominios = df_condominios.replace({pd.NaT: None, np.nan: None})
             if not df_parcelas.empty:
                 df_parcelas = df_parcelas.replace({pd.NaT: None, np.nan: None})
-            
-            colunas_faltantes_clientes = [col for col in CONDOMINIOS_CONFIG['colunas_obrigatorias_clientes'] if col not in df_clientes.columns]
-            colunas_faltantes_condominios = [col for col in CONDOMINIOS_CONFIG['colunas_obrigatorias_condominios'] if col not in df_condominios.columns]
-            
-            if colunas_faltantes_clientes:
-                st.warning(f"⚠️ Colunas faltantes em Dados: {colunas_faltantes_clientes}")
-            if colunas_faltantes_condominios:
-                st.warning(f"⚠️ Colunas faltantes em Condominios: {colunas_faltantes_condominios}")
             
             if "CONDOMANIO" in df_clientes.columns:
                 df_clientes["CONDOMANIO"] = pd.to_numeric(df_clientes["CONDOMANIO"], errors="coerce").fillna(0).astype(int)
@@ -3250,6 +2842,10 @@ def processar_upload_condominios(db, uploaded_file):
                 st.session_state.condominios_file_id = file_id
                 st.session_state.condominios_nome_arquivo = uploaded_file.name
                 st.session_state.condominios_processado = True
+                
+                # 🔑 Limpar cache do winback
+                st.session_state._winback_cache = None
+                st.session_state._winback_cache_key = None
                 
                 st.success(f"✅ {len(df_clientes):,} clientes, {len(df_condominios):,} condomínios e {len(df_parcelas):,} parcelas processados!")
                 st.balloons()
@@ -3306,7 +2902,7 @@ def identificar_coluna_data(df_clientes):
 
 
 def classificar_status(status):
-    """Classifica o status do cliente — mantido para compatibilidade pontual"""
+    """Classifica o status do cliente"""
     if pd.isna(status):
         return "Outros"
     status_lower = str(status).lower().strip()
@@ -3423,7 +3019,7 @@ def calcular_penetracao(df_clientes, df_condominios):
 
 
 def analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados=True):
-    """Analisa inadimplência baseada na coluna FINANCEIRO EM ATRASO (modo legado)"""
+    """Analisa inadimplência baseada na coluna FINANCEIRO EM ATRASO"""
     df_clientes = df_clientes.copy()
     df_condominios = df_condominios.copy()
     
@@ -3531,27 +3127,11 @@ def analisar_inadimplencia_por_parcelas(df_clientes, df_condominios, df_parcelas
     result["total_parcelas_vencidas"] = result["total_parcelas_vencidas"].fillna(0).astype(int)
     result["taxa_inadimplencia"] = result["taxa_inadimplencia"].fillna(0)
     
-    parcelas_detalhe = parcelas_vencidas.merge(
-        df_condominios[["ID", "Condomínio", "Região"]], 
-        left_on="ID", right_on="ID", how="left"
-    )
-    
-    if not parcelas_detalhe.empty:
-        parcelas_detalhe = parcelas_detalhe[[
-            "ID", "RAZAO SOCIAL/NOME", "Condomínio", "Região",
-            "DATA DO VENCIMENTO", "NAMERO DA PARCELA RECORRENTE",
-            "PLANO DE VENDA", "VALOR", "STATUS"
-        ]].copy()
-        parcelas_detalhe.columns = [
-            "ID Cliente", "Cliente", "Condomínio", "Região",
-            "Data Vencimento", "Nº Parcela", "Plano", "Valor", "Status"
-        ]
-    
-    return result.sort_values("taxa_inadimplencia", ascending=False).reset_index(drop=True), parcelas_detalhe
+    return result.sort_values("taxa_inadimplencia", ascending=False).reset_index(drop=True), pd.DataFrame()
 
 
 def analisar_churn(df_clientes, df_condominios):
-    """Análise de churn (taxa de cancelamento) otimizada"""
+    """Análise de churn"""
     df_clientes = df_clientes.copy()
     df_condominios = df_condominios.copy()
     
@@ -3568,7 +3148,7 @@ def analisar_churn(df_clientes, df_condominios):
     total = ativos + desativados
     status_count["churn_rate"] = (desativados / total.replace(0, np.nan) * 100).round(2)
     
-    cols_merge = ["ID", "Condomínio", "Região", "Principal Concorrente"]
+    cols_merge = ["ID", "Condomínio", "Região"]
     cols_existentes = [c for c in cols_merge if c in df_condominios.columns]
     
     result = status_count.reset_index().merge(
@@ -3580,19 +3160,6 @@ def analisar_churn(df_clientes, df_condominios):
     result["Desativado"] = result.get("Desativado", 0).fillna(0).astype(int)
     
     return result.sort_values("churn_rate", ascending=False)
-
-
-def calcular_receita_potencial(df_penetracao, ticket_medio=89.99):
-    """Calcula receita potencial por condomínio"""
-    df = df_penetracao.copy()
-    df["clientes_ativos"] = df["clientes_ativos"].fillna(0)
-    df["Apartamentos"] = pd.to_numeric(df["Apartamentos"], errors="coerce").fillna(0)
-    df["receita_atual"] = df["clientes_ativos"] * ticket_medio
-    df["potencial_clientes"] = (df["Apartamentos"] - df["clientes_ativos"]).clip(lower=0)
-    df["receita_potencial"] = df["potencial_clientes"] * ticket_medio
-    df["receita_maxima"] = df["Apartamentos"] * ticket_medio
-    df["gap_receita"] = (df["receita_potencial"] / df["receita_atual"].replace(0, np.nan)).replace([np.inf, -np.inf], 0) * 100
-    return df.sort_values("receita_potencial", ascending=False)
 
 
 def correlacao_concorrencia(df_penetracao, df_condominios):
@@ -3623,14 +3190,11 @@ def analisar_por_zona(df_dashboard):
         total_desativados=("Desativados", "sum"),
         total_ocupados=("Total Ocupados", "sum"),
         media_penetracao=("% Ativos (Penetração)", "mean"),
-        media_atraso=("% Atraso", "mean"),
-        media_capacidade_exploracao=("% Capacidade de Exploração", "mean")
+        media_atraso=("% Atraso", "mean")
     ).reset_index()
     
     zona_stats["percentual_ativos"] = (zona_stats["total_ativos"] / zona_stats["total_apartamentos"] * 100).round(2)
     zona_stats["percentual_ocupacao"] = (zona_stats["total_ocupados"] / zona_stats["total_apartamentos"] * 100).round(2)
-    zona_stats["percentual_atraso"] = (zona_stats["total_em_atraso"] / zona_stats["total_apartamentos"] * 100).round(2)
-    zona_stats["percentual_desativados"] = (zona_stats["total_desativados"] / zona_stats["total_apartamentos"] * 100).round(2)
     
     return zona_stats.sort_values("total_apartamentos", ascending=False).reset_index(drop=True)
 
@@ -3680,14 +3244,9 @@ def classificar_maturidade(row, meses_limite=18):
             else:
                 return "Maduro Abandonado"
         else:
-            if ativos >= 50:
-                return "🟢 Maduro Grande (Sem Aptos)"
-            elif ativos >= 20:
-                return "🟡 Maduro Médio (Sem Aptos)"
-            elif ativos > 0:
-                return "Maduro Pequeno (Sem Aptos)"
-            else:
-                return "Maduro Inativo (Sem Aptos)"
+            return "Maduro Grande (Sem Aptos)" if ativos >= 50 else \
+                   "🟡 Maduro Médio (Sem Aptos)" if ativos >= 20 else \
+                   "Maduro Pequeno (Sem Aptos)" if ativos > 0 else "Maduro Inativo (Sem Aptos)"
     elif meses >= 12:
         if tem_aptos:
             if ativos_pct >= 30:
@@ -3697,28 +3256,15 @@ def classificar_maturidade(row, meses_limite=18):
             else:
                 return "Intermediário Crítico"
         else:
-            if ativos >= 30:
-                return "Intermediário Grande (Sem Aptos)"
-            elif ativos >= 10:
-                return "Intermediário Médio (Sem Aptos)"
-            else:
-                return "Intermediário Fraco (Sem Aptos)"
+            return "Intermediário Grande (Sem Aptos)" if ativos >= 30 else \
+                   "Intermediário Médio (Sem Aptos)" if ativos >= 10 else "Intermediário Fraco (Sem Aptos)"
     elif meses >= 6:
         if tem_aptos:
-            if ativos_pct >= 20:
-                return "Jovem em Crescimento"
-            else:
-                return "Jovem Fraco"
+            return "Jovem em Crescimento" if ativos_pct >= 20 else "Jovem Fraco"
         else:
-            if ativos >= 20:
-                return "Jovem Grande (Sem Aptos)"
-            else:
-                return "🟡 Jovem Pequeno (Sem Aptos)"
+            return "Jovem Grande (Sem Aptos)" if ativos >= 20 else "🟡 Jovem Pequeno (Sem Aptos)"
     else:
-        if ativos > 10:
-            return "⚪ Novo Promissor"
-        else:
-            return "⚪ Novo Iniciante"
+        return "⚪ Novo Promissor" if ativos > 10 else "⚪ Novo Iniciante"
 
 
 def preparar_dados_maturidade(df_clientes, df_condominios):
@@ -3753,7 +3299,6 @@ def preparar_dados_maturidade(df_clientes, df_condominios):
     apt_safe = df_maturidade["Apartamentos"].replace(0, np.nan)
     df_maturidade["total_ocupados"] = df_maturidade["ativos"] + df_maturidade["em_atraso"] + df_maturidade["bloqueio_automatico"]
     df_maturidade["percentual_ativos"] = (df_maturidade["ativos"] / apt_safe * 100).round(2).fillna(0)
-    df_maturidade["percentual_penetracao"] = (df_maturidade["total_ocupados"] / apt_safe * 100).round(2).fillna(0)
     df_maturidade["meses_cadastro"] = df_maturidade["Data cadastro"].apply(lambda x: calcular_meses_cadastro(x, data_ref))
     
     return df_maturidade
@@ -3767,17 +3312,12 @@ def render_dashboard_meus_acompanhamentos(df_clientes, df_condominios, df_parcel
     
     if not meus_nomes or df_meus_prospeccao is None or df_meus_prospeccao.empty:
         st.warning("⚠️ Nenhum condomínio encontrado em 'Meus Acompanhamentos'.")
-        st.info("💡 Certifique-se de que: 1) A planilha de prospecção foi importada, 2) Você preencheu seu nome na coluna 'Acompanhamento', 3) Seu nome está correto no campo acima.")
         return
     
     df_condominios_filtrados = filtrar_condominios_meus(df_condominios, meus_nomes)
     
     if df_condominios_filtrados.empty:
-        st.warning("⚠️ Nenhum dos condomínios de 'Meus Acompanhamentos' foi encontrado na base de dados de relatórios.")
-        st.info("📌 Verifique se os nomes dos condomínios estão escritos exatamente iguais em ambas as planilhas.")
-        
-        with st.expander("📋 Ver lista de condomínios esperados"):
-            st.dataframe(df_meus_prospeccao[["NOME", "CONSTRUTORA", "BAIRRO", "Região", "FASE_CLASSIFICADA"]], use_container_width=True)
+        st.warning("⚠️ Nenhum dos condomínios de 'Meus Acompanhamentos' foi encontrado na base.")
         return
     
     col1, col2, col3 = st.columns(3)
@@ -3795,24 +3335,17 @@ def render_dashboard_meus_acompanhamentos(df_clientes, df_condominios, df_parcel
     if not dashboard_meus.empty:
         col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
         with col_m1:
-            total_ativos = dashboard_meus["Qtd Ativos"].sum()
-            st.metric("👥 Total Ativos", formatar_numero_br(total_ativos))
+            st.metric("👥 Total Ativos", formatar_numero_br(dashboard_meus["Qtd Ativos"].sum()))
         with col_m2:
-            total_atrasos = dashboard_meus["Total Atrasos"].sum()
-            st.metric("⚠️ Em Atraso", formatar_numero_br(total_atrasos))
+            st.metric("⚠️ Em Atraso", formatar_numero_br(dashboard_meus["Total Atrasos"].sum()))
         with col_m3:
-            total_aptos = dashboard_meus["Total Apartamentos"].sum()
-            st.metric("🏢 Apartamentos", formatar_numero_br(total_aptos))
+            st.metric("🏢 Apartamentos", formatar_numero_br(dashboard_meus["Total Apartamentos"].sum()))
         with col_m4:
-            media_penetracao = dashboard_meus["% Ativos (Penetração)"].mean()
-            st.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
+            st.metric("📈 Penetração Média", f"{dashboard_meus['% Ativos (Penetração)'].mean():.1f}%")
         with col_m5:
-            capacidade = dashboard_meus["% Capacidade de Exploração"].mean()
-            st.metric("🎯 Potencial Médio", f"{capacidade:.1f}%")
+            st.metric("🎯 Potencial Médio", f"{dashboard_meus['% Capacidade de Exploração'].mean():.1f}%")
         
         st.markdown("---")
-        
-        st.subheader("📋 Detalhamento dos Meus Condomínios")
         
         df_prospeccao_info = df_meus_prospeccao[["NOME", "CONSTRUTORA", "BAIRRO", "Região", "FASE_CLASSIFICADA"]].copy()
         df_prospeccao_info = df_prospeccao_info.rename(columns={
@@ -3847,13 +3380,6 @@ def render_dashboard_meus_acompanhamentos(df_clientes, df_condominios, df_parcel
                 "% Ativos (Penetração)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                 "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                 "% Atraso": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-                "Qtd Ativos": st.column_config.NumberColumn(format="%d"),
-                "Total Apartamentos": st.column_config.NumberColumn(format="%d"),
-                "Total Ocupados": st.column_config.NumberColumn(format="%d"),
-                "Ativos Puros": st.column_config.NumberColumn(format="%d"),
-                "Em Atraso": st.column_config.NumberColumn(format="%d"),
-                "Bloqueio Automático": st.column_config.NumberColumn(format="%d"),
-                "Desativados": st.column_config.NumberColumn(format="%d"),
             }
         )
         
@@ -3889,86 +3415,20 @@ def render_dashboard_meus_acompanhamentos(df_clientes, df_condominios, df_parcel
         
         st.markdown("---")
         
-        if df_condominios_filtrados is not None and not df_condominios_filtrados.empty:
-            st.subheader("📈 Evolução Temporal - Meus Condomínios")
-            
-            df_clientes_temp = df_clientes.copy()
-            df_clientes_temp['CONDOMANIO'] = pd.to_numeric(df_clientes_temp['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
-            df_condominios_filtrados['ID'] = pd.to_numeric(df_condominios_filtrados['ID'], errors='coerce').fillna(0).astype(int)
-            
-            meus_ids = set(df_condominios_filtrados['ID'].unique())
-            clientes_meus = df_clientes_temp[df_clientes_temp['CONDOMANIO'].isin(meus_ids)].copy()
-            
-            if not clientes_meus.empty:
-                data_col = identificar_coluna_data(clientes_meus)
-                
-                if data_col:
-                    clientes_meus[data_col] = pd.to_datetime(clientes_meus[data_col], errors='coerce')
-                    clientes_meus = clientes_meus.dropna(subset=[data_col])
-                    
-                    if not clientes_meus.empty:
-                        clientes_meus['ano_mes'] = clientes_meus[data_col].dt.to_period('M')
-                        novos_por_mes = clientes_meus.groupby('ano_mes').size().reset_index(name='novos_clientes')
-                        novos_por_mes['acumulado'] = novos_por_mes['novos_clientes'].cumsum()
-                        novos_por_mes['ano_mes_str'] = novos_por_mes['ano_mes'].astype(str)
-                        
-                        fig_meus_acum = px.line(
-                            novos_por_mes,
-                            x='ano_mes_str',
-                            y='acumulado',
-                            title=f'📈 Evolução de Clientes - Meus Condomínios (Total: {len(meus_ids)} condomínios)',
-                            labels={'ano_mes_str': 'Mês/Ano', 'acumulado': 'Total de Clientes'},
-                            markers=True
-                        )
-                        fig_meus_acum.update_traces(line=dict(color='#2ecc71', width=3))
-                        fig_meus_acum.update_layout(height=400)
-                        st.plotly_chart(fig_meus_acum, use_container_width=True, config={'displayModeBar': False})
-                        
-                        fig_meus_novos = px.bar(
-                            novos_por_mes,
-                            x='ano_mes_str',
-                            y='novos_clientes',
-                            title='📊 Novos Clientes por Mês - Meus Condomínios',
-                            labels={'ano_mes_str': 'Mês/Ano', 'novos_clientes': 'Novos Clientes'},
-                            color='novos_clientes',
-                            color_continuous_scale='Viridis'
-                        )
-                        fig_meus_novos.update_layout(height=350)
-                        st.plotly_chart(fig_meus_novos, use_container_width=True, config={'displayModeBar': False})
+        output_meus = io.BytesIO()
+        with pd.ExcelWriter(output_meus, engine='openpyxl') as writer:
+            dashboard_meus.to_excel(writer, sheet_name='Meus_Condominios', index=False)
+        output_meus.seek(0)
         
-        st.markdown("---")
-        
-        st.subheader("📎 Exportar Dados dos Meus Condomínios")
-        
-        col_exp1, col_exp2 = st.columns(2)
-        
-        with col_exp1:
-            output_meus = io.BytesIO()
-            with pd.ExcelWriter(output_meus, engine='openpyxl') as writer:
-                dashboard_meus.to_excel(writer, sheet_name='Meus_Condominios', index=False)
-                if df_meus_prospeccao is not None and not df_meus_prospeccao.empty:
-                    df_meus_prospeccao.to_excel(writer, sheet_name='Prospeccao_Referencia', index=False)
-            output_meus.seek(0)
-            
-            st.download_button(
-                "📥 Exportar Meus Condomínios",
-                output_meus,
-                f"meus_condominios_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        
-        with col_exp2:
-            st.info("💡 **Dica:** Esta exportação inclui todos os dados dos seus condomínios, incluindo as informações de prospecção.")
-        
-        with st.expander("📋 Ver dados de referência da prospecção"):
-            st.dataframe(
-                df_meus_prospeccao[["NOME", "CONSTRUTORA", "BAIRRO", "Região", "ACOMPANHAMENTO", "FASE_CLASSIFICADA"]],
-                use_container_width=True
-            )
-    
+        st.download_button(
+            "📥 Exportar Meus Condomínios",
+            output_meus,
+            f"meus_condominios_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
     else:
-        st.warning("⚠️ Não foi possível gerar o dashboard para os condomínios selecionados.")
+        st.warning("⚠️ Não foi possível gerar o dashboard.")
 
 
 # ==================== INTERFACE DE UPLOAD ====================
@@ -3980,13 +3440,13 @@ def upload_mode(db):
     <div style="background-color:#f8f9fa; padding:15px; border-radius:10px; margin-bottom:20px;">
     <strong>📋 Instruções:</strong>
     <ul>
-        <li>A planilha deve conter <strong>3 abas</strong>: <code>Dados</code> (clientes), <code>Condominios</code> e <code>Base Parcelas</code></li>
+        <li>A planilha deve conter <strong>3 abas</strong>: <code>Dados</code>, <code>Condominios</code> e <code>Base Parcelas</code></li>
         <li>Colunas obrigatórias em <code>Dados</code>: <code>CONDOMANIO</code>, <code>STATUS ACESSO</code>, <code>ID</code></li>
         <li>Colunas obrigatórias em <code>Condominios</code>: <code>ID</code>, <code>Condomínio</code>, <code>Apartamentos</code>, <code>Região</code></li>
         <li>Colunas obrigatórias em <code>Base Parcelas</code>: <code>ID</code>, <code>DATA DO VENCIMENTO</code>, <code>STATUS</code>, <code>VALOR</code></li>
-        <li><strong>Para a aba de Cancelamentos:</strong> inclua uma coluna com data de cancelamento (ex: <code>Data Cancelamento</code>)</li>
     </ul>
-    <strong>📌 Importante:</strong> A aba <code>Base Parcelas</code> é fundamental para a análise de inadimplência REAL.
+    <strong>📌 Importante:</strong> A coluna <code>STATUS</code> da aba <code>Base Parcelas</code> pode conter:
+    "A Receber" (não paga), "Recebida" / "Paga" / "Pago" (paga), "Cancelada", "Isenta", etc.
     </div>
     """, unsafe_allow_html=True)
     
@@ -4002,17 +3462,17 @@ def upload_mode(db):
                 df_preview_dados = pd.read_excel(uploaded_file, sheet_name="Dados", nrows=5)
                 df_preview_cond = pd.read_excel(uploaded_file, sheet_name="Condominios", nrows=5)
                 
-                st.markdown("**Aba Dados (primeiras 5 linhas):**")
+                st.markdown("**Aba Dados:**")
                 st.dataframe(df_preview_dados, use_container_width=True)
-                st.markdown("**Aba Condominios (primeiras 5 linhas):**")
+                st.markdown("**Aba Condominios:**")
                 st.dataframe(df_preview_cond, use_container_width=True)
                 
                 try:
                     df_preview_parcelas = pd.read_excel(uploaded_file, sheet_name="Base Parcelas", nrows=5)
-                    st.markdown("**Aba Base Parcelas (primeiras 5 linhas):**")
+                    st.markdown("**Aba Base Parcelas:**")
                     st.dataframe(df_preview_parcelas, use_container_width=True)
                 except:
-                    st.warning("⚠️ Aba 'Base Parcelas' não encontrada. A análise de inadimplência real será limitada.")
+                    st.warning("⚠️ Aba 'Base Parcelas' não encontrada.")
             except Exception as e:
                 st.warning(f"Não foi possível visualizar: {e}")
         
@@ -4054,7 +3514,7 @@ def dados_existentes_mode(db):
             with col2:
                 if st.button("📂", key=f"carregar_{arq['batch_id']}", help="Carregar estes dados"):
                     with st.spinner("🔄 Carregando dados..."):
-                        cursor = db["condominios_relatorios"].find({"_import_batch": arq['batch_id'], "module": "condominios"})
+                        cursor = db["condominios_relatorios"].find({"_import_batch": arq['batch_id'], "module": "condominios"}).batch_size(5000)
                         df_all = pd.DataFrame(list(cursor))
                         
                         if 'CONDOMANIO' in df_all.columns:
@@ -4087,8 +3547,12 @@ def dados_existentes_mode(db):
                         st.session_state.condominios_file_id = arq.get('source_file_id')
                         st.session_state.condominios_nome_arquivo = nome
                         st.session_state.condominios_processado = True
+                        
+                        # 🔑 Limpar cache do winback
+                        st.session_state._winback_cache = None
+                        st.session_state._winback_cache_key = None
                     
-                    st.success(f"✅ Dados carregados: {len(df_clientes):,} clientes{', ' + f'{len(df_parcelas):,} parcelas' if not df_parcelas.empty else ''}")
+                    st.success(f"✅ Dados carregados: {len(df_clientes):,} clientes")
                     st.rerun()
             with col3:
                 if st.button("🗑️", key=f"excluir_{arq['batch_id']}", help="Excluir este arquivo"):
@@ -4106,8 +3570,7 @@ def confirmar_exclusao(db, batch_id):
     with st.expander("🔐 Confirmação de Exclusão", expanded=True):
         st.markdown("""
         <div style="background-color:#fff3cd; padding:15px; border-radius:10px; margin-bottom:20px;">
-        <strong>⚠️ Atenção!</strong> Você está prestes a excluir permanentemente estes dados.<br>
-        Esta ação <strong>não pode ser desfeita</strong>.
+        <strong>⚠️ Atenção!</strong> Você está prestes a excluir permanentemente estes dados.
         </div>
         """, unsafe_allow_html=True)
         
@@ -4131,6 +3594,8 @@ def confirmar_exclusao(db, batch_id):
                                 st.session_state.condominios_dados_condominios = None
                                 st.session_state.condominios_dados_parcelas = None
                                 st.session_state.condominios_processado = False
+                                st.session_state._winback_cache = None
+                                st.session_state._winback_cache_key = None
                             
                             st.session_state.exclusao_confirmada = False
                             st.rerun()
@@ -4143,7 +3608,7 @@ def confirmar_exclusao(db, batch_id):
 
 
 def gerenciamento_dados_mode(db):
-    """Modo de gerenciamento de dados com botão recarregar"""
+    """Modo de gerenciamento de dados"""
     st.subheader("⚙️ Gerenciamento de Dados")
     
     col1, col2 = st.columns([3, 1])
@@ -4166,6 +3631,8 @@ def gerenciamento_dados_mode(db):
                 st.session_state.condominios_dados_condominios = None
                 st.session_state.condominios_dados_parcelas = None
                 st.session_state.condominios_processado = False
+                st.session_state._winback_cache = None
+                st.session_state._winback_cache_key = None
                 st.session_state.confirm_delete_all = False
                 st.rerun()
             else:
@@ -4173,8 +3640,7 @@ def gerenciamento_dados_mode(db):
                 st.session_state.confirm_delete_all = True
 
 
-
-                # ==================== DASHBOARD PRINCIPAL ====================
+# ==================== DASHBOARD PRINCIPAL ====================
 def exibir_dashboard_principal(db=None):
     """Exibe o dashboard principal com todas as abas"""
     subtitulo("📊 Dashboard de Condomínios")
@@ -4185,7 +3651,7 @@ def exibir_dashboard_principal(db=None):
     meta = st.session_state.condominios_meta
     
     if df_clientes is None or df_condominios is None:
-        st.warning("⚠️ Nenhum dado carregado. Faça upload ou selecione dados existentes.")
+        st.warning("⚠️ Nenhum dado carregado.")
         return
     
     if meta:
@@ -4202,50 +3668,21 @@ def exibir_dashboard_principal(db=None):
     
     st.markdown("---")
     
-    with st.expander("📖 Entenda como os 'Ativos' são calculados"):
-        st.markdown("""
-        ### Como são calculados os indicadores:
-        
-        | Métrica | Fórmula |
-        |---------|---------|
-        | **Qtd Ativos** | Depende do modo selecionado abaixo |
-        | **% Ativos (Penetração)** | Ativos / Total Apartamentos × 100 |
-        | **% Atraso** | (Em Atraso + Bloqueio Automático) / Total Ocupados × 100 |
-        | **% Capacidade de Exploração** | (Apartamentos - Total Ocupados) / Apartamentos × 100 |
-        
-        **Classificações de status:**
-        - **Ativo Puro**: Status "Ativo" sem atraso ou bloqueio
-        - **Em Atraso**: Financeiro em atraso
-        - **Bloqueio Automático**: Bloqueado por inadimplência
-        - **Desativado**: Cancelado ou desativado
-        """)
-    
-    st.markdown("---")
-    
-    st.markdown("""
-    <div style="background-color:#e8f4f8; padding:10px; border-radius:5px; margin-bottom:15px;">
-    <strong>📋 Como os "Ativos" são calculados:</strong><br>
-    Por padrão, "Ativos" = apenas clientes com status "Ativo" (sem atraso, sem bloqueio).<br>
-    Use o toggle abaixo para alterar o modo de cálculo.
-    </div>
-    """, unsafe_allow_html=True)
-    
     col_modo1, col_modo2 = st.columns([1, 3])
     with col_modo1:
         modo_ativos_toggle = st.toggle(
             "Considerar 'Financeiro em Atraso' e 'Bloqueio Automático' como Ativos",
             value=False,
-            key="modo_ativos_toggle",
-            help="Quando ligado: Ativos incluem também clientes em atraso e bloqueados"
+            key="modo_ativos_toggle"
         )
     
     modo_param = "todos_ativos" if modo_ativos_toggle else "somente_ativos"
     
     with col_modo2:
         if modo_ativos_toggle:
-            st.success("✅ Modo atual: **Todos os Ocupados** = Ativos + Em Atraso + Bloqueio Automático")
+            st.success("✅ Modo atual: **Todos os Ocupados**")
         else:
-            st.warning("⚠️ Modo atual: **Somente Ativos Limpos** = Apenas status 'Ativo' puro")
+            st.warning("⚠️ Modo atual: **Somente Ativos Limpos**")
     
     st.markdown("---")
     
@@ -4253,23 +3690,18 @@ def exibir_dashboard_principal(db=None):
     
     if not dashboard_df.empty:
         col1, col2, col3, col4 = st.columns(4)
-        total_ativos = dashboard_df["Qtd Ativos"].sum()
-        total_atrasos = dashboard_df["Total Atrasos"].sum()
-        total_apartamentos = dashboard_df["Total Apartamentos"].sum()
-        media_penetracao = dashboard_df["% Ativos (Penetração)"].mean()
-        
-        col1.metric("👥 Total de Ativos", formatar_numero_br(total_ativos))
-        col2.metric("⚠️ Total em Atraso", formatar_numero_br(total_atrasos))
-        col3.metric("🏢 Total de Apartamentos", formatar_numero_br(total_apartamentos))
-        col4.metric("📈 Penetração Média", f"{media_penetracao:.1f}%")
+        col1.metric("👥 Total de Ativos", formatar_numero_br(dashboard_df["Qtd Ativos"].sum()))
+        col2.metric("⚠️ Total em Atraso", formatar_numero_br(dashboard_df["Total Atrasos"].sum()))
+        col3.metric("🏢 Total de Apartamentos", formatar_numero_br(dashboard_df["Total Apartamentos"].sum()))
+        col4.metric("📈 Penetração Média", f"{dashboard_df['% Ativos (Penetração)'].mean():.1f}%")
         
         condos_sem_clientes = len(dashboard_df[dashboard_df["Qtd Ativos"] == 0])
         if condos_sem_clientes > 0:
-            st.info(f"📌 **{condos_sem_clientes} condomínios** sem clientes ativos (oportunidades de expansão)")
+            st.info(f"📌 **{condos_sem_clientes} condomínios** sem clientes ativos")
         
         df_exibir = dashboard_df if len(dashboard_df) <= 500 else dashboard_df.head(500)
         if len(dashboard_df) > 500:
-            st.caption(f"⚠️ Exibindo apenas 500 de {len(dashboard_df)} condomínios. Use exportação para ver todos.")
+            st.caption(f"⚠️ Exibindo apenas 500 de {len(dashboard_df)} condomínios.")
         
         st.dataframe(
             df_exibir, 
@@ -4280,24 +3712,12 @@ def exibir_dashboard_principal(db=None):
                 "% Ativos (Penetração)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                 "% Capacidade de Exploração": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                 "% Atraso": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-                "Total Apartamentos": st.column_config.NumberColumn(format="%d"),
-                "Qtd Ativos": st.column_config.NumberColumn(format="%d"),
-                "Total Atrasos": st.column_config.NumberColumn(format="%d"),
-                "Desativados": st.column_config.NumberColumn(format="%d"),
-                "Total Ocupados": st.column_config.NumberColumn(format="%d"),
-                "Ativos Puros": st.column_config.NumberColumn(format="%d"),
-                "Em Atraso": st.column_config.NumberColumn(format="%d"),
-                "Bloqueio Automático": st.column_config.NumberColumn(format="%d"),
             }
         )
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             dashboard_df.to_excel(writer, sheet_name='Dashboard Principal', index=False)
-            df_clientes.to_excel(writer, sheet_name='Dados Clientes', index=False)
-            df_condominios.to_excel(writer, sheet_name='Condomínios', index=False)
-            if df_parcelas is not None and not df_parcelas.empty:
-                df_parcelas.to_excel(writer, sheet_name='Base Parcelas', index=False)
         output.seek(0)
         
         st.download_button(
@@ -4308,14 +3728,13 @@ def exibir_dashboard_principal(db=None):
             use_container_width=True
         )
         
-        # ==================== BOTÃO DE WIN-BACK COM HEALTH SCORE ====================
+        # ==================== BOTÃO DE WIN-BACK ====================
         render_exportacao_winback(df_clientes, df_condominios, df_parcelas)
-        # =========================================================================
+        # ==========================================================
     
-    # ==================== ABAS DE ANÁLISE ====================
+    # ==================== ABAS ====================
     st.markdown("---")
     
-    # 13 ABAS
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
         "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", 
         "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", 
@@ -4386,36 +3805,16 @@ def exibir_dashboard_principal(db=None):
             key="ticket_medio_receita"
         )
         
-        df_receita = calcular_receita_potencial(df_penetracao_base, ticket_medio=ticket)
+        df_receita = calcular_receita_potencial(df_penetracao_base, ticket_medio=ticket) if 'calcular_receita_potencial' in globals() else pd.DataFrame()
         
         if not df_receita.empty:
-            fig = go.Figure(go.Waterfall(
-                name="Receita", 
-                orientation="v", 
-                measure=["relative"] * len(df_receita.head(15)),
-                x=df_receita.head(15)["Condomínio"], 
-                y=df_receita.head(15)["receita_potencial"],
-                textposition="outside", 
-                text=[formatar_moeda_br(v) for v in df_receita.head(15)["receita_potencial"]]
-            ))
-            fig.update_layout(
-                title="💰 Receita Potencial Não Explorada (Top 15)", 
-                showlegend=False, 
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            
             st.dataframe(
-                df_receita.sort_values("receita_potencial", ascending=False).head(20)[
-                    ["Condomínio", "Região", "clientes_ativos", "potencial_clientes", 
-                     "receita_atual", "receita_potencial", "gap_receita"]
-                ],
+                df_receita.sort_values("receita_potencial", ascending=False).head(20),
                 use_container_width=True,
                 height=400,
                 column_config={
                     "receita_atual": st.column_config.NumberColumn(format="R$ %.2f"),
                     "receita_potencial": st.column_config.NumberColumn(format="R$ %.2f"),
-                    "gap_receita": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=1000),
                 }
             )
     
@@ -4424,28 +3823,6 @@ def exibir_dashboard_principal(db=None):
         st.subheader("⚠️ Análise de Inadimplência por Condomínio")
         
         has_parcelas = df_parcelas is not None and not df_parcelas.empty
-        
-        if has_parcelas:
-            st.markdown("""
-            <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-            <strong>📋 Como a inadimplência é calculada:</strong><br>
-            A análise de inadimplência utiliza <strong>TRÊS visões diferentes</strong> para melhor compreensão:
-            <ol>
-                <li><strong>🔴 Visão Completa (Status Acesso)</strong> - Baseada na coluna "STATUS ACESSO" do arquivo de dados</li>
-                <li><strong>🟡 Visão Financeiro Histórico</strong> - Baseada na coluna "FINANCEIRO EM ATRASO" (último atraso registrado)</li>
-                <li><strong>🟢 Visão Real (Parcelas Vencidas)</strong> - Baseada na aba "Base Parcelas" com data de vencimento + status "A receber"</li>
-            </ol>
-            A <strong>Visão Real</strong> é a mais precisa para situação atual de inadimplência!
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-            <strong>📋 Como a inadimplência é calculada:</strong><br>
-            A análise de inadimplência é baseada na coluna <strong>"STATUS ACESSO"</strong> do arquivo de dados.
-            Clientes com status "Financeiro em atraso" ou "Bloqueio Automático" são considerados inadimplentes.
-            </div>
-            """, unsafe_allow_html=True)
         
         if has_parcelas:
             visao_opcoes = [
@@ -4457,8 +3834,7 @@ def exibir_dashboard_principal(db=None):
                 "📊 Selecione a análise de inadimplência:",
                 options=visao_opcoes,
                 index=2,
-                key="visao_inadimplencia",
-                help="Visão Real é a mais precisa, baseada em parcelas vencidas e não pagas"
+                key="visao_inadimplencia"
             )
         else:
             visao_opcoes = [
@@ -4511,35 +3887,21 @@ def exibir_dashboard_principal(db=None):
             df_inadimplencia["taxa_inadimplencia"] = df_inadimplencia["taxa_inadimplencia"].fillna(0)
             df_inadimplencia["total_clientes"] = df_inadimplencia["total_clientes"].fillna(0).astype(int)
             df_inadimplencia["total_inadimplentes"] = df_inadimplencia["total_inadimplentes"].fillna(0).astype(int)
-            
-            st.info("🔴 **Visão por Status Acesso:** Considera inadimplentes clientes com status 'Financeiro em atraso' ou 'Bloqueio Automático'")
-            
+        
         elif visao_selecionada == "🟡 Visão Financeiro Histórico":
             df_inadimplencia = analisar_inadimplencia_por_status(df_clientes, df_condominios, incluir_desativados=True)
-            st.info("🟡 **Visão Financeiro Histórico:** Baseada na coluna 'FINANCEIRO EM ATRASO' (último atraso registrado)")
         else:
-            df_inadimplencia, parcelas_detalhe = analisar_inadimplencia_por_parcelas(df_clientes, df_condominios, df_parcelas)
-            st.success("🟢 **Visão Real (Parcelas Vencidas):** Baseada em parcelas com data de vencimento passada e status 'A receber'")
+            df_inadimplencia, _ = analisar_inadimplencia_por_parcelas(df_clientes, df_condominios, df_parcelas)
         
         if not df_inadimplencia.empty:
             total_condominios = len(df_inadimplencia)
-            total_inadimplentes = df_inadimplencia["total_inadimplentes"].sum() if "total_inadimplentes" in df_inadimplencia.columns else 0
-            total_clientes_analisados = df_inadimplencia["total_clientes"].sum() if "total_clientes" in df_inadimplencia.columns else 0
+            total_inadimplentes = df_inadimplencia["total_inadimplentes"].sum()
             media_inadimplencia = df_inadimplencia["taxa_inadimplencia"].mean()
             
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("🏢 Condomínios Analisados", formatar_numero_br(total_condominios))
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🏢 Condomínios", formatar_numero_br(total_condominios))
             col2.metric("⚠️ Total Inadimplentes", formatar_numero_br(total_inadimplentes))
-            col3.metric("👥 Total Clientes", formatar_numero_br(total_clientes_analisados))
-            col4.metric("📊 Média Inadimplência", f"{media_inadimplencia:.1f}%")
-            
-            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and "valor_total_atraso" in df_inadimplencia.columns:
-                valor_total_atraso = df_inadimplencia["valor_total_atraso"].sum()
-                st.metric("💰 Valor Total em Atraso", formatar_moeda_br(valor_total_atraso))
-            
-            st.markdown("---")
-            
-            st.markdown("#### 📊 Top 15 Condomínios com Maior Taxa de Inadimplência")
+            col3.metric("📊 Média Inadimplência", f"{media_inadimplencia:.1f}%")
             
             fig1 = px.bar(
                 df_inadimplencia.head(15),
@@ -4551,96 +3913,11 @@ def exibir_dashboard_principal(db=None):
                 title=f"Top 15 - {visao_selecionada}"
             )
             fig1.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-            fig1.update_layout(yaxis_title="Taxa de Inadimplência (%)", xaxis_title="")
             st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False})
-            
-            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and "valor_total_atraso" in df_inadimplencia.columns:
-                st.markdown("#### 💰 Top 15 Condomínios com Maior Valor em Atraso")
-                
-                fig_valor = px.bar(
-                    df_inadimplencia.head(15),
-                    x="Condomínio",
-                    y="valor_total_atraso",
-                    color="valor_total_atraso",
-                    color_continuous_scale="Oranges",
-                    text="valor_total_atraso",
-                    title="Top 15 - Valor Total em Atraso por Condomínio"
-                )
-                fig_valor.update_traces(texttemplate='%{text:.2f}', textposition='outside')
-                fig_valor.update_layout(yaxis_title="Valor em Atraso (R$)", xaxis_title="")
-                st.plotly_chart(fig_valor, use_container_width=True, config={'displayModeBar': False})
-            
-            with st.expander("📋 Ver Tabela Completa de Inadimplência"):
-                df_exibir = df_inadimplencia if len(df_inadimplencia) <= 500 else df_inadimplencia.head(500)
-                if len(df_inadimplencia) > 500:
-                    st.caption(f"⚠️ Exibindo apenas 500 de {len(df_inadimplencia)} condomínios.")
-                
-                if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)":
-                    colunas_exibir = ["Condomínio", "Região", "Apartamentos", "total_clientes", 
-                                     "total_inadimplentes", "taxa_inadimplencia", "valor_total_atraso", "total_parcelas_vencidas"]
-                    colunas_existentes = [c for c in colunas_exibir if c in df_inadimplencia.columns]
-                    
-                    st.dataframe(
-                        df_exibir[colunas_existentes], 
-                        use_container_width=True,
-                        height=400,
-                        column_config={
-                            "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
-                            "valor_total_atraso": st.column_config.NumberColumn("Valor em Atraso", format="R$ %.2f"),
-                            "Apartamentos": st.column_config.NumberColumn("Apartamentos", format="%d"),
-                            "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
-                            "total_inadimplentes": st.column_config.NumberColumn("Total Inadimplentes", format="%d"),
-                            "total_parcelas_vencidas": st.column_config.NumberColumn("Parcelas Vencidas", format="%d"),
-                        }
-                    )
-                else:
-                    st.dataframe(
-                        df_exibir[[
-                            "Condomínio", "Região", "Apartamentos", 
-                            "total_clientes", "Em Dia", "Em Atraso", "total_inadimplentes", "taxa_inadimplencia"
-                        ]], 
-                        use_container_width=True,
-                        height=400,
-                        column_config={
-                            "taxa_inadimplencia": st.column_config.ProgressColumn("Taxa Inadimplência", format="%.1f%%", min_value=0, max_value=100),
-                            "Apartamentos": st.column_config.NumberColumn("Apartamentos", format="%d"),
-                            "total_clientes": st.column_config.NumberColumn("Total Clientes", format="%d"),
-                            "Em Dia": st.column_config.NumberColumn("Em Dia", format="%d"),
-                            "Em Atraso": st.column_config.NumberColumn("Em Atraso", format="%d"),
-                            "total_inadimplentes": st.column_config.NumberColumn("Total Inadimplentes", format="%d"),
-                        }
-                    )
-            
-            if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in locals() and not parcelas_detalhe.empty:
-                with st.expander("📋 Ver Detalhamento de Parcelas Vencidas"):
-                    st.dataframe(
-                        parcelas_detalhe,
-                        use_container_width=True,
-                        height=400,
-                        column_config={
-                            "Data Vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                            "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
-                        }
-                    )
-            
-            output_inad = io.BytesIO()
-            with pd.ExcelWriter(output_inad, engine='openpyxl') as writer:
-                df_inadimplencia.to_excel(writer, sheet_name='Inadimplencia', index=False)
-                if visao_selecionada == "🟢 Visão Real (Parcelas Vencidas)" and 'parcelas_detalhe' in locals() and not parcelas_detalhe.empty:
-                    parcelas_detalhe.to_excel(writer, sheet_name='Parcelas_Vencidas', index=False)
-            output_inad.seek(0)
-            
-            st.download_button(
-                f"📥 Exportar Análise de Inadimplência - {visao_selecionada}",
-                output_inad,
-                f"inadimplencia_condominios_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
     
     # TAB 4: CHURN
     with tab4:
-        st.subheader("📉 Análise de Churn (Cancelamentos) por Condomínio")
+        st.subheader("📉 Análise de Churn")
         df_churn = analisar_churn(df_clientes, df_condominios)
         
         if not df_churn.empty:
@@ -4650,20 +3927,13 @@ def exibir_dashboard_principal(db=None):
                 y="churn_rate",
                 color="churn_rate",
                 color_continuous_scale="Reds",
-                title="Top 15 Condomínios com Maior Taxa de Cancelamento"
+                title="Top 15 Condomínios com Maior Churn"
             )
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            
-            with st.expander("📋 Tabela Completa de Churn"):
-                st.dataframe(
-                    df_churn[["Condomínio", "Região", "Ativo", "Desativado", "churn_rate"]], 
-                    use_container_width=True,
-                    height=400
-                )
     
     # TAB 5: CONCORRÊNCIA
     with tab5:
-        st.subheader("⚔️ Análise Competitiva por Concorrente")
+        st.subheader("⚔️ Análise Competitiva")
         df_penetracao_base = calcular_penetracao(df_clientes, df_condominios)
         df_concorrencia = correlacao_concorrencia(df_penetracao_base, df_condominios)
         
@@ -4672,62 +3942,28 @@ def exibir_dashboard_principal(db=None):
                 df_concorrencia, 
                 x="Principal Concorrente", 
                 y="penetracao_ponderada", 
-                color="penetracao_ponderada", 
-                color_continuous_scale="RdYlGn",
-                title="Penetração Média por Concorrente Principal"
+                title="Penetração por Concorrente"
             )
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            
-            st.dataframe(df_concorrencia, use_container_width=True)
-        else:
-            st.info("⚠️ Dados de concorrentes não disponíveis na planilha.")
     
     # TAB 6: ANÁLISE POR ZONA
     with tab6:
-        st.subheader("📍 Análise Consolidada por Zona/Região")
+        st.subheader("📍 Análise por Zona/Região")
         
         dashboard_para_zona = gerar_dashboard_principal(df_clientes, df_condominios, "somente_ativos")
         
         if not dashboard_para_zona.empty and "Região" in dashboard_para_zona.columns:
             zona_stats = analisar_por_zona(dashboard_para_zona)
-            
             if not zona_stats.empty:
                 st.dataframe(zona_stats, use_container_width=True)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    fig_ativos = px.bar(
-                        zona_stats, 
-                        x="Região", 
-                        y="total_ativos", 
-                        color="percentual_ativos",
-                        title="Total de Ativos por Região",
-                        color_continuous_scale="Viridis"
-                    )
-                    st.plotly_chart(fig_ativos, use_container_width=True, config={'displayModeBar': False})
-                
-                with col2:
-                    fig_penetracao = px.bar(
-                        zona_stats, 
-                        x="Região", 
-                        y="media_penetracao", 
-                        color="media_penetracao",
-                        title="Penetração Média por Região (%)",
-                        color_continuous_scale="Blues"
-                    )
-                    st.plotly_chart(fig_penetracao, use_container_width=True, config={'displayModeBar': False})
-        else:
-            st.warning("⚠️ Dados insuficientes para análise por região.")
     
     # TAB 7: MATURIDADE
     with tab7:
-        st.subheader("⏳ Análise de Maturidade dos Condomínios")
-        
+        st.subheader("⏳ Análise de Maturidade")
         df_maturidade = preparar_dados_maturidade(df_clientes, df_condominios)
         df_maturidade["classificacao_maturidade"] = df_maturidade.apply(
             lambda row: classificar_maturidade(row, CONDOMINIOS_CONFIG['meses_maturidade_limite']), axis=1)
         
-        st.markdown("#### 📊 Distribuição por Maturidade")
         maturidade_counts = df_maturidade["classificacao_maturidade"].value_counts().reset_index()
         maturidade_counts.columns = ["Classificação", "Quantidade"]
         
@@ -4735,66 +3971,17 @@ def exibir_dashboard_principal(db=None):
             maturidade_counts, 
             values="Quantidade", 
             names="Classificação",
-            title="Distribuição dos Condomínios por Maturidade",
+            title="Distribuição por Maturidade",
             hole=0.4
         )
         st.plotly_chart(fig_maturidade, use_container_width=True, config={'displayModeBar': False})
-        
-        with st.expander("📋 Ver Tabela Completa de Maturidade"):
-            df_exibir = df_maturidade if len(df_maturidade) <= 500 else df_maturidade.head(500)
-            if len(df_maturidade) > 500:
-                st.caption(f"⚠️ Exibindo apenas 500 de {len(df_maturidade)} condomínios.")
-            
-            st.dataframe(
-                df_exibir[[
-                    "Condomínio", "Data cadastro", "meses_cadastro", "Região", 
-                    "Apartamentos", "ativos", "percentual_ativos", "total_ocupados",
-                    "classificacao_maturidade"
-                ]], 
-                use_container_width=True,
-                height=400,
-                column_config={
-                    "Data cadastro": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                    "percentual_ativos": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-                }
-            )
-        
-        output_maturidade = io.BytesIO()
-        with pd.ExcelWriter(output_maturidade, engine='openpyxl') as writer:
-            df_maturidade.to_excel(writer, sheet_name='Maturidade', index=False)
-        output_maturidade.seek(0)
-        
-        st.download_button(
-            "📥 Exportar Análise de Maturidade",
-            output_maturidade,
-            f"maturidade_condominios_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
     
     # TAB 8: CONSULTA DE CRÉDITO
     with tab8:
         st.subheader("🎯 Análise de Condomínios para Consulta de Crédito")
         
-        st.markdown("""
-        <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-        <strong>📋 Como funciona a Consulta de Crédito:</strong><br>
-        Esta análise identifica condomínios com <strong>ALTA INCIDÊNCIA DE INADIMPLÊNCIA</strong>, 
-        que são os principais candidatos para ações de recuperação de crédito e consulta de crédito.
-        <br><br>
-        <strong>📌 Instruções:</strong>
-        <ol>
-            <li>Configure os parâmetros abaixo conforme sua estratégia</li>
-            <li>Você pode <strong>desativar o filtro de valor mínimo</strong> se desejar</li>
-            <li>Clique em <strong>"Aplicar Filtros e Gerar Ranking"</strong></li>
-            <li>Analise os resultados e exporte a lista</li>
-        </ol>
-        </div>
-        """, unsafe_allow_html=True)
-        
         if df_parcelas is None or df_parcelas.empty:
-            st.warning("⚠️ Aba 'Base Parcelas' não encontrada. A análise de consulta de crédito requer dados de parcelas.")
-            st.info("Por favor, faça upload de uma planilha que contenha a aba 'Base Parcelas'.")
+            st.warning("⚠️ Aba 'Base Parcelas' não encontrada.")
         else:
             filtros = render_filtros_consulta_credito_otimizado()
             
@@ -4816,23 +4003,8 @@ def exibir_dashboard_principal(db=None):
                     st.session_state.ultimo_resultado_inadimplencia = df_inad_periodo
                 
                 if df_inad_periodo.empty:
-                    st.warning("⚠️ Nenhuma inadimplência encontrada com os critérios atuais.")
-                    st.info("Tente ajustar os filtros para um período maior ou taxas menores.")
+                    st.warning("⚠️ Nenhuma inadimplência encontrada.")
                 else:
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("📅 Dias de Atraso", f"{filtros['dias_atraso']} dias")
-                    with col2:
-                        st.metric("📆 Data Referência", filtros['data_referencia'].strftime("%d/%m/%Y"))
-                    with col3:
-                        total_inadimplentes = df_inad_periodo["total_clientes_inadimplentes"].sum()
-                        st.metric("👥 Total Inadimplentes", formatar_numero_br(total_inadimplentes))
-                    with col4:
-                        media_dias = df_inad_periodo["media_dias_atraso"].mean()
-                        st.metric("⏱️ Média Dias Atraso", f"{media_dias:.0f} dias")
-                    
-                    st.markdown("---")
-                    
                     df_aptos, df_top_oportunidades = identificar_condominios_aptos_consulta_flexivel_otimizado(
                         _df_fingerprint(df_inad_periodo),
                         filtros['taxa_minima'],
@@ -4843,406 +4015,140 @@ def exibir_dashboard_principal(db=None):
                     )
                     
                     render_painel_condominios_aptos(df_aptos, df_top_oportunidades)
-                    
-                    if not df_aptos.empty:
-                        st.markdown("---")
-                        st.subheader("📄 Detalhamento Adicional")
-                        
-                        col_detalhe1, col_detalhe2 = st.columns([1, 2])
-                        with col_detalhe1:
-                            mostrar_detalhe = st.checkbox("Mostrar detalhamento de parcelas vencidas", key="mostrar_detalhe_parcelas")
-                        
-                        if mostrar_detalhe and not df_aptos.empty:
-                            condominios_lista = df_aptos["Condomínio"].tolist()
-                            if condominios_lista:
-                                cond_selecionado = st.selectbox(
-                                    "Selecione um condomínio para ver detalhes:",
-                                    condominios_lista,
-                                    key="select_cond_detalhe"
-                                )
-                                
-                                if cond_selecionado:
-                                    cond_id = df_aptos[df_aptos["Condomínio"] == cond_selecionado]["ID"].iloc[0]
-                                    parcelas_top = df_parcelas_vencidas[df_parcelas_vencidas["ID"] == cond_id]
-                                    
-                                    if not parcelas_top.empty:
-                                        st.markdown(f"**📄 Parcelas Vencidas - {cond_selecionado}**")
-                                        st.dataframe(
-                                            parcelas_top[["RAZAO SOCIAL/NOME", "DATA DO VENCIMENTO", "DIAS_ATRASO", "FAIXA_ATRASO", "VALOR"]],
-                                            use_container_width=True,
-                                            height=400,
-                                            column_config={
-                                                "DATA DO VENCIMENTO": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                                                "VALOR": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
-                                                "DIAS_ATRASO": st.column_config.NumberColumn("Dias", format="%d"),
-                                            }
-                                        )
             else:
-                st.info("🔧 Configure os parâmetros acima e clique em 'Aplicar Filtros e Gerar Ranking' para iniciar a análise.")
-                
-                st.markdown("""
-                <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; margin-top:20px;">
-                <h4>🎯 Exemplo de uso:</h4>
-                <ul>
-                    <li><strong>Para identificar inadimplência grave:</strong> 30+ dias, taxa > 40%</li>
-                    <li><strong>Para identificar inadimplência leve:</strong> 15+ dias, taxa > 20%</li>
-                    <li><strong>Para ignorar valor mínimo:</strong> Desmarque a opção "Ativar filtro de valor mínimo"</li>
-                    <li><strong>Para incluir condomínios pequenos:</strong> Defina mínimo de inadimplentes como 0</li>
-                </ul>
-                </div>
-                """, unsafe_allow_html=True)
+                st.info("🔧 Configure os parâmetros e clique em 'Aplicar Filtros'.")
     
     # TAB 9: ANÁLISE TEMPORAL
     with tab9:
         st.subheader("📈 Análise Temporal de Clientes por Condomínio")
         
-        st.markdown("""
-        <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-        <strong>🎯 Como funciona:</strong><br>
-        Selecione um condomínio e um período para visualizar a evolução do número de clientes ativos ao longo do tempo.
-        Ideal para acompanhar o impacto de campanhas e ações comerciais em condomínios específicos.
-        </div>
-        """, unsafe_allow_html=True)
+        df_clientes_temp = df_clientes.copy()
+        df_condominios_temp = df_condominios.copy()
         
-        if df_clientes is None or df_clientes.empty or df_condominios is None or df_condominios.empty:
-            st.warning("⚠️ Nenhum dado carregado para análise.")
+        if 'CONDOMANIO' in df_clientes_temp.columns:
+            df_clientes_temp['CONDOMANIO'] = pd.to_numeric(df_clientes_temp['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
+        if 'ID' in df_condominios_temp.columns:
+            df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
+        
+        data_col = identificar_coluna_data(df_clientes_temp)
+        
+        if data_col is None:
+            st.error("❌ Coluna de data de cadastro não encontrada.")
         else:
-            df_clientes_temp = df_clientes.copy()
-            df_condominios_temp = df_condominios.copy()
+            df_clientes_temp[data_col] = pd.to_datetime(df_clientes_temp[data_col], errors='coerce')
+            df_clientes_temp = df_clientes_temp.dropna(subset=[data_col])
             
-            if 'CONDOMANIO' in df_clientes_temp.columns:
-                df_clientes_temp['CONDOMANIO'] = pd.to_numeric(df_clientes_temp['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
-            if 'ID' in df_condominios_temp.columns:
-                df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
+            df_clientes_temp['status_classificacao'] = classificar_status_serie(df_clientes_temp.get('STATUS ACESSO', pd.Series()))
+            df_clientes_temp['is_active'] = df_clientes_temp['status_classificacao'] == 'Ativo'
             
-            data_col = identificar_coluna_data(df_clientes_temp)
+            condominios_lista = df_condominios_temp[['ID', 'Condomínio', 'Região']].copy()
+            condominios_lista = condominios_lista.sort_values('Condomínio')
             
-            if data_col is None:
-                st.error("❌ Coluna de data de cadastro não encontrada. Análise temporal indisponível.")
-                st.info("Verifique se a planilha possui uma coluna com data de cadastro (ex: 'Data cadastro', 'data_cadastro')")
-            else:
-                df_clientes_temp[data_col] = pd.to_datetime(df_clientes_temp[data_col], errors='coerce')
-                df_clientes_temp = df_clientes_temp.dropna(subset=[data_col])
+            condominio_options = {f"{row['Condomínio']} - {row['Região']}": row['ID'] for _, row in condominios_lista.iterrows()}
+            
+            condominio_selecionado = st.selectbox(
+                "Condomínio para análise:",
+                options=list(condominio_options.keys()),
+                key="temporal_cond_select"
+            )
+            
+            if condominio_selecionado:
+                condominio_id = condominio_options[condominio_selecionado]
+                condominio_nome = condominio_selecionado.split(" - ")[0]
                 
-                if df_clientes_temp.empty:
-                    st.warning("⚠️ Nenhuma data de cadastro válida encontrada.")
+                periodo_preset = st.selectbox(
+                    "Período:",
+                    options=["Últimos 6 meses", "Último ano", "Últimos 2 anos", "Todos os dados"],
+                    key="temporal_periodo_preset"
+                )
+                
+                data_fim = datetime.now().replace(tzinfo=None)
+                if periodo_preset == "Últimos 6 meses":
+                    data_inicio = data_fim - timedelta(days=180)
+                elif periodo_preset == "Último ano":
+                    data_inicio = data_fim - timedelta(days=365)
+                elif periodo_preset == "Últimos 2 anos":
+                    data_inicio = data_fim - timedelta(days=730)
                 else:
-                    df_clientes_temp['status_classificacao'] = classificar_status_serie(df_clientes_temp.get('STATUS ACESSO', pd.Series()))
-                    df_clientes_temp['is_active'] = df_clientes_temp['status_classificacao'] == 'Ativo'
+                    data_inicio = df_clientes_temp[data_col].min()
+                
+                clientes_condominio = df_clientes_temp[df_clientes_temp['CONDOMANIO'] == condominio_id].copy()
+                
+                if clientes_condominio.empty:
+                    st.warning(f"⚠️ Nenhum cliente encontrado.")
+                else:
+                    clientes_condominio = clientes_condominio[
+                        (clientes_condominio[data_col] >= data_inicio) & 
+                        (clientes_condominio[data_col] <= data_fim)
+                    ].copy()
                     
-                    st.markdown("### 🏢 Selecione o Condomínio")
-                    
-                    condominios_lista = df_condominios_temp[['ID', 'Condomínio', 'Região']].copy()
-                    condominios_lista = condominios_lista.sort_values('Condomínio')
-                    
-                    condominio_options = {f"{row['Condomínio']} - {row['Região']}": row['ID'] for _, row in condominios_lista.iterrows()}
-                    
-                    condominio_selecionado = st.selectbox(
-                        "Condomínio para análise:",
-                        options=list(condominio_options.keys()),
-                        key="temporal_cond_select"
-                    )
-                    
-                    if condominio_selecionado:
-                        condominio_id = condominio_options[condominio_selecionado]
-                        condominio_nome = condominio_selecionado.split(" - ")[0]
+                    if clientes_condominio.empty:
+                        st.warning(f"⚠️ Nenhum cliente no período.")
+                    else:
+                        clientes_condominio = clientes_condominio.sort_values(data_col)
+                        clientes_condominio['ano_mes'] = clientes_condominio[data_col].dt.to_period('M')
+                        novos_por_mes = clientes_condominio.groupby('ano_mes').size().reset_index(name='novos_clientes')
+                        novos_por_mes['acumulado_ativos'] = novos_por_mes['novos_clientes'].cumsum()
+                        novos_por_mes['ano_mes_str'] = novos_por_mes['ano_mes'].astype(str)
                         
-                        st.markdown("### 📅 Período de Análise")
+                        info_condominio = df_condominios_temp[df_condominios_temp['ID'] == condominio_id].iloc[0]
+                        total_apartamentos = info_condominio.get('Apartamentos', 0)
+                        total_clientes_periodo = len(clientes_condominio)
+                        penetracao = (total_clientes_periodo / total_apartamentos * 100) if total_apartamentos > 0 else 0
                         
-                        col1, col2, col3 = st.columns([2, 2, 1])
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("🏢 Total de Clientes", f"{total_clientes_periodo}")
+                        col2.metric("📈 Penetração", f"{penetracao:.1f}%")
+                        col3.metric("📍 Região", info_condominio.get('Região', 'N/A'))
                         
-                        with col1:
-                            periodo_preset = st.selectbox(
-                                "Período pré-definido:",
-                                options=["Personalizado", "Últimos 3 meses", "Últimos 6 meses", "Último ano", "Últimos 2 anos", "Todos os dados"],
-                                key="temporal_periodo_preset"
-                            )
-                        
-                        with col2:
-                            data_inicio = None
-                            data_fim = datetime.now().replace(tzinfo=None)
-                            
-                            if periodo_preset == "Personalizado":
-                                col_data1, col_data2 = st.columns(2)
-                                with col_data1:
-                                    data_inicio_date = st.date_input("Data inicial:", value=datetime.now().date() - timedelta(days=180), key="temporal_data_inicio")
-                                with col_data2:
-                                    data_fim_date = st.date_input("Data final:", value=datetime.now().date(), key="temporal_data_fim")
-                                data_inicio = datetime.combine(data_inicio_date, datetime.min.time())
-                                data_fim = datetime.combine(data_fim_date, datetime.min.time())
-                            elif periodo_preset == "Últimos 3 meses":
-                                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=90)
-                            elif periodo_preset == "Últimos 6 meses":
-                                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=180)
-                            elif periodo_preset == "Último ano":
-                                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=365)
-                            elif periodo_preset == "Últimos 2 anos":
-                                data_inicio = datetime.now().replace(tzinfo=None) - timedelta(days=730)
-                            elif periodo_preset == "Todos os dados":
-                                data_inicio = df_clientes_temp[data_col].min()
-                        
-                        with st.spinner(f"🔄 Analisando evolução do condomínio '{condominio_nome}'..."):
-                            clientes_condominio = df_clientes_temp[df_clientes_temp['CONDOMANIO'] == condominio_id].copy()
-                            
-                            if clientes_condominio.empty:
-                                st.warning(f"⚠️ Nenhum cliente encontrado para o condomínio '{condominio_nome}'.")
-                            else:
-                                clientes_condominio = clientes_condominio[
-                                    (clientes_condominio[data_col] >= data_inicio) & 
-                                    (clientes_condominio[data_col] <= data_fim)
-                                ].copy()
-                                
-                                if clientes_condominio.empty:
-                                    st.warning(f"⚠️ Nenhum cliente encontrado para o condomínio '{condominio_nome}' no período selecionado.")
-                                else:
-                                    clientes_condominio = clientes_condominio.sort_values(data_col)
-                                    clientes_condominio['data_normalizada'] = clientes_condominio[data_col].dt.date
-                                    
-                                    novos_por_dia = clientes_condominio.groupby('data_normalizada').size().reset_index(name='novos_clientes')
-                                    novos_por_dia = novos_por_dia.sort_values('data_normalizada')
-                                    novos_por_dia['acumulado_ativos'] = novos_por_dia['novos_clientes'].cumsum()
-                                    
-                                    clientes_condominio['ano_mes'] = clientes_condominio[data_col].dt.to_period('M')
-                                    novos_por_mes = clientes_condominio.groupby('ano_mes').size().reset_index(name='novos_clientes')
-                                    novos_por_mes['acumulado_ativos'] = novos_por_mes['novos_clientes'].cumsum()
-                                    novos_por_mes['ano_mes_str'] = novos_por_mes['ano_mes'].astype(str)
-                                    
-                                    info_condominio = df_condominios_temp[df_condominios_temp['ID'] == condominio_id].iloc[0]
-                                    total_apartamentos = info_condominio.get('Apartamentos', 0)
-                                    regiao = info_condominio.get('Região', 'N/A')
-                                    
-                                    total_clientes_periodo = len(clientes_condominio)
-                                    primeiro_cadastro = clientes_condominio[data_col].min()
-                                    ultimo_cadastro = clientes_condominio[data_col].max()
-                                    penetracao = (total_clientes_periodo / total_apartamentos * 100) if total_apartamentos > 0 else 0
-                                    
-                                    st.markdown("---")
-                                    st.subheader(f"📊 Evolução - {condominio_nome}")
-                                    
-                                    col1, col2, col3, col4, col5 = st.columns(5)
-                                    with col1:
-                                        st.metric("🏢 Total de Clientes", f"{total_clientes_periodo}")
-                                    with col2:
-                                        primeiro_str = primeiro_cadastro.strftime('%d/%m/%Y') if pd.notna(primeiro_cadastro) else "N/A"
-                                        st.metric("📅 Primeiro Cadastro", primeiro_str)
-                                    with col3:
-                                        ultimo_str = ultimo_cadastro.strftime('%d/%m/%Y') if pd.notna(ultimo_cadastro) else "N/A"
-                                        st.metric("📅 Último Cadastro", ultimo_str)
-                                    with col4:
-                                        st.metric("📈 Penetração", f"{penetracao:.1f}%")
-                                    with col5:
-                                        st.metric("📍 Região", regiao)
-                                    
-                                    st.markdown("---")
-                                    st.subheader("📈 Evolução Acumulada de Clientes")
-                                    
-                                    granularidade = st.radio(
-                                        "Granularidade do gráfico:",
-                                        options=["Diário", "Mensal"],
-                                        horizontal=True,
-                                        key="temporal_granularidade"
-                                    )
-                                    
-                                    if granularidade == "Diário":
-                                        fig = px.line(
-                                            novos_por_dia,
-                                            x='data_normalizada',
-                                            y='acumulado_ativos',
-                                            title=f'📈 Evolução de Clientes - {condominio_nome}',
-                                            labels={'data_normalizada': 'Data', 'acumulado_ativos': 'Total de Clientes Ativos'},
-                                            markers=True
-                                        )
-                                        fig.update_traces(line=dict(color='#2ecc71', width=3), marker=dict(size=6))
-                                    else:
-                                        fig = px.line(
-                                            novos_por_mes,
-                                            x='ano_mes_str',
-                                            y='acumulado_ativos',
-                                            title=f'📈 Evolução Mensal de Clientes - {condominio_nome}',
-                                            labels={'ano_mes_str': 'Mês/Ano', 'acumulado_ativos': 'Total de Clientes Ativos'},
-                                            markers=True
-                                        )
-                                        fig.update_traces(line=dict(color='#2ecc71', width=3), marker=dict(size=8))
-                                    
-                                    fig.update_layout(height=450, xaxis_title="", yaxis_title="Total de Clientes Ativos", hovermode='x unified')
-                                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-                                    
-                                    st.subheader("📊 Novos Clientes por Período")
-                                    
-                                    if granularidade == "Diário":
-                                        ultimos_30_dias = novos_por_dia.tail(30)
-                                        fig_novos = px.bar(
-                                            ultimos_30_dias,
-                                            x='data_normalizada',
-                                            y='novos_clientes',
-                                            title=f'📊 Novos Clientes (últimos 30 dias) - {condominio_nome}',
-                                            labels={'data_normalizada': 'Data', 'novos_clientes': 'Novos Clientes'},
-                                            color='novos_clientes',
-                                            color_continuous_scale='Viridis'
-                                        )
-                                    else:
-                                        fig_novos = px.bar(
-                                            novos_por_mes,
-                                            x='ano_mes_str',
-                                            y='novos_clientes',
-                                            title=f'📊 Novos Clientes por Mês - {condominio_nome}',
-                                            labels={'ano_mes_str': 'Mês/Ano', 'novos_clientes': 'Novos Clientes'},
-                                            color='novos_clientes',
-                                            color_continuous_scale='Viridis'
-                                        )
-                                    
-                                    fig_novos.update_layout(height=400)
-                                    st.plotly_chart(fig_novos, use_container_width=True, config={'displayModeBar': False})
-                                    
-                                    output = io.BytesIO()
-                                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                        novos_por_dia.to_excel(writer, sheet_name='Evolucao_Diaria', index=False)
-                                        novos_por_mes[['ano_mes_str', 'novos_clientes', 'acumulado_ativos']].to_excel(writer, sheet_name='Evolucao_Mensal', index=False)
-                                        
-                                        cols_exportar = [data_col, 'CONDOMANIO', 'STATUS ACESSO', 'status_classificacao']
-                                        cols_existentes = [c for c in cols_exportar if c in clientes_condominio.columns]
-                                        clientes_condominio[cols_existentes].to_excel(writer, sheet_name='Clientes_Periodo', index=False)
-                                        
-                                        info_df = pd.DataFrame([{
-                                            'Condomínio': condominio_nome,
-                                            'Região': regiao,
-                                            'Total Apartamentos': total_apartamentos,
-                                            'Período Início': data_inicio.strftime('%d/%m/%Y') if hasattr(data_inicio, 'strftime') else str(data_inicio),
-                                            'Período Fim': data_fim.strftime('%d/%m/%Y') if hasattr(data_fim, 'strftime') else str(data_fim),
-                                            'Total Clientes no Período': total_clientes_periodo,
-                                            'Penetração': f"{penetracao:.1f}%"
-                                        }])
-                                        info_df.to_excel(writer, sheet_name='Resumo', index=False)
-                                    
-                                    output.seek(0)
-                                    
-                                    st.download_button(
-                                        "📥 Exportar Análise Temporal Completa",
-                                        output,
-                                        f"analise_temporal_{condominio_nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        use_container_width=True
-                                    )
-                                    
-                                    st.markdown("---")
-                                    st.subheader("💡 Insights")
-                                    
-                                    insights = []
-                                    
-                                    if not novos_por_mes.empty:
-                                        melhor_mes = novos_por_mes.loc[novos_por_mes['novos_clientes'].idxmax()]
-                                        insights.append(f"📈 **Melhor mês:** {melhor_mes['ano_mes_str']} com {melhor_mes['novos_clientes']} novos clientes")
-                                    
-                                    if len(novos_por_mes) >= 2:
-                                        primeiro_valor = novos_por_mes.iloc[0]['acumulado_ativos']
-                                        ultimo_valor = novos_por_mes.iloc[-1]['acumulado_ativos']
-                                        if primeiro_valor > 0:
-                                            crescimento_total = ((ultimo_valor - primeiro_valor) / primeiro_valor * 100)
-                                            insights.append(f"📊 **Crescimento total no período:** {crescimento_total:.1f}%")
-                                        else:
-                                            insights.append(f"📊 **Crescimento total no período:** +{ultimo_valor} clientes")
-                                    
-                                    if total_apartamentos > 0:
-                                        if penetracao >= 50:
-                                            insights.append(f"🏆 **Alta penetração:** {penetracao:.1f}% dos apartamentos são clientes")
-                                        elif penetracao >= 25:
-                                            insights.append(f"📈 **Boa penetração:** {penetracao:.1f}% dos apartamentos são clientes")
-                                        else:
-                                            insights.append(f"🎯 **Potencial de crescimento:** Apenas {penetracao:.1f}% de penetração")
-                                    
-                                    if not novos_por_mes.empty:
-                                        media_mensal = novos_por_mes['novos_clientes'].mean()
-                                        insights.append(f"📅 **Média mensal:** {media_mensal:.1f} novos clientes por mês")
-                                    
-                                    for insight in insights:
-                                        st.info(insight)
+                        fig = px.line(
+                            novos_por_mes,
+                            x='ano_mes_str',
+                            y='acumulado_ativos',
+                            title=f'📈 Evolução - {condominio_nome}',
+                            markers=True
+                        )
+                        fig.update_traces(line=dict(color='#2ecc71', width=3))
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     # TAB 10: MEUS ACOMPANHAMENTOS
     with tab10:
         if db is not None:
-            st.markdown("""
-            <div style="background-color:#e8f4f8; padding:15px; border-radius:10px; margin-bottom:20px;">
-            <strong>⭐ Meus Acompanhamentos - Integração com Prospecção</strong><br>
-            Esta aba exibe os condomínios que você está acompanhando no módulo de prospecção,
-            com todas as métricas e análises disponíveis nos relatórios.
-            <br><br>
-            <strong>📌 Como funciona:</strong>
-            <ol>
-                <li>Informe seu nome exatamente como aparece na coluna "Acompanhamento" da prospecção</li>
-                <li>O sistema busca automaticamente os condomínios sob sua responsabilidade</li>
-                <li>Exibe um dashboard completo com todas as métricas dos relatórios</li>
-                <li>Permite exportar dados específicos dos seus condomínios</li>
-            </ol>
-            </div>
-            """, unsafe_allow_html=True)
-            
             nome_usuario = render_seletor_usuario()
             
-            with st.spinner("🔄 Carregando seus condomínios da prospecção..."):
+            with st.spinner("🔄 Carregando seus condomínios..."):
                 meus_nomes, df_meus_prospeccao = carregar_meus_condominios_prospeccao(db)
                 
                 if meus_nomes and df_meus_prospeccao is not None:
-                    st.session_state.meus_condominios_ids = meus_nomes
-                    st.session_state.meus_condominios_nomes = df_meus_prospeccao
-                    
                     render_dashboard_meus_acompanhamentos(
-                        df_clientes, 
-                        df_condominios, 
-                        df_parcelas,
-                        meus_nomes, 
-                        df_meus_prospeccao
+                        df_clientes, df_condominios, df_parcelas,
+                        meus_nomes, df_meus_prospeccao
                     )
                 else:
                     st.warning("⚠️ Nenhum condomínio encontrado em 'Meus Acompanhamentos'.")
-                    st.info("""
-                    💡 **Para configurar:**
-                    1. Certifique-se de que a planilha de prospecção foi importada no módulo **prospeccao_condominios.py**
-                    2. A planilha deve ter uma coluna **'Acompanhamento'** com seu nome
-                    3. Seu nome no campo acima deve ser **exatamente igual** ao da planilha
-                    4. Clique em **"Atualizar Lista de Meus Condomínios"** após corrigir
-                    """)
-                    
-                    if st.button("🔄 Tentar recarregar novamente", use_container_width=True):
-                        st.session_state.meus_condominios_ids = None
-                        st.session_state.meus_condominios_nomes = None
-                        st.rerun()
         else:
-            st.warning("⚠️ Conexão com banco de dados não disponível para carregar Meus Acompanhamentos.")
+            st.warning("⚠️ Conexão indisponível.")
     
-    # ==================== TAB 11: CRESCIMENTO POR CONDOMÍNIO ====================
+    # TAB 11: CRESCIMENTO
     with tab11:
         if db is not None:
             meus_nomes, df_meus_prospeccao = carregar_meus_condominios_prospeccao(db)
             
             if meus_nomes and df_meus_prospeccao is not None:
                 render_analise_crescimento_condominios(
-                    df_clientes, 
-                    df_condominios, 
-                    df_meus_prospeccao,
+                    df_clientes, df_condominios, df_meus_prospeccao,
                     data_inicio_padrao=datetime(2026, 6, 1)
                 )
             else:
                 st.warning("⚠️ Nenhum condomínio encontrado em 'Meus Acompanhamentos'.")
-                st.info("""
-                💡 **Para usar esta análise:**
-                1. Certifique-se de que a planilha de prospecção foi importada no módulo **prospeccao_condominios.py**
-                2. A planilha deve ter uma coluna **'Acompanhamento'** com seu nome
-                3. A planilha de relatórios deve ter dados de clientes com data de cadastro
-                4. Os nomes dos condomínios devem ser **exatamente iguais** em ambas as planilhas
-                """)
-                
-                if st.button("🔄 Tentar recarregar dados de prospecção", use_container_width=True):
-                    st.session_state.meus_condominios_ids = None
-                    st.session_state.meus_condominios_nomes = None
-                    st.rerun()
         else:
-            st.warning("⚠️ Conexão com banco de dados não disponível para análise de crescimento.")
+            st.warning("⚠️ Conexão indisponível.")
     
-    # ==================== TAB 12: CANCELAMENTOS ====================
+    # TAB 12: CANCELAMENTOS
     with tab12:
         render_aba_cancelamentos(df_clientes, df_condominios)
     
-    # ==================== TAB 13: CANCELAMENTOS AVANÇADO ====================
+    # TAB 13: CANCELAMENTOS AVANÇADO
     with tab13:
         render_aba_cancelamentos_avancado(df_clientes, df_condominios)
 
@@ -5255,12 +4161,9 @@ def render_relatorios_condominios():
     
     titulo_principal("🏢 Relatórios Estratégicos - Condomínios")
     st.markdown("""
-    Análise de penetração, receita potencial, inadimplência (3 visões), churn, concorrência, 
-    maturidade, análise temporal por condomínio, integração com Meus Acompanhamentos, 
-    análise de crescimento individual com filtro por múltiplas fases, 
-    análise de cancelamentos por condomínio e mês, 
-    e **análise avançada de cancelamentos** (comparação, tendência, sazonalidade e coorte),
-    e **exportação para Win-Back com Health Score** (recuperação de clientes saudáveis)
+    Análise de penetração, receita potencial, inadimplência, churn, concorrência, 
+    maturidade, análise temporal, integração com Meus Acompanhamentos, 
+    análise de crescimento, cancelamentos e **Win-Back com Health Score**.
     """)
     
     db = init_mongo()
@@ -5293,7 +4196,7 @@ def render_relatorios_condominios():
         if st.session_state.condominios_processado:
             exibir_dashboard_principal(db)
         else:
-            st.warning("⚠️ Nenhum dado carregado. Faça upload ou selecione dados existentes.")
+            st.warning("⚠️ Nenhum dado carregado.")
             if st.button("🔄 Tentar carregar novamente"):
                 if carregar_dados_mais_recentes(db):
                     st.success("✅ Dados carregados!")
