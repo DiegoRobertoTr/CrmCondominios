@@ -9,7 +9,7 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVA ABA: ANÁLISE DE CANCELAMENTOS POR CONDOMÍNIO E MÊS
 - NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
 - MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
-- NOVO: Exportação de Clientes para Win-Back (Recuperação) com opção de 10 meses a 1 ano
+- NOVO: Exportação de Clientes para Win-Back com Filtro de Saúde do Cliente (Health Score)
 """
 import streamlit as st
 import pandas as pd
@@ -2245,21 +2245,179 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
     )
 
 
-# ==================== FUNÇÃO: EXPORTAÇÃO WIN-BACK ====================
+# ==================== FUNÇÃO: EXPORTAÇÃO WIN-BACK COM HEALTH SCORE ====================
 
-def render_exportacao_winback(df_clientes, df_condominios):
+def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_original):
+    """
+    Calcula um Health Score (0-100) para cada cliente cancelado,
+    avaliando se ele foi um bom cliente enquanto estava conosco.
+    
+    Critérios:
+    - Parcelas Pagas (peso 40): quanto mais parcelas pagas, melhor
+    - % de Atraso (peso 40): quanto menor o % de parcelas em atraso, melhor
+    - Tempo como cliente (peso 20): quanto mais tempo, melhor
+    """
+    if df_cancelados.empty:
+        return df_cancelados
+    
+    df = df_cancelados.copy()
+    
+    # Inicializar métricas
+    df['total_parcelas'] = 0
+    df['parcelas_pagas'] = 0
+    df['parcelas_atrasadas'] = 0
+    df['percentual_atraso'] = 0.0
+    df['health_score'] = 50  # Score neutro por padrão
+    df['perfil_cliente'] = '🟡 Médio (Sem Histórico)'
+    df['recomendacao'] = '⚠️ Avaliar individualmente'
+    
+    # Se não tiver parcelas, classifica como "Sem Histórico" e retorna
+    if df_parcelas is None or df_parcelas.empty:
+        return df
+    
+    # Preparar dados de parcelas
+    df_parcelas_temp = df_parcelas.copy()
+    
+    # Identificar colunas
+    col_id = 'ID' if 'ID' in df_parcelas_temp.columns else None
+    col_status = 'STATUS' if 'STATUS' in df_parcelas_temp.columns else None
+    col_vencimento = 'DATA DO VENCIMENTO' if 'DATA DO VENCIMENTO' in df_parcelas_temp.columns else None
+    
+    if not all([col_id, col_status, col_vencimento]):
+        return df
+    
+    # Normalizar IDs
+    df_parcelas_temp[col_id] = pd.to_numeric(df_parcelas_temp[col_id], errors='coerce').fillna(0).astype(int)
+    df[col_id] = pd.to_numeric(df[col_id], errors='coerce').fillna(0).astype(int)
+    
+    # Normalizar status
+    df_parcelas_temp['status_norm'] = df_parcelas_temp[col_status].fillna('').astype(str).str.upper().str.strip()
+    df_parcelas_temp[col_vencimento] = pd.to_datetime(df_parcelas_temp[col_vencimento], errors='coerce')
+    
+    # Agregar por cliente
+    agg_cliente = df_parcelas_temp.groupby(col_id).agg(
+        total_parcelas=(col_status, 'count'),
+        parcelas_pagas=('status_norm', lambda x: (x == 'PAGO').sum()),
+        parcelas_atrasadas=('status_norm', lambda x: (x == 'A RECEBER').sum())
+    ).reset_index()
+    
+    # Merge com df de cancelados
+    df = df.merge(agg_cliente, on=col_id, how='left')
+    
+    # Preencher valores nulos
+    for col in ['total_parcelas', 'parcelas_pagas', 'parcelas_atrasadas']:
+        df[col] = df[col].fillna(0).astype(int)
+    
+    # Calcular % de atraso
+    df['percentual_atraso'] = np.where(
+        df['total_parcelas'] > 0,
+        (df['parcelas_atrasadas'] / df['total_parcelas'] * 100).round(1),
+        0.0
+    )
+    
+    # Calcular tempo como cliente (meses)
+    data_col = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'data' in col_lower and 'cadastro' in col_lower:
+            data_col = col
+            break
+    if data_col is None:
+        data_col = identificar_coluna_data(df)
+    
+    if data_col:
+        df[data_col] = pd.to_datetime(df[data_col], errors='coerce')
+        data_cancel = None
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'cancelamento' in col_lower or 'desativacao' in col_lower or 'cancelado' in col_lower:
+                data_cancel = col
+                break
+        
+        if data_cancel:
+            df[data_cancel] = pd.to_datetime(df[data_cancel], errors='coerce')
+            df['meses_como_cliente'] = ((df[data_cancel] - df[data_col]).dt.days / 30.44).round(1)
+            df['meses_como_cliente'] = df['meses_como_cliente'].fillna(0).clip(lower=0)
+        else:
+            df['meses_como_cliente'] = 0
+    else:
+        df['meses_como_cliente'] = 0
+    
+    # ========== CÁLCULO DO HEALTH SCORE ==========
+    # Componente 1: Parcelas Pagas (peso 40)
+    # 0 parcelas = 0, 6+ parcelas = 40
+    df['score_pagamento'] = np.clip(df['parcelas_pagas'] / 6 * 40, 0, 40).round(1)
+    
+    # Componente 2: % Atraso (peso 40)
+    # 0% atraso = 40, 100% atraso = 0
+    df['score_atraso'] = np.clip((100 - df['percentual_atraso']) / 100 * 40, 0, 40).round(1)
+    
+    # Componente 3: Tempo como cliente (peso 20)
+    # 0 meses = 0, 12+ meses = 20
+    df['score_tempo'] = np.clip(df['meses_como_cliente'] / 12 * 20, 0, 20).round(1)
+    
+    # Score Final
+    df['health_score'] = (df['score_pagamento'] + df['score_atraso'] + df['score_tempo']).round(1)
+    
+    # ========== CLASSIFICAÇÃO ==========
+    # 🟢 Saudável: Score >= 60 E pelo menos 6 parcelas pagas E <= 15% de atraso
+    # 🔴 Ruim: Score < 30 OU menos de 2 parcelas pagas OU > 50% de atraso
+    # 🟡 Médio: O resto
+    
+    cond_saudavel = (
+        (df['health_score'] >= 60) &
+        (df['parcelas_pagas'] >= 6) &
+        (df['percentual_atraso'] <= 15)
+    )
+    
+    cond_ruim = (
+        (df['health_score'] < 30) |
+        (df['parcelas_pagas'] < 2) |
+        (df['percentual_atraso'] > 50)
+    )
+    
+    df['perfil_cliente'] = '🟡 Médio'
+    df.loc[cond_saudavel, 'perfil_cliente'] = '🟢 Saudável'
+    df.loc[cond_ruim, 'perfil_cliente'] = '🔴 Ruim'
+    
+    # Recomendação
+    df['recomendacao'] = '⚠️ Avaliar individualmente'
+    df.loc[cond_saudavel, 'recomendacao'] = '✅ Prioridade ALTA - Recuperar'
+    df.loc[cond_ruim, 'recomendacao'] = '🚫 NÃO recuperar - Alto risco'
+    df.loc[~cond_saudavel & ~cond_ruim, 'recomendacao'] = '🟡 Prioridade MÉDIA - Testar'
+    
+    # Adicionar detalhes
+    df['detalhe_saude'] = (
+        df['parcelas_pagas'].astype(str) + ' parcelas pagas | ' +
+        df['percentual_atraso'].astype(str) + '% atraso | ' +
+        df['meses_como_cliente'].astype(str) + ' meses'
+    )
+    
+    return df
+
+
+def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     """
     Renderiza a seção de exportação para campanhas de Win-Back (Recuperação).
-    Filtra clientes desativados com base no tempo desde o cancelamento.
+    Filtra clientes desativados com base no tempo desde o cancelamento
+    E no Health Score (saúde do cliente enquanto estava conosco).
     """
     st.markdown("---")
     st.subheader("🎯 Exportar Clientes para Win-Back (Recuperação)")
     
     st.markdown("""
     <div style="background-color:#fff3cd; padding:15px; border-radius:10px; margin-bottom:20px;">
-    <strong>💡 O que é Win-Back?</strong><br>
-    Esta ferramenta permite exportar clientes que cancelaram há um determinado tempo.
-    Ideal para campanhas de recuperação, focando em clientes que já cumpriram o período de fidelidade com o concorrente.
+    <strong>💡 O que é Win-Back com Health Score?</strong><br>
+    Esta ferramenta permite exportar clientes que cancelaram há um determinado tempo,
+    <strong>filtrando apenas os que foram BONS clientes</strong> enquanto estavam conosco.
+    Isso evita desperdiçar campanhas com clientes que já deram problema (ex: pagaram só a 1ª parcela).
+    <br><br>
+    <strong>📊 Classificação de Perfil:</strong>
+    <ul>
+        <li><strong>🟢 Saudável:</strong> Pagou em dia, ficou um tempo razoável → <strong>Vale recuperar!</strong></li>
+        <li><strong>🟡 Médio:</strong> Alguns atrasos, mas nada grave → Testar com cautela</li>
+        <li><strong>🔴 Ruim:</strong> Muitos atrasos ou poucas parcelas pagas → <strong>NÃO vale recuperar</strong></li>
+    </ul>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2308,12 +2466,16 @@ def render_exportacao_winback(df_clientes, df_condominios):
     df_winback['dias_desde_cancelamento'] = (data_ref - df_winback[data_cancel_col]).dt.days
     df_winback['meses_desde_cancelamento'] = (df_winback['dias_desde_cancelamento'] / 30.44).round(1)
     
-    # Interface de Seleção
+    # ========== CALCULAR HEALTH SCORE ==========
+    with st.spinner("🔄 Calculando Health Score dos clientes..."):
+        df_winback = calcular_health_score_clientes(df_winback, df_parcelas, df_clientes)
+    
+    # ========== INTERFACE DE SELEÇÃO ==========
     st.markdown("### 📅 Selecione a Janela de Tempo para Recuperação")
     
     opcoes_faixa = {
         "6 meses a 1 ano (180 a 365 dias)": (180, 365),
-        "10 meses a 1 ano (300 a 365 dias)": (300, 365),  # <--- NOVA OPÇÃO AQUI
+        "10 meses a 1 ano (300 a 365 dias)": (300, 365),
         "1 a 2 anos (365 a 730 dias)": (365, 730),
         "2 a 3 anos (730 a 1095 dias)": (730, 1095),
         "Mais de 3 anos (1095+ dias)": (1095, 99999),
@@ -2335,31 +2497,138 @@ def render_exportacao_winback(df_clientes, df_condominios):
     else:
         min_dias, max_dias = opcoes_faixa[faixa_selecionada]
 
-    # Aplicar filtro
+    # Aplicar filtro de tempo
     df_export = df_winback[
         (df_winback['dias_desde_cancelamento'] >= min_dias) & 
         (df_winback['dias_desde_cancelamento'] <= max_dias)
     ].copy()
     
-    # Adicionar informações do condomínio
-    if 'CONDOMANIO' in df_export.columns and 'ID' in df_condominios.columns:
-        df_export['CONDOMANIO'] = pd.to_numeric(df_export['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
-        df_condominios_temp = df_condominios.copy()
-        df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
-        
-        df_export = df_export.merge(
-            df_condominios_temp[['ID', 'Condomínio', 'Região']],
-            left_on='CONDOMANIO', right_on='ID', how='left'
-        )
-    
-    # Exibir resultados
-    st.markdown(f"### 📊 Resultados: {len(df_export)} clientes encontrados")
-    
     if df_export.empty:
         st.warning("⚠️ Nenhum cliente encontrado nesta faixa de tempo.")
         return
-
-    # Métricas
+    
+    # ========== FILTRO POR PERFIL DE CLIENTE ==========
+    st.markdown("### 🎯 Filtro por Perfil de Cliente (Health Score)")
+    
+    st.markdown("""
+    <div style="background-color:#f0f2f6; padding:10px; border-radius:5px; margin-bottom:15px;">
+    Use este filtro para <strong>evitar campanhas com clientes problemáticos</strong>.
+    Recomendamos sempre filtrar por <strong>🟢 Saudável</strong> para maximizar o ROI.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col_perfil1, col_perfil2 = st.columns([2, 1])
+    
+    with col_perfil1:
+        perfis_disponiveis = sorted(df_export['perfil_cliente'].dropna().unique().tolist())
+        
+        perfis_selecionados = st.multiselect(
+            "Selecione os perfis que deseja incluir na campanha:",
+            options=perfis_disponiveis,
+            default=["🟢 Saudável"] if "🟢 Saudável" in perfis_disponiveis else perfis_disponiveis,
+            key="winback_perfis",
+            help="🟢 Saudável = bons clientes | 🟡 Médio = testar com cautela | 🔴 Ruim = NÃO recuperar"
+        )
+    
+    with col_perfil2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        incluir_sem_historico = st.checkbox(
+            "Incluir clientes sem histórico",
+            value=False,
+            key="winback_sem_historico",
+            help="Clientes sem dados de parcelas (podem ser cadastros antigos ou incompletos)"
+        )
+    
+    # Aplicar filtro de perfil
+    if perfis_selecionados:
+        df_export = df_export[df_export['perfil_cliente'].isin(perfis_selecionados)].copy()
+    
+    if not incluir_sem_historico:
+        df_export = df_export[df_export['perfil_cliente'] != '🟡 Médio (Sem Histórico)'].copy()
+    
+    if df_export.empty:
+        st.warning("⚠️ Nenhum cliente atende aos filtros de perfil selecionados.")
+        st.info("💡 Tente ajustar os perfis ou incluir clientes sem histórico.")
+        return
+    
+    # ========== RESUMO DOS PERFIS ==========
+    st.markdown("### 📊 Resumo dos Clientes Encontrados")
+    
+    col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+    
+    total_encontrado = len(df_export)
+    qtd_saudavel = len(df_export[df_export['perfil_cliente'] == '🟢 Saudável'])
+    qtd_medio = len(df_export[df_export['perfil_cliente'] == '🟡 Médio'])
+    qtd_ruim = len(df_export[df_export['perfil_cliente'] == '🔴 Ruim'])
+    
+    with col_res1:
+        st.metric("👥 Total Encontrado", total_encontrado)
+    with col_res2:
+        st.metric("🟢 Saudáveis", qtd_saudavel, 
+                  delta=f"{qtd_saudavel/total_encontrado*100:.0f}%" if total_encontrado > 0 else "0%")
+    with col_res3:
+        st.metric("🟡 Médios", qtd_medio,
+                  delta=f"{qtd_medio/total_encontrado*100:.0f}%" if total_encontrado > 0 else "0%")
+    with col_res4:
+        st.metric("🔴 Ruins", qtd_ruim,
+                  delta=f"{qtd_ruim/total_encontrado*100:.0f}%" if total_encontrado > 0 else "0%")
+    
+    # Gráfico de pizza dos perfis
+    if total_encontrado > 0:
+        col_pie1, col_pie2 = st.columns([1, 1])
+        
+        with col_pie1:
+            df_pizza = pd.DataFrame({
+                'Perfil': ['🟢 Saudável', '🟡 Médio', '🔴 Ruim'],
+                'Quantidade': [qtd_saudavel, qtd_medio, qtd_ruim]
+            })
+            df_pizza = df_pizza[df_pizza['Quantidade'] > 0]
+            
+            if not df_pizza.empty:
+                fig_pizza = px.pie(
+                    df_pizza,
+                    values='Quantidade',
+                    names='Perfil',
+                    title='🎯 Distribuição por Perfil de Cliente',
+                    hole=0.4,
+                    color='Perfil',
+                    color_discrete_map={
+                        '🟢 Saudável': '#2ecc71',
+                        '🟡 Médio': '#f39c12',
+                        '🔴 Ruim': '#e74c3c'
+                    }
+                )
+                fig_pizza.update_traces(textinfo='percent+label+value')
+                fig_pizza.update_layout(height=350)
+                st.plotly_chart(fig_pizza, use_container_width=True, config={'displayModeBar': False})
+        
+        with col_pie2:
+            # Distribuição por meses desde o cancelamento
+            if 'meses_desde_cancelamento' in df_export.columns:
+                df_hist = df_export.copy()
+                df_hist['faixa_meses'] = pd.cut(
+                    df_hist['meses_desde_cancelamento'],
+                    bins=[0, 6, 12, 18, 24, 36, 999],
+                    labels=['0-6m', '6-12m', '12-18m', '18-24m', '24-36m', '36m+']
+                )
+                hist_meses = df_hist.groupby('faixa_meses').size().reset_index(name='quantidade')
+                
+                fig_hist = px.bar(
+                    hist_meses,
+                    x='faixa_meses',
+                    y='quantidade',
+                    title='📅 Distribuição por Tempo de Cancelamento',
+                    color='quantidade',
+                    color_continuous_scale='Blues',
+                    text='quantidade'
+                )
+                fig_hist.update_traces(texttemplate='%{text}', textposition='outside')
+                fig_hist.update_layout(height=350, coloraxis_showscale=False, xaxis_title="Tempo desde Cancelamento", yaxis_title="Qtd Clientes")
+                st.plotly_chart(fig_hist, use_container_width=True, config={'displayModeBar': False})
+    
+    st.markdown("---")
+    
+    # ========== MÉTRICAS ADICIONAIS ==========
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("👥 Total de Clientes", len(df_export))
@@ -2369,33 +2638,84 @@ def render_exportacao_winback(df_clientes, df_condominios):
     with col3:
         total_cond = df_export['Condomínio'].nunique() if 'Condomínio' in df_export.columns else 0
         st.metric("🏢 Condomínios Envolvidos", total_cond)
-
-    # Tabela Preview
-    colunas_exibir = ['RAZAO SOCIAL/NOME', 'Condomínio', 'Região', 'STATUS ACESSO', data_cancel_col, 'meses_desde_cancelamento']
+    
+    # ========== TABELA PREVIEW ==========
+    st.markdown("### 📋 Preview dos Clientes para Win-Back")
+    
+    colunas_exibir = [
+        'RAZAO SOCIAL/NOME', 'Condomínio', 'Região', 
+        data_cancel_col, 'meses_desde_cancelamento',
+        'parcelas_pagas', 'percentual_atraso', 
+        'health_score', 'perfil_cliente', 'recomendacao'
+    ]
     colunas_existentes = [c for c in colunas_exibir if c in df_export.columns]
+    
+    # Adicionar nome do condomínio se não tiver
+    if 'Condomínio' not in df_export.columns and 'CONDOMANIO' in df_export.columns:
+        if 'ID' in df_condominios.columns:
+            df_condominios_temp = df_condominios.copy()
+            df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
+            df_export['CONDOMANIO'] = pd.to_numeric(df_export['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
+            df_export = df_export.merge(
+                df_condominios_temp[['ID', 'Condomínio', 'Região']],
+                left_on='CONDOMANIO', right_on='ID', how='left'
+            )
+            colunas_existentes = [c for c in colunas_exibir if c in df_export.columns]
     
     if colunas_existentes:
         st.dataframe(
-            df_export[colunas_existentes].sort_values('meses_desde_cancelamento', ascending=False),
+            df_export[colunas_existentes].sort_values('health_score', ascending=False),
             use_container_width=True,
-            height=300,
+            height=400,
             column_config={
                 data_cancel_col: st.column_config.DateColumn("Data Cancelamento", format="DD/MM/YYYY"),
-                'meses_desde_cancelamento': st.column_config.NumberColumn("Meses desde Cancelamento", format="%.1f")
+                'meses_desde_cancelamento': st.column_config.NumberColumn("Meses desde Cancel.", format="%.1f"),
+                'parcelas_pagas': st.column_config.NumberColumn("Parcelas Pagas", format="%d"),
+                'percentual_atraso': st.column_config.NumberColumn("% Atraso", format="%.1f%%"),
+                'health_score': st.column_config.ProgressColumn("Health Score", format="%.1f", min_value=0, max_value=100),
             }
         )
-
-    # Botão de Exportação
+    
+    # ========== EXPORTAÇÃO ==========
+    st.markdown("---")
+    st.subheader("📎 Exportar Dados")
+    
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, sheet_name='WinBack_Clientes', index=False)
+        # Aba principal com todos os clientes
+        df_export_export = df_export.copy()
+        
+        # Remover colunas internas que não interessam
+        cols_remover = ['status_classificacao', 'score_pagamento', 'score_atraso', 'score_tempo']
+        for col in cols_remover:
+            if col in df_export_export.columns:
+                df_export_export = df_export_export.drop(columns=[col])
+        
+        df_export_export.to_excel(writer, sheet_name='WinBack_Clientes', index=False)
+        
+        # Aba somente com clientes saudáveis
+        df_saudaveis = df_export[df_export['perfil_cliente'] == '🟢 Saudável'].copy()
+        if not df_saudaveis.empty:
+            for col in cols_remover:
+                if col in df_saudaveis.columns:
+                    df_saudaveis = df_saudaveis.drop(columns=[col])
+            df_saudaveis.to_excel(writer, sheet_name='Apenas_Saudaveis', index=False)
         
         # Resumo por Condomínio
         if 'Condomínio' in df_export.columns:
-            resumo_cond = df_export.groupby('Condomínio').size().reset_index(name='Qtd_Clientes_WinBack')
-            resumo_cond = resumo_cond.sort_values('Qtd_Clientes_WinBack', ascending=False)
+            resumo_cond = df_export.groupby(['Condomínio', 'perfil_cliente']).size().unstack(fill_value=0)
+            resumo_cond['Total'] = resumo_cond.sum(axis=1)
+            resumo_cond = resumo_cond.sort_values('Total', ascending=False).reset_index()
             resumo_cond.to_excel(writer, sheet_name='Resumo_Por_Condominio', index=False)
-            
+        
+        # Resumo por Perfil
+        resumo_perfil = df_export.groupby('perfil_cliente').agg(
+            total=('perfil_cliente', 'count'),
+            media_health_score=('health_score', 'mean'),
+            media_meses=('meses_desde_cancelamento', 'mean')
+        ).round(2).reset_index()
+        resumo_perfil.to_excel(writer, sheet_name='Resumo_Por_Perfil', index=False)
+        
     output.seek(0)
     
     st.download_button(
@@ -2406,6 +2726,37 @@ def render_exportacao_winback(df_clientes, df_condominios):
         use_container_width=True,
         type="primary"
     )
+    
+    # ========== INSIGHTS ==========
+    st.markdown("---")
+    st.subheader("💡 Insights da Campanha")
+    
+    insights = []
+    
+    if total_encontrado > 0:
+        percentual_saudavel = qtd_saudavel / total_encontrado * 100
+        if percentual_saudavel >= 50:
+            insights.append(f"✅ **{percentual_saudavel:.0f}%** dos clientes são saudáveis — Excelente potencial de recuperação!")
+        elif percentual_saudavel >= 25:
+            insights.append(f"🟡 Apenas **{percentual_saudavel:.0f}%** são saudáveis — Avalie bem o custo da campanha.")
+        else:
+            insights.append(f"🚨 Apenas **{percentual_saudavel:.0f}%** são saudáveis — Considere ampliar a janela de tempo ou ajustar o perfil.")
+    
+    if 'health_score' in df_export.columns:
+        media_score = df_export['health_score'].mean()
+        insights.append(f"📊 **Health Score médio:** {media_score:.1f} pontos (de 100)")
+    
+    if 'percentual_atraso' in df_export.columns:
+        media_atraso = df_export['percentual_atraso'].mean()
+        insights.append(f"⚠️ **% Atraso médio:** {media_atraso:.1f}%")
+    
+    if not df_export.empty and 'Condomínio' in df_export.columns:
+        top_cond = df_export.groupby('Condomínio').size().sort_values(ascending=False).head(1)
+        if not top_cond.empty:
+            insights.append(f"🏆 **Condomínio com mais oportunidades:** {top_cond.index[0]} ({top_cond.values[0]} clientes)")
+    
+    for insight in insights:
+        st.info(insight)
 
 
 # ==================== CONEXÃO MONGODB ====================
@@ -3937,9 +4288,9 @@ def exibir_dashboard_principal(db=None):
             use_container_width=True
         )
         
-        # ==================== NOVO BOTÃO DE WIN-BACK ====================
-        render_exportacao_winback(df_clientes, df_condominios)
-        # ===============================================================
+        # ==================== NOVO BOTÃO DE WIN-BACK COM HEALTH SCORE ====================
+        render_exportacao_winback(df_clientes, df_condominios, df_parcelas)
+        # ===============================================================================
     
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
@@ -4889,7 +5240,7 @@ def render_relatorios_condominios():
     análise de crescimento individual com filtro por múltiplas fases, 
     análise de cancelamentos por condomínio e mês, 
     e **análise avançada de cancelamentos** (comparação, tendência, sazonalidade e coorte),
-    e **exportação para Win-Back** (recuperação de clientes cancelados com janela de 10 meses a 1 ano)
+    e **exportação para Win-Back com Health Score** (recuperação de clientes saudáveis)
     """)
     
     db = init_mongo()
