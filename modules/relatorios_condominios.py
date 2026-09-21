@@ -9,7 +9,7 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVA ABA: ANÁLISE DE CANCELAMENTOS POR CONDOMÍNIO E MÊS
 - NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
 - MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
-- NOVO: Exportação de Clientes para Win-Back (Recuperação)
+- NOVO: Exportação de Clientes para Win-Back (Recuperação) com opção de 10 meses a 1 ano
 """
 import streamlit as st
 import pandas as pd
@@ -2313,6 +2313,7 @@ def render_exportacao_winback(df_clientes, df_condominios):
     
     opcoes_faixa = {
         "6 meses a 1 ano (180 a 365 dias)": (180, 365),
+        "10 meses a 1 ano (300 a 365 dias)": (300, 365),  # <--- NOVA OPÇÃO AQUI
         "1 a 2 anos (365 a 730 dias)": (365, 730),
         "2 a 3 anos (730 a 1095 dias)": (730, 1095),
         "Mais de 3 anos (1095+ dias)": (1095, 99999),
@@ -4888,7 +4889,7 @@ def render_relatorios_condominios():
     análise de crescimento individual com filtro por múltiplas fases, 
     análise de cancelamentos por condomínio e mês, 
     e **análise avançada de cancelamentos** (comparação, tendência, sazonalidade e coorte),
-    e **exportação para Win-Back** (recuperação de clientes cancelados)
+    e **exportação para Win-Back** (recuperação de clientes cancelados com janela de 10 meses a 1 ano)
     """)
     
     db = init_mongo()
