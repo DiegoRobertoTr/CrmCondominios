@@ -9,6 +9,7 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVA ABA: ANÁLISE DE CANCELAMENTOS POR CONDOMÍNIO E MÊS
 - NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
 - MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
+- NOVO: Exportação de Clientes para Win-Back (Recuperação)
 """
 import streamlit as st
 import pandas as pd
@@ -419,7 +420,7 @@ def analisar_cancelamentos_por_condominio(df_clientes, df_condominios, data_inic
     return pivot_com_total, df_cancelados, df_resumo, df_regiao
 
 
-    # ==================== FUNÇÃO: RENDERIZAR ABA DE CANCELAMENTOS ====================
+# ==================== FUNÇÃO: RENDERIZAR ABA DE CANCELAMENTOS ====================
 
 def render_aba_cancelamentos(df_clientes, df_condominios):
     """
@@ -1470,7 +1471,7 @@ def render_aba_cancelamentos_avancado(df_clientes, df_condominios):
     )
 
 
-    # ==================== FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
+# ==================== FUNÇÃO: ANÁLISE DE CRESCIMENTO POR CONDOMÍNIO ====================
 
 def render_analise_crescimento_condominios(df_clientes, df_condominios, df_meus_prospeccao, data_inicio_padrao=None):
     """
@@ -2241,6 +2242,168 @@ def render_painel_condominios_aptos(df_aptos, df_top_oportunidades):
         f"condominios_aptos_consulta_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
+    )
+
+
+# ==================== FUNÇÃO: EXPORTAÇÃO WIN-BACK ====================
+
+def render_exportacao_winback(df_clientes, df_condominios):
+    """
+    Renderiza a seção de exportação para campanhas de Win-Back (Recuperação).
+    Filtra clientes desativados com base no tempo desde o cancelamento.
+    """
+    st.markdown("---")
+    st.subheader("🎯 Exportar Clientes para Win-Back (Recuperação)")
+    
+    st.markdown("""
+    <div style="background-color:#fff3cd; padding:15px; border-radius:10px; margin-bottom:20px;">
+    <strong>💡 O que é Win-Back?</strong><br>
+    Esta ferramenta permite exportar clientes que cancelaram há um determinado tempo.
+    Ideal para campanhas de recuperação, focando em clientes que já cumpriram o período de fidelidade com o concorrente.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if df_clientes is None or df_clientes.empty:
+        st.warning("⚠️ Nenhum dado de cliente carregado.")
+        return
+
+    # Identificar coluna de cancelamento
+    data_cancel_col = None
+    possiveis_colunas_cancel = [
+        'data cancelamento', 'data_cancelamento', 'dt_cancelamento',
+        'cancelamento', 'data desativacao', 'data_desativacao',
+        'data cancel', 'dt_cancel', 'data de cancelamento',
+        'data cancelado', 'cancelado em'
+    ]
+    
+    for col in df_clientes.columns:
+        col_lower = col.lower().strip()
+        for possivel in possiveis_colunas_cancel:
+            if possivel in col_lower:
+                data_cancel_col = col
+                break
+        if data_cancel_col:
+            break
+            
+    if data_cancel_col is None:
+        st.error("❌ Coluna de data de cancelamento não encontrada na base de dados.")
+        st.info("Para usar esta funcionalidade, a planilha precisa ter uma coluna com a data de cancelamento (ex: 'Data Cancelamento').")
+        return
+
+    # Converter data de cancelamento
+    df_winback = df_clientes.copy()
+    df_winback[data_cancel_col] = pd.to_datetime(df_winback[data_cancel_col], errors='coerce')
+    df_winback = df_winback.dropna(subset=[data_cancel_col])
+    
+    # Filtrar apenas desativados
+    df_winback['status_classificacao'] = classificar_status_serie(df_winback.get('STATUS ACESSO', pd.Series()))
+    df_winback = df_winback[df_winback['status_classificacao'] == 'Desativado'].copy()
+    
+    if df_winback.empty:
+        st.info("ℹ️ Nenhum cliente desativado encontrado na base.")
+        return
+
+    # Calcular tempo desde o cancelamento
+    data_ref = datetime.now().replace(tzinfo=None)
+    df_winback['dias_desde_cancelamento'] = (data_ref - df_winback[data_cancel_col]).dt.days
+    df_winback['meses_desde_cancelamento'] = (df_winback['dias_desde_cancelamento'] / 30.44).round(1)
+    
+    # Interface de Seleção
+    st.markdown("### 📅 Selecione a Janela de Tempo para Recuperação")
+    
+    opcoes_faixa = {
+        "6 meses a 1 ano (180 a 365 dias)": (180, 365),
+        "1 a 2 anos (365 a 730 dias)": (365, 730),
+        "2 a 3 anos (730 a 1095 dias)": (730, 1095),
+        "Mais de 3 anos (1095+ dias)": (1095, 99999),
+        "Personalizado": None
+    }
+    
+    faixa_selecionada = st.selectbox(
+        "Escolha uma faixa de tempo desde o cancelamento:",
+        options=list(opcoes_faixa.keys()),
+        key="winback_faixa_tempo"
+    )
+    
+    if faixa_selecionada == "Personalizado":
+        col1, col2 = st.columns(2)
+        with col1:
+            min_dias = st.number_input("Mínimo de dias desde o cancelamento:", min_value=0, value=180, step=30)
+        with col2:
+            max_dias = st.number_input("Máximo de dias desde o cancelamento:", min_value=0, value=365, step=30)
+    else:
+        min_dias, max_dias = opcoes_faixa[faixa_selecionada]
+
+    # Aplicar filtro
+    df_export = df_winback[
+        (df_winback['dias_desde_cancelamento'] >= min_dias) & 
+        (df_winback['dias_desde_cancelamento'] <= max_dias)
+    ].copy()
+    
+    # Adicionar informações do condomínio
+    if 'CONDOMANIO' in df_export.columns and 'ID' in df_condominios.columns:
+        df_export['CONDOMANIO'] = pd.to_numeric(df_export['CONDOMANIO'], errors='coerce').fillna(0).astype(int)
+        df_condominios_temp = df_condominios.copy()
+        df_condominios_temp['ID'] = pd.to_numeric(df_condominios_temp['ID'], errors='coerce').fillna(0).astype(int)
+        
+        df_export = df_export.merge(
+            df_condominios_temp[['ID', 'Condomínio', 'Região']],
+            left_on='CONDOMANIO', right_on='ID', how='left'
+        )
+    
+    # Exibir resultados
+    st.markdown(f"### 📊 Resultados: {len(df_export)} clientes encontrados")
+    
+    if df_export.empty:
+        st.warning("⚠️ Nenhum cliente encontrado nesta faixa de tempo.")
+        return
+
+    # Métricas
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("👥 Total de Clientes", len(df_export))
+    with col2:
+        media_meses = df_export['meses_desde_cancelamento'].mean()
+        st.metric("📅 Média de Meses desde Cancelamento", f"{media_meses:.1f} meses")
+    with col3:
+        total_cond = df_export['Condomínio'].nunique() if 'Condomínio' in df_export.columns else 0
+        st.metric("🏢 Condomínios Envolvidos", total_cond)
+
+    # Tabela Preview
+    colunas_exibir = ['RAZAO SOCIAL/NOME', 'Condomínio', 'Região', 'STATUS ACESSO', data_cancel_col, 'meses_desde_cancelamento']
+    colunas_existentes = [c for c in colunas_exibir if c in df_export.columns]
+    
+    if colunas_existentes:
+        st.dataframe(
+            df_export[colunas_existentes].sort_values('meses_desde_cancelamento', ascending=False),
+            use_container_width=True,
+            height=300,
+            column_config={
+                data_cancel_col: st.column_config.DateColumn("Data Cancelamento", format="DD/MM/YYYY"),
+                'meses_desde_cancelamento': st.column_config.NumberColumn("Meses desde Cancelamento", format="%.1f")
+            }
+        )
+
+    # Botão de Exportação
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export.to_excel(writer, sheet_name='WinBack_Clientes', index=False)
+        
+        # Resumo por Condomínio
+        if 'Condomínio' in df_export.columns:
+            resumo_cond = df_export.groupby('Condomínio').size().reset_index(name='Qtd_Clientes_WinBack')
+            resumo_cond = resumo_cond.sort_values('Qtd_Clientes_WinBack', ascending=False)
+            resumo_cond.to_excel(writer, sheet_name='Resumo_Por_Condominio', index=False)
+            
+    output.seek(0)
+    
+    st.download_button(
+        "📥 Exportar Lista de Clientes para Win-Back",
+        output,
+        f"winback_clientes_{min_dias}_{max_dias}_dias_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        type="primary"
     )
 
 
@@ -3772,6 +3935,10 @@ def exibir_dashboard_principal(db=None):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+        
+        # ==================== NOVO BOTÃO DE WIN-BACK ====================
+        render_exportacao_winback(df_clientes, df_condominios)
+        # ===============================================================
     
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
@@ -4720,7 +4887,8 @@ def render_relatorios_condominios():
     maturidade, análise temporal por condomínio, integração com Meus Acompanhamentos, 
     análise de crescimento individual com filtro por múltiplas fases, 
     análise de cancelamentos por condomínio e mês, 
-    e **análise avançada de cancelamentos** (comparação, tendência, sazonalidade e coorte)
+    e **análise avançada de cancelamentos** (comparação, tendência, sazonalidade e coorte),
+    e **exportação para Win-Back** (recuperação de clientes cancelados)
     """)
     
     db = init_mongo()
