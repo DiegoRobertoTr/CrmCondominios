@@ -10,6 +10,7 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
 - MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
 - NOVO: Exportação de Clientes para Win-Back com Filtro de Saúde do Cliente (Health Score)
+- CORREÇÃO: KeyError 'total_parcelas' no cálculo do Health Score
 """
 import streamlit as st
 import pandas as pd
@@ -2262,7 +2263,8 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     
     df = df_cancelados.copy()
     
-    # Inicializar métricas
+    # ========== INICIALIZAR MÉTRICAS COM VALORES DEFAULT ==========
+    # IMPORTANTE: Criar as colunas ANTES do merge para evitar KeyError
     df['total_parcelas'] = 0
     df['parcelas_pagas'] = 0
     df['parcelas_atrasadas'] = 0
@@ -2270,12 +2272,17 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     df['health_score'] = 50  # Score neutro por padrão
     df['perfil_cliente'] = '🟡 Médio (Sem Histórico)'
     df['recomendacao'] = '⚠️ Avaliar individualmente'
+    df['meses_como_cliente'] = 0.0
+    df['score_pagamento'] = 0.0
+    df['score_atraso'] = 20.0  # Metade do peso se não tiver histórico
+    df['score_tempo'] = 0.0
+    df['detalhe_saude'] = 'Sem histórico de parcelas'
     
     # Se não tiver parcelas, classifica como "Sem Histórico" e retorna
     if df_parcelas is None or df_parcelas.empty:
         return df
     
-    # Preparar dados de parcelas
+    # ========== PREPARAR DADOS DE PARCELAS ==========
     df_parcelas_temp = df_parcelas.copy()
     
     # Identificar colunas
@@ -2292,30 +2299,44 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     
     # Normalizar status
     df_parcelas_temp['status_norm'] = df_parcelas_temp[col_status].fillna('').astype(str).str.upper().str.strip()
-    df_parcelas_temp[col_vencimento] = pd.to_datetime(df_parcelas_temp[col_vencimento], errors='coerce')
     
-    # Agregar por cliente
+    # ========== AGREGAR POR CLIENTE ==========
     agg_cliente = df_parcelas_temp.groupby(col_id).agg(
-        total_parcelas=(col_status, 'count'),
-        parcelas_pagas=('status_norm', lambda x: (x == 'PAGO').sum()),
-        parcelas_atrasadas=('status_norm', lambda x: (x == 'A RECEBER').sum())
+        total_parcelas_agg=(col_status, 'count'),
+        parcelas_pagas_agg=('status_norm', lambda x: (x == 'PAGO').sum()),
+        parcelas_atrasadas_agg=('status_norm', lambda x: (x == 'A RECEBER').sum())
     ).reset_index()
     
-    # Merge com df de cancelados
+    # Renomear para evitar conflito com as colunas default
+    agg_cliente.columns = [col_id, 'total_parcelas_agg', 'parcelas_pagas_agg', 'parcelas_atrasadas_agg']
+    
+    # ========== MERGE ==========
+    # Remover colunas temporárias se existirem (para não duplicar)
+    for c in ['total_parcelas_agg', 'parcelas_pagas_agg', 'parcelas_atrasadas_agg']:
+        if c in df.columns:
+            df = df.drop(columns=[c])
+    
     df = df.merge(agg_cliente, on=col_id, how='left')
     
-    # Preencher valores nulos
-    for col in ['total_parcelas', 'parcelas_pagas', 'parcelas_atrasadas']:
-        df[col] = df[col].fillna(0).astype(int)
+    # ========== PREENCHER VALORES NULOS APÓS O MERGE ==========
+    # Agora as colunas _agg existem, podemos preencher com segurança
+    df['total_parcelas_agg'] = df['total_parcelas_agg'].fillna(0).astype(int)
+    df['parcelas_pagas_agg'] = df['parcelas_pagas_agg'].fillna(0).astype(int)
+    df['parcelas_atrasadas_agg'] = df['parcelas_atrasadas_agg'].fillna(0).astype(int)
     
-    # Calcular % de atraso
+    # Sobrescrever as colunas default com os valores reais
+    df['total_parcelas'] = df['total_parcelas_agg']
+    df['parcelas_pagas'] = df['parcelas_pagas_agg']
+    df['parcelas_atrasadas'] = df['parcelas_atrasadas_agg']
+    
+    # ========== CALCULAR % DE ATRASO ==========
     df['percentual_atraso'] = np.where(
         df['total_parcelas'] > 0,
         (df['parcelas_atrasadas'] / df['total_parcelas'] * 100).round(1),
         0.0
     )
     
-    # Calcular tempo como cliente (meses)
+    # ========== CALCULAR TEMPO COMO CLIENTE (meses) ==========
     data_col = None
     for col in df.columns:
         col_lower = col.lower()
@@ -2325,35 +2346,29 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     if data_col is None:
         data_col = identificar_coluna_data(df)
     
-    if data_col:
+    data_cancel = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'cancelamento' in col_lower or 'desativacao' in col_lower or 'cancelado' in col_lower:
+            data_cancel = col
+            break
+    
+    if data_col and data_cancel:
         df[data_col] = pd.to_datetime(df[data_col], errors='coerce')
-        data_cancel = None
-        for col in df.columns:
-            col_lower = col.lower()
-            if 'cancelamento' in col_lower or 'desativacao' in col_lower or 'cancelado' in col_lower:
-                data_cancel = col
-                break
-        
-        if data_cancel:
-            df[data_cancel] = pd.to_datetime(df[data_cancel], errors='coerce')
-            df['meses_como_cliente'] = ((df[data_cancel] - df[data_col]).dt.days / 30.44).round(1)
-            df['meses_como_cliente'] = df['meses_como_cliente'].fillna(0).clip(lower=0)
-        else:
-            df['meses_como_cliente'] = 0
+        df[data_cancel] = pd.to_datetime(df[data_cancel], errors='coerce')
+        df['meses_como_cliente'] = ((df[data_cancel] - df[data_col]).dt.days / 30.44).round(1)
+        df['meses_como_cliente'] = df['meses_como_cliente'].fillna(0).clip(lower=0)
     else:
-        df['meses_como_cliente'] = 0
+        df['meses_como_cliente'] = 0.0
     
     # ========== CÁLCULO DO HEALTH SCORE ==========
-    # Componente 1: Parcelas Pagas (peso 40)
-    # 0 parcelas = 0, 6+ parcelas = 40
+    # Componente 1: Parcelas Pagas (peso 40) - 0 parcelas = 0, 6+ parcelas = 40
     df['score_pagamento'] = np.clip(df['parcelas_pagas'] / 6 * 40, 0, 40).round(1)
     
-    # Componente 2: % Atraso (peso 40)
-    # 0% atraso = 40, 100% atraso = 0
+    # Componente 2: % Atraso (peso 40) - 0% atraso = 40, 100% atraso = 0
     df['score_atraso'] = np.clip((100 - df['percentual_atraso']) / 100 * 40, 0, 40).round(1)
     
-    # Componente 3: Tempo como cliente (peso 20)
-    # 0 meses = 0, 12+ meses = 20
+    # Componente 3: Tempo como cliente (peso 20) - 0 meses = 0, 12+ meses = 20
     df['score_tempo'] = np.clip(df['meses_como_cliente'] / 12 * 20, 0, 20).round(1)
     
     # Score Final
@@ -2392,6 +2407,11 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
         df['percentual_atraso'].astype(str) + '% atraso | ' +
         df['meses_como_cliente'].astype(str) + ' meses'
     )
+    
+    # Limpar colunas temporárias do merge
+    for c in ['total_parcelas_agg', 'parcelas_pagas_agg', 'parcelas_atrasadas_agg']:
+        if c in df.columns:
+            df = df.drop(columns=[c])
     
     return df
 
@@ -4288,14 +4308,14 @@ def exibir_dashboard_principal(db=None):
             use_container_width=True
         )
         
-        # ==================== NOVO BOTÃO DE WIN-BACK COM HEALTH SCORE ====================
+        # ==================== BOTÃO DE WIN-BACK COM HEALTH SCORE ====================
         render_exportacao_winback(df_clientes, df_condominios, df_parcelas)
-        # ===============================================================================
+        # =========================================================================
     
     # ==================== ABAS DE ANÁLISE ====================
     st.markdown("---")
     
-    # 13 ABAS (incluindo a nova de Cancelamentos Avançado)
+    # 13 ABAS
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
         "🎯 Penetração", "💰 Receita Potencial", "⚠️ Inadimplência", 
         "📉 Churn", "⚔️ Concorrência", "📍 Análise por Zona", 
@@ -5222,7 +5242,7 @@ def exibir_dashboard_principal(db=None):
     with tab12:
         render_aba_cancelamentos(df_clientes, df_condominios)
     
-    # ==================== TAB 13: CANCELAMENTOS AVANÇADO (NOVA) ====================
+    # ==================== TAB 13: CANCELAMENTOS AVANÇADO ====================
     with tab13:
         render_aba_cancelamentos_avancado(df_clientes, df_condominios)
 
