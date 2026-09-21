@@ -2065,6 +2065,26 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     return df
 
 
+def adicionar_nome_condominio(df, df_condominios, col_id='CONDOMANIO', col_nome='Condomínio'):
+    """
+    Acrescenta a coluna com o NOME do condomínio (a partir da aba 'Condominios'),
+    posicionada logo após a coluna de ID. Não altera nada se a coluna já existir
+    ou se faltarem dados para o cruzamento.
+    """
+    if (df is None or df.empty or col_id not in df.columns or col_nome in df.columns
+            or df_condominios is None or df_condominios.empty
+            or 'ID' not in df_condominios.columns or col_nome not in df_condominios.columns):
+        return df
+
+    ids = pd.to_numeric(df_condominios['ID'], errors='coerce')
+    mapa = dict(zip(ids[ids.notna()].astype(int), df_condominios.loc[ids.notna(), col_nome]))
+    nomes = pd.to_numeric(df[col_id], errors='coerce').map(lambda x: mapa.get(int(x)) if pd.notna(x) else None)
+
+    df = df.copy()
+    df.insert(df.columns.get_loc(col_id) + 1, col_nome, nomes)
+    return df
+
+
 def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     """Renderiza a seção de exportação para campanhas de Win-Back."""
     st.markdown("---")
@@ -2215,6 +2235,9 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         st.warning("⚠️ Nenhum cliente atende aos filtros de perfil selecionados.")
         return
     
+    # ========== NOME DO CONDOMÍNIO ==========
+    df_export = adicionar_nome_condominio(df_export, df_condominios)
+    
     # ========== RESUMO ==========
     st.markdown("### 📊 Resumo dos Clientes Encontrados")
     
@@ -2301,7 +2324,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     st.markdown("### 📋 Preview dos Clientes para Win-Back")
     
     colunas_exibir = [
-        'RAZAO SOCIAL/NOME', 'CONDOMANIO', 
+        'RAZAO SOCIAL/NOME', 'CONDOMANIO', 'Condomínio',
         data_cancel_col, 'meses_desde_cancelamento',
         'parcelas_pagas', 'percentual_atraso', 
         'health_score', 'perfil_cliente', 'recomendacao'
@@ -2347,6 +2370,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
             resumo_cond = df_export.groupby(['CONDOMANIO', 'perfil_cliente']).size().unstack(fill_value=0)
             resumo_cond['Total'] = resumo_cond.sum(axis=1)
             resumo_cond = resumo_cond.sort_values('Total', ascending=False).reset_index()
+            resumo_cond = adicionar_nome_condominio(resumo_cond, df_condominios)
             resumo_cond.to_excel(writer, sheet_name='Resumo_Por_Condominio', index=False)
         
         resumo_perfil = df_export.groupby('perfil_cliente').agg(
