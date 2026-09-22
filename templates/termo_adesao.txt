@@ -55,7 +55,7 @@ CARACTERÍSTICAS TÉCNICAS:
 | DESCRICAO                                                 | VALOR (R$)       |
 +-----------------------------------------------------------+------------------+
 | Mensalidade                                               | {{ valor_mensal }}|
-| Taxa de Instalacao                                        | {{ valor_instalacao or '0,00' }} |
+| Taxa de Instalacao                                        | {{ valor_instalacao or '600,00' }} |
 | Vencimento                                                | Dia {{ data_vencimento }} de cada mes |
 | Forma de Pagamento                                        | {{ forma_pagamento or 'Boleto Bancario' }} |
 +-----------------------------------------------------------+------------------+
@@ -97,8 +97,8 @@ O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO D
 
 CONDIÇÕES DA FIDELIDADE:
 - Prazo mínimo: 12 meses
-- Benefício Concedido: Isenção integral da taxa de instalação, no valor de R$ 320,00 (trezentos e vinte reais).
-- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa calculada de forma decrescente, conforme a tabela abaixo, tendo como base o valor total dos benefícios concedidos (R$ 320,00).
+- Benefício Concedido: Isenção integral da taxa de instalação, no valor de R$ 600,00 (seiscentos reais).
+- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa calculada de forma decrescente, conforme a tabela abaixo, tendo como base o valor total dos benefícios concedidos (R$ 600,00).
 
 TABELA DE CÁLCULO DO VALOR DA MULTA RESCISÓRIA
 
@@ -109,18 +109,18 @@ O VALOR DA MULTA PELA RESCISÃO DO CONTRATO POR PARTE DO CONTRATANTE SERÁ DECRE
 | CUMPRIMENTO DA      |                                              |                  |
 | FIDELIDADE          |                                              |                  |
 +---------------------+----------------------------------------------+------------------+
-| 12 meses            | 100% do total dos benefícios concedidos.     | R$ 320,00        |
-| 11 meses            | 92% do total dos benefícios concedidos.      | R$ 294,40        |
-| 10 meses            | 83% do total dos benefícios concedidos.      | R$ 265,60        |
-| 9 meses             | 75% do total dos benefícios concedidos.      | R$ 240,00        |
-| 8 meses             | 67% do total dos benefícios concedidos.      | R$ 214,40        |
-| 7 meses             | 58% do total dos benefícios concedidos.      | R$ 185,60        |
-| 6 meses             | 50% do total dos benefícios concedidos.      | R$ 160,00        |
-| 5 meses             | 42% do total dos benefícios concedidos.      | R$ 134,40        |
-| 4 meses             | 33% do total dos benefícios concedidos.      | R$ 105,60        |
-| 3 meses             | 25% do total dos benefícios concedidos.      | R$ 80,00         |
-| 2 meses             | 17% do total dos benefícios concedidos.      | R$ 54,40         |
-| 1 mês               | 8% do total dos benefícios concedidos.       | R$ 25,60         |
+| 12 meses            | 100% do total dos benefícios concedidos.     | R$ 600,00        |
+| 11 meses            | 92% do total dos benefícios concedidos.      | R$ 552,00        |
+| 10 meses            | 83% do total dos benefícios concedidos.      | R$ 498,00        |
+| 9 meses             | 75% do total dos benefícios concedidos.      | R$ 450,00        |
+| 8 meses             | 67% do total dos benefícios concedidos.      | R$ 402,00        |
+| 7 meses             | 58% do total dos benefícios concedidos.      | R$ 348,00        |
+| 6 meses             | 50% do total dos benefícios concedidos.      | R$ 300,00        |
+| 5 meses             | 42% do total dos benefícios concedidos.      | R$ 252,00        |
+| 4 meses             | 33% do total dos benefícios concedidos.      | R$ 198,00        |
+| 3 meses             | 25% do total dos benefícios concedidos.      | R$ 150,00        |
+| 2 meses             | 17% do total dos benefícios concedidos.      | R$ 102,00        |
+| 1 mês               | 8% do total dos benefícios concedidos.       | R$ 48,00         |
 +---------------------+----------------------------------------------+------------------+
 
 {% else %}
@@ -172,16 +172,6 @@ Assinatura / Carimbo
 __________________________________________________________
 Contratante: {{ nome_completo }}
 Assinatura
-
-TESTEMUNHAS:
-
-__________________________________________________________
-Testemunha 1
-Nome: _________________________  CPF: __________________________
-
-__________________________________________________________
-Testemunha 2
-Nome: _________________________  CPF: __________________________
 
 ================================================================================
                         10. FORO DE ELEIÇÃO
