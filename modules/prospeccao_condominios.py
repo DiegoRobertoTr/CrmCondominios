@@ -166,11 +166,12 @@ def registrar_status_alerta(db, projeto_id, tipo_alerta, data_envio):
     col.insert_one(doc)
 
 def alerta_ja_enviado(db, projeto_id, tipo_alerta):
-    """Verifica se um alerta específico já foi enviado"""
+    """Verifica se um alerta específico já foi enviado (consulta individual — mantida
+    apenas para compatibilidade/uso pontual; o fluxo em massa usa
+    _carregar_status_alertas_em_lote, que faz UMA única consulta para todos os projetos)."""
     col = db[ALERTAS_CONFIG["status_collection"]]
-    
+
     if tipo_alerta in ["7_dias", "3_dias", "1_dia", "vencido"]:
-        # Alertas diários: verifica se já enviou hoje
         hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         enviado_hoje = col.find_one({
             "projeto_id": projeto_id,
@@ -179,57 +180,85 @@ def alerta_ja_enviado(db, projeto_id, tipo_alerta):
         })
         return enviado_hoje is not None
     else:
-        # Alertas únicos
         enviado = col.find_one({
             "projeto_id": projeto_id,
             "tipo_alerta": tipo_alerta
         })
         return enviado is not None
 
+def _carregar_status_alertas_em_lote(db, projeto_ids):
+    """
+    Busca TODO o histórico de alertas relevante para a lista de projetos em
+    UMA única consulta (com $in), em vez de uma consulta por linha do DataFrame.
+    Isso é o que mais pesa no tempo de execução: com N projetos, a versão
+    antiga fazia N round-trips síncronos ao MongoDB; esta faz 1.
+    Retorna um dict: {(projeto_id, tipo_alerta): datetime_do_envio_mais_recente}
+    """
+    if not projeto_ids:
+        return {}
+    col = db[ALERTAS_CONFIG["status_collection"]]
+    cursor = col.find(
+        {"projeto_id": {"$in": list(projeto_ids)}},
+        {"projeto_id": 1, "tipo_alerta": 1, "data_envio": 1, "_id": 0},
+    )
+    status = {}
+    for doc in cursor:
+        chave = (doc.get("projeto_id"), doc.get("tipo_alerta"))
+        atual = status.get(chave)
+        if atual is None or (doc.get("data_envio") and doc["data_envio"] > atual):
+            status[chave] = doc.get("data_envio")
+    return status
+
 def verificar_disparo_automatico(db, df_prospeccao):
     """
     Verifica todos os projetos e dispara alertas conforme necessidade.
+
+    Otimizações em relação à versão original:
+    - 1 única consulta ao MongoDB para saber quais alertas já foram enviados
+      (antes: 1 consulta find_one por linha do DataFrame).
+    - 1 única conexão SMTP reaproveitada para todos os e-mails do lote
+      (antes: abria/fechava uma conexão SMTP — handshake TLS incluso — para
+      cada e-mail, o que domina o tempo total quando há vários alertas).
+    - Registro dos alertas enviados em lote (insert_many) em vez de um
+      insert_one por alerta.
     """
     agora = datetime.now()
     hora_atual = agora.hour
-    
+
     # Só dispara no horário configurado ou se for chamada manualmente
     if hora_atual < ALERTAS_CONFIG["horario_envio"]:
         return False, "Fora do horário de envio automático"
-    
+
     if df_prospeccao.empty or "PREVISAO_ENTREGA" not in df_prospeccao.columns:
         return False, "Sem dados de previsão de entrega"
-    
-    alertas_disparados = []
-    erros = []
-    
+
+    # ---------- 1ª passada (em memória, sem tocar no banco): calcula quem precisa de alerta ----------
+    candidatos = []  # lista de dicts com os dados já calculados de cada alerta candidato
+    hoje_meia_noite = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+
     for idx, row in df_prospeccao.iterrows():
         previsao = row.get("PREVISAO_ENTREGA")
         if pd.isna(previsao):
             continue
-            
-        # Converter para datetime se necessário
+
         if isinstance(previsao, str):
             try:
                 previsao = pd.to_datetime(previsao)
-            except:
+            except Exception:
                 continue
-                
-        # Calcular dias restantes
+
         dias_restantes = (previsao - agora).days
         nome_projeto = row.get("NOME", "Sem nome")
         construtora = row.get("CONSTRUTORA", "")
         responsavel = row.get("ACOMPANHAMENTO", "")
         projeto_id = row.get("_id", str(idx))
-        
-        # Pular se não tem responsável definido
+
         if not responsavel or responsavel == '':
             continue
-            
-        # Determinar qual alerta enviar
+
         alerta_tipo = None
         mensagem_extra = ""
-        
+
         if dias_restantes < 0:
             alerta_tipo = "vencido"
             mensagem_extra = f"⚠️ **ATRASADO!** Previsão era {previsao.strftime('%d/%m/%Y')}. Atraso de {abs(dias_restantes)} dias."
@@ -259,87 +288,138 @@ def verificar_disparo_automatico(db, df_prospeccao):
             mensagem_extra = f"ℹ️ Faltam {dias_restantes} dias para a entrega prevista."
         else:
             continue  # Mais de 90 dias, sem alerta
-        
-        # Verificar se já enviou este alerta
-        if alerta_ja_enviado(db, projeto_id, alerta_tipo):
-            continue
-            
-        # Preparar e enviar email
-        assunto = f"[Tracecom] Alerta de Prazo - {nome_projeto}"
-        
-        # Construir lista de destinatários
-        destinatarios = DESTINATARIOS_ALERTAS.copy()  # Começa com os fixos
-        
-        # Se responsável for email, adiciona também
-        if '@' in responsavel and responsavel not in destinatarios:
-            destinatarios.append(responsavel)
-        
-        # Remove duplicatas mantendo ordem
-        destinatarios = list(dict.fromkeys(destinatarios))
-        
-        corpo = f"""
-        <html>
-        <body style="font-family: Arial, sans-serif;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-                <h2 style="color: #c0392b;">⚠️ Alerta de Prazo de Entrega</h2>
-                
-                <p>Olá,</p>
-                
-                <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
-                    <h3 style="margin-top: 0;">📋 Informações do Projeto:</h3>
-                    <p><strong>🏢 Condomínio:</strong> {nome_projeto}</p>
-                    <p><strong>🏗️ Construtora:</strong> {construtora}</p>
-                    <p><strong>📅 Previsão de Entrega:</strong> {previsao.strftime('%d/%m/%Y')}</p>
-                    <p><strong>⏰ Dias Restantes:</strong> {dias_restantes}</p>
-                    <p><strong>👤 Responsável:</strong> {responsavel}</p>
-                </div>
-                
-                <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #ffc107;">
-                    <p style="margin: 0;"><strong>{mensagem_extra}</strong></p>
-                </div>
-                
-                <h3>📌 Recomendações:</h3>
-                <ul>
-                    <li>Verificar status atual da obra</li>
-                    <li>Confirmar se há riscos de atraso</li>
-                    <li>Atualizar a planilha com informações recentes</li>
-                    <li>Acionar equipe de vendas/prospecção se necessário</li>
-                </ul>
-                
-                <hr style="margin: 20px 0;">
-                <p style="font-size: 12px; color: #666;">
-                    Esta é uma mensagem automática do Sistema de Prospecção Tracecom.<br>
-                    Para ajustar os alertas, acesse o sistema e atualize a previsão de entrega ou o responsável.
-                </p>
-                <p style="font-size: 12px; color: #999;">
-                    <strong>Destinatários:</strong> {', '.join(destinatarios)}
-                </p>
-            </div>
-        </body>
-        </html>
-        """
-        
+
+        candidatos.append({
+            "projeto_id": projeto_id,
+            "alerta_tipo": alerta_tipo,
+            "nome_projeto": nome_projeto,
+            "construtora": construtora,
+            "responsavel": responsavel,
+            "previsao": previsao,
+            "dias_restantes": dias_restantes,
+            "mensagem_extra": mensagem_extra,
+        })
+
+    if not candidatos:
+        return False, "Nenhum alerta necessário no momento"
+
+    # ---------- 1 única consulta para saber o que já foi enviado ----------
+    projeto_ids = {c["projeto_id"] for c in candidatos}
+    status_enviados = _carregar_status_alertas_em_lote(db, projeto_ids)
+
+    alertas_diarios = {"7_dias", "3_dias", "1_dia", "vencido"}
+    pendentes = []
+    for c in candidatos:
+        chave = (c["projeto_id"], c["alerta_tipo"])
+        ultimo_envio = status_enviados.get(chave)
+        if ultimo_envio is None:
+            pendentes.append(c)
+        elif c["alerta_tipo"] in alertas_diarios and ultimo_envio < hoje_meia_noite:
+            # alerta diário: só reenvia se o último envio foi antes de hoje
+            pendentes.append(c)
+        # senão: já foi enviado (e, se for alerta único, nunca reenvia) -> pula
+
+    if not pendentes:
+        return False, "Nenhum alerta necessário no momento"
+
+    # ---------- 1 única conexão SMTP reaproveitada para todos os e-mails ----------
+    alertas_disparados = []
+    erros = []
+    registros_para_gravar = []
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"], context=context) as servidor:
+            servidor.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_password"])
+
+            for c in pendentes:
+                nome_projeto = c["nome_projeto"]
+                construtora = c["construtora"]
+                responsavel = c["responsavel"]
+                previsao = c["previsao"]
+                dias_restantes = c["dias_restantes"]
+                mensagem_extra = c["mensagem_extra"]
+                alerta_tipo = c["alerta_tipo"]
+                projeto_id = c["projeto_id"]
+
+                assunto = f"[Tracecom] Alerta de Prazo - {nome_projeto}"
+
+                destinatarios = DESTINATARIOS_ALERTAS.copy()
+                if '@' in responsavel and responsavel not in destinatarios:
+                    destinatarios.append(responsavel)
+                destinatarios = list(dict.fromkeys(destinatarios))
+
+                corpo = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif;">
+                    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                        <h2 style="color: #c0392b;">⚠️ Alerta de Prazo de Entrega</h2>
+
+                        <p>Olá,</p>
+
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                            <h3 style="margin-top: 0;">📋 Informações do Projeto:</h3>
+                            <p><strong>🏢 Condomínio:</strong> {nome_projeto}</p>
+                            <p><strong>🏗️ Construtora:</strong> {construtora}</p>
+                            <p><strong>📅 Previsão de Entrega:</strong> {previsao.strftime('%d/%m/%Y')}</p>
+                            <p><strong>⏰ Dias Restantes:</strong> {dias_restantes}</p>
+                            <p><strong>👤 Responsável:</strong> {responsavel}</p>
+                        </div>
+
+                        <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #ffc107;">
+                            <p style="margin: 0;"><strong>{mensagem_extra}</strong></p>
+                        </div>
+
+                        <h3>📌 Recomendações:</h3>
+                        <ul>
+                            <li>Verificar status atual da obra</li>
+                            <li>Confirmar se há riscos de atraso</li>
+                            <li>Atualizar a planilha com informações recentes</li>
+                            <li>Acionar equipe de vendas/prospecção se necessário</li>
+                        </ul>
+
+                        <hr style="margin: 20px 0;">
+                        <p style="font-size: 12px; color: #666;">
+                            Esta é uma mensagem automática do Sistema de Prospecção Tracecom.<br>
+                            Para ajustar os alertas, acesse o sistema e atualize a previsão de entrega ou o responsável.
+                        </p>
+                        <p style="font-size: 12px; color: #999;">
+                            <strong>Destinatários:</strong> {', '.join(destinatarios)}
+                        </p>
+                    </div>
+                </body>
+                </html>
+                """
+
+                try:
+                    msg = MIMEMultipart('alternative')
+                    msg['Subject'] = assunto
+                    msg['From'] = EMAIL_CONFIG["smtp_user"]
+                    msg['To'] = ", ".join(destinatarios)
+                    msg.attach(MIMEText(corpo, 'html', 'utf-8'))
+
+                    servidor.sendmail(EMAIL_CONFIG["smtp_user"], destinatarios, msg.as_bytes())
+
+                    registros_para_gravar.append({
+                        "projeto_id": projeto_id,
+                        "tipo_alerta": alerta_tipo,
+                        "data_envio": datetime.now(),
+                        "proximo_envio": None if alerta_tipo in alertas_diarios else datetime.now(),
+                    })
+                    alertas_disparados.append(f"{nome_projeto} ({dias_restantes} dias)")
+
+                except Exception as e:
+                    erros.append(f"{nome_projeto}: {str(e)}")
+    except Exception as e:
+        return False, f"⚠️ Falha ao conectar ao servidor SMTP: {e}"
+
+    # ---------- grava todos os status de alerta enviados em uma única chamada ----------
+    if registros_para_gravar:
         try:
-            # Enviar email para todos os destinatários
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = assunto
-            msg['From'] = EMAIL_CONFIG["smtp_user"]
-            msg['To'] = ", ".join(destinatarios)
-            msg.attach(MIMEText(corpo, 'html', 'utf-8'))
-            
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"], context=context) as servidor:
-                servidor.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_password"])
-                servidor.sendmail(EMAIL_CONFIG["smtp_user"], destinatarios, msg.as_bytes())
-            
-            # Registrar alerta enviado
-            registrar_status_alerta(db, projeto_id, alerta_tipo, datetime.now())
-            alertas_disparados.append(f"{nome_projeto} ({dias_restantes} dias)")
-            
+            db[ALERTAS_CONFIG["status_collection"]].insert_many(registros_para_gravar, ordered=False)
         except Exception as e:
-            erros.append(f"{nome_projeto}: {str(e)}")
-    
-    # Resumo
+            erros.append(f"Falha ao registrar status dos alertas: {e}")
+
     if alertas_disparados:
         msg_resumo = f"✅ Alertas disparados para: {', '.join(alertas_disparados[:5])}"
         if len(alertas_disparados) > 5:
@@ -383,6 +463,37 @@ def init_mongo():
     except Exception as e:
         st.error(f"❌ Erro inesperado ao conectar: {type(e).__name__}: {e}")
         st.stop()
+
+@st.cache_resource
+def garantir_indices(_db):
+    """
+    Cria (ou confirma) os índices usados pelas consultas do módulo.
+    Sem esses índices, o MongoDB faz COLLSCAN (varredura completa) a cada
+    find/delete/sort, o que é a maior causa de lentidão à medida que as
+    coleções crescem. @st.cache_resource garante que isso rode apenas
+    UMA VEZ por processo (não a cada rerun do Streamlit); create_index
+    é idempotente, então é seguro mesmo que rode de novo.
+    """
+    try:
+        col_prosp = _db["prospeccao_condominios"]
+        col_prosp.create_index("_import_batch")          # usado em load_latest_prospeccao, save/clear
+        col_prosp.create_index("CONSTRUTORA")
+        col_prosp.create_index("Região")
+
+        col_meta = _db["prospeccao_meta"]
+        col_meta.create_index([("timestamp", -1)])         # usado em find_one(sort=[("timestamp", -1)])
+        col_meta.create_index("batch_id")
+
+        col_alertas = _db[ALERTAS_CONFIG["status_collection"]]
+        # cobre a consulta de alerta_ja_enviado (projeto_id + tipo_alerta [+ data_envio])
+        col_alertas.create_index([("projeto_id", 1), ("tipo_alerta", 1), ("data_envio", -1)])
+        col_alertas.create_index("data_envio")              # usado em limpar_historico_alertas
+
+        col_flags = _db["prospeccao_backup_flags"]
+        col_flags.create_index("_id")
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível garantir os índices do MongoDB: {e}")
+    return True
 
 # ==================== FUNÇÕES DE BACKUP E EMAIL ====================
 def gerar_excel_tratado(df_prospeccao):
@@ -608,7 +719,9 @@ def save_prospeccao_data(db, df_prospeccao, metadata):
     docs = df_para_salvar.to_dict('records')
     if docs:
         for i in range(0, len(docs), 500):
-            collection.insert_many(docs[i:i+500])
+            # ordered=False: o MongoDB pode gravar o lote em paralelo/fora de ordem,
+            # o que acelera a inserção (não há dependência entre os documentos)
+            collection.insert_many(docs[i:i+500], ordered=False)
 
     meta_collection.delete_one({"batch_id": batch_id})
     meta_collection.insert_one({
@@ -693,24 +806,36 @@ def update_records_batch_vectorized(db, df_original, df_editado, colunas_para_co
         bulk_operations = []
         collection = db["prospeccao_condominios"]
 
+        # Extrai as colunas relevantes para listas Python UMA vez antes do loop.
+        # Repetir df.iloc[idx] célula-a-célula dentro do loop reavalia o índice
+        # do pandas a cada acesso; iterar sobre listas já extraídas é bem mais rápido
+        # quando há muitas linhas alteradas.
+        colunas_extra = ['FASE_CLASSIFICADA', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES', 'PRIORIDADE']
+        cols_edit_comp = [c for c in colunas_para_comparar if c in df_edit_alt.columns]
+        cols_edit_extra = [c for c in colunas_extra if c in df_edit_alt.columns]
+
+        valores_edit = {c: df_edit_alt[c].tolist() for c in set(cols_edit_comp + cols_edit_extra)}
+        valores_orig = {
+            c: (df_orig_alt[c].tolist() if c in df_orig_alt.columns else [None] * len(ids_alterados))
+            for c in set(cols_edit_comp + cols_edit_extra)
+        }
+
         for idx, record_id in enumerate(ids_alterados):
             updates = {}
-            
-            for col in colunas_para_comparar:
-                if col in df_edit_alt.columns:
-                    v_edit = df_edit_alt[col].iloc[idx]
-                    v_orig = df_orig_alt[col].iloc[idx] if col in df_orig_alt.columns else None
-                    if pd.isna(v_edit): continue
-                    if str(v_orig) != str(v_edit):
-                        updates[col] = None if (v_edit == '') else v_edit
 
-            for col in ['FASE_CLASSIFICADA', 'PREVISAO_ENTREGA', 'DIAS_RESTANTES', 'PRIORIDADE']:
-                if col in df_edit_alt.columns:
-                    val_new = df_edit_alt[col].iloc[idx]
-                    val_old = df_orig_alt[col].iloc[idx] if col in df_orig_alt.columns else None
-                    if pd.isna(val_new): continue
-                    if str(val_new) != str(val_old):
-                        updates[col] = None if (val_new == '') else val_new
+            for col in cols_edit_comp:
+                v_edit = valores_edit[col][idx]
+                v_orig = valores_orig[col][idx]
+                if pd.isna(v_edit): continue
+                if str(v_orig) != str(v_edit):
+                    updates[col] = None if (v_edit == '') else v_edit
+
+            for col in cols_edit_extra:
+                val_new = valores_edit[col][idx]
+                val_old = valores_orig[col][idx]
+                if pd.isna(val_new): continue
+                if str(val_new) != str(val_old):
+                    updates[col] = None if (val_new == '') else val_new
 
             if updates:
                 oid = ObjectId(record_id) if isinstance(record_id, str) else record_id
@@ -1241,6 +1366,7 @@ def render_prospeccao_condominios():
     st.title("🏢 Prospecção de Condomínios")
     st.markdown("Acompanhamento de fases de construção por construtora e oportunidades de mercado")
     db = init_mongo()
+    garantir_indices(db)
     st.markdown("---")
 
     # ==================== FERRAMENTAS ADMINISTRATIVAS COM SENHA ====================
