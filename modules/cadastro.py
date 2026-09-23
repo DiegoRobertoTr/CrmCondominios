@@ -154,7 +154,11 @@ except ImportError:
 # ✅ CACHE DE CONDOMÍNIOS
 # ============================================================================
 @st.cache_resource(ttl=300)
-def get_condominio_options_cached(collection):
+def get_condominio_options_cached(_collection):
+    # O underscore em "_collection" diz ao Streamlit para NÃO tentar
+    # hashear esse argumento (objetos pymongo.Collection não são hasheáveis).
+    # Ele só serve para existir uma entrada de cache por conexão; quem
+    # efetivamente é usado é get_all_condominios(), sem parâmetros.
     try:
         from .condominios import get_all_condominios
         condominios = get_all_condominios()
