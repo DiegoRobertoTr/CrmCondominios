@@ -185,11 +185,6 @@ def garantir_indices(clientes_collection):
         if "data_cadastro_-1" not in indices_existentes:
             clientes_collection.create_index([("data_cadastro", -1)], name="data_cadastro_-1")
 
-        # ✅ Índice composto para as checagens de endereço bloqueado
-        # (rodam várias vezes por render, sem índice viravam table scan)
-        if "endereco_1_numero_1" not in indices_existentes:
-            clientes_collection.create_index([("endereco", 1), ("numero", 1)], name="endereco_1_numero_1")
-
         return True
     except Exception:
         return False
@@ -697,7 +692,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
         # 🏢 CONDOMÍNIO
         st.markdown("### 🏢 Localização")
         condominio_options = {"Nenhum / Não se aplica": None}
-        condominio_options.update(get_condominio_options_cached(clientes_collection))
+        condominio_options.update(get_condominio_options())
 
         cond_id_salvo = cliente.get("condominio_id")
         cond_nome_salvo = cliente.get("condominio_nome")
@@ -1600,9 +1595,7 @@ def render_cadastro(clientes_collection):
         key=f"busca_global_{st.session_state['form_key']}"
     )
 
-    # ✅ Só consulta o banco a partir de 3 caracteres — evita varredura
-    # (regex sem índice) a cada tecla digitada em buscas de 1-2 letras
-    if busca_global.strip() and len(busca_global.strip()) >= 3:
+    if busca_global.strip():
         busca_normalizada = normalize_phone(busca_global)
         cpf_puro = re.sub(r'\D', '', busca_global)
 
@@ -2027,7 +2020,7 @@ def render_cadastro(clientes_collection):
         # ========== CONDOMÍNIO ==========
         st.markdown("### 🏢 Localização")
         condominio_options = {"Nenhum / Não se aplica": None}
-        condominio_options.update(get_condominio_options_cached(clientes_collection))
+        condominio_options.update(get_condominio_options())
 
         condominio_select = st.selectbox(
             "Condomínio (Opcional)",
