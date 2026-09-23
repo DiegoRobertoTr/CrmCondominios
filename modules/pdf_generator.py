@@ -31,6 +31,75 @@ DADOS_EMPRESA = {
 }
 
 # ============================================================================
+# CONFIGURAÇÃO DOS TIPOS DE TRATATIVA
+# ============================================================================
+TIPOS_TRATATIVA = {
+    "padrao": {
+        "label": "Termo Padrão (Cliente Novo)",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO",
+        "secao2_texto": "O presente contrato tem como objeto a prestação, pela CONTRATADA, do Serviço de Comunicação Multimídia (SCM) - Internet, conforme plano detalhado abaixo:",
+        "tem_desconto_promocional": False,
+        "tem_troca_roteador": False,
+        "tem_wifi_adicional": False,
+        "multa_base": "instalacao",
+    },
+    "novo_com_desconto": {
+        "label": "Cliente Novo COM Desconto",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO",
+        "secao2_texto": "O presente contrato tem como objeto a prestação, pela CONTRATADA, do Serviço de Comunicação Multimídia (SCM) - Internet, conforme plano detalhado abaixo:",
+        "tem_desconto_promocional": True,
+        "tem_troca_roteador": False,
+        "tem_wifi_adicional": False,
+        "multa_base": "instalacao",
+    },
+    "upsell_sem_troca": {
+        "label": "Upsell SEM Troca de Roteador",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO",
+        "secao2_texto": "O presente Termo formaliza a alteração do plano atualmente contratado pelo CONTRATANTE para o plano de {{ plano_escolhido }}, bem como as condições comerciais e de permanência aplicáveis ao upgrade do serviço.",
+        "tem_desconto_promocional": False,
+        "tem_troca_roteador": False,
+        "tem_wifi_adicional": False,
+        "multa_base": "beneficio",
+    },
+    "upsell_com_troca": {
+        "label": "Upsell COM Troca de Roteador",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO",
+        "secao2_texto": "O presente Termo formaliza a alteração do plano atualmente contratado pelo CONTRATANTE para o plano de {{ plano_escolhido }}, bem como as condições comerciais e de permanência aplicáveis ao upgrade do serviço.",
+        "tem_desconto_promocional": False,
+        "tem_troca_roteador": True,
+        "tem_wifi_adicional": False,
+        "multa_base": "beneficio",
+    },
+    "upsell_com_troca_e_desconto": {
+        "label": "Upsell COM Troca de Roteador e Desconto",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO",
+        "secao2_texto": "O presente Termo formaliza a alteração do plano atualmente contratado pelo CONTRATANTE para o plano de {{ plano_escolhido }}, bem como as condições comerciais e de permanência aplicáveis ao upgrade do serviço.",
+        "tem_desconto_promocional": True,
+        "tem_troca_roteador": True,
+        "tem_wifi_adicional": False,
+        "multa_base": "beneficio",
+    },
+    "retencao_wifi_adicional": {
+        "label": "Retenção Wi-Fi Adicional",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO (RETENÇÃO/UPGRADE)",
+        "secao2_texto": "O presente Termo formaliza a alteração do plano atualmente contratado pelo CONTRATANTE para o plano de {{ plano_escolhido }}, bem como as condições comerciais e de permanência aplicáveis ao upgrade do serviço.",
+        "tem_desconto_promocional": False,
+        "tem_troca_roteador": False,
+        "tem_wifi_adicional": True,
+        "multa_base": "beneficio",
+    },
+    "retencao_upgrade_velocidade": {
+        "label": "Retenção / Upgrade de Velocidade",
+        "secao2_titulo": "2. DO OBJETO E PLANO CONTRATADO",
+        "secao2_texto": "O presente Termo formaliza a alteração do plano atualmente contratado pelo CONTRATANTE para o plano de {{ plano_escolhido }}, bem como as condições comerciais e de permanência aplicáveis ao upgrade do serviço.",
+        "tem_desconto_promocional": False,
+        "tem_troca_roteador": False,
+        "tem_wifi_adicional": False,
+        "multa_base": "beneficio",
+    },
+}
+
+# ============================================================================
 # LISTAS ESTATICAS
 # ============================================================================
 MODELOS_ROTEADORES = [
@@ -115,29 +184,44 @@ PLANOS = [
 ]
 
 # ============================================================================
-# FUNCAO PARA EXTRAIR VALOR DO PLANO (CORRIGIDA)
+# FUNCAO PARA EXTRAIR VALOR DO PLANO
 # ============================================================================
 def extrair_valor_do_plano(plano_nome):
-    """
-    Extrai o valor do nome do plano.
-    Ex: '600MB: 79,99' -> '79,99'
-    Ex: '800MB+Canais: 59,99 Exclusivo Vibe Sunset' -> '59,99'
-    Ex: '800MB+Canais: 69,99' -> '69,99'
-    """
+    """Extrai o valor do nome do plano."""
     if not plano_nome or plano_nome == "Selecione...":
         return "0,00"
     
-    # Busca padrao: numero com virgula apos ":" ou "R$"
     match = re.search(r'(?:R?\$?\s*|:\s*)([0-9]+,[0-9]{2})', plano_nome)
     if match:
         return match.group(1)
     
-    # Fallback: busca qualquer numero com virgula no texto
     match = re.search(r'([0-9]+,[0-9]{2})', plano_nome)
     if match:
         return match.group(1)
     
     return "0,00"
+
+# ============================================================================
+# FUNCAO AUXILIAR PARA CONVERTER TEXTO PARA LATIN-1
+# ============================================================================
+def safe_latin1_encode(texto):
+    """Converte texto para latin-1 substituindo caracteres não suportados."""
+    try:
+        return texto.encode('latin-1').decode('latin-1')
+    except UnicodeEncodeError:
+        texto = texto.replace('á', 'a').replace('à', 'a').replace('ã', 'a').replace('â', 'a')
+        texto = texto.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
+        texto = texto.replace('í', 'i').replace('ì', 'i').replace('î', 'i')
+        texto = texto.replace('ó', 'o').replace('ò', 'o').replace('õ', 'o').replace('ô', 'o')
+        texto = texto.replace('ú', 'u').replace('ù', 'u').replace('û', 'u')
+        texto = texto.replace('ç', 'c')
+        texto = texto.replace('Á', 'A').replace('À', 'A').replace('Ã', 'A').replace('Â', 'A')
+        texto = texto.replace('É', 'E').replace('È', 'E').replace('Ê', 'E')
+        texto = texto.replace('Í', 'I').replace('Ì', 'I').replace('Î', 'I')
+        texto = texto.replace('Ó', 'O').replace('Ò', 'O').replace('Õ', 'O').replace('Ô', 'O')
+        texto = texto.replace('Ú', 'U').replace('Ù', 'U').replace('Û', 'U')
+        texto = texto.replace('Ç', 'C')
+        return texto.encode('latin-1', errors='replace').decode('latin-1')
 
 # ============================================================================
 # FUNCOES PARA CARREGAR TEMPLATES
@@ -157,199 +241,27 @@ CONTRATO_TEMPLATE = load_template("contrato.txt")
 TERMO_COMODATO_TEMPLATE = load_template("comodato.txt")
 TERMO_ADESAO_TEMPLATE = load_template("termo_adesao.txt")
 
-# Fallback: se o arquivo nao existir, usa o template embutido com caracteres simples
-if not TERMO_ADESAO_TEMPLATE:
-    TERMO_ADESAO_TEMPLATE = """TERMO DE ADESAO - CONTRATO DE PRESTACAO DE SERVICOS DE COMUNICACAO MULTIMIDIA - SCM E SERVICOS DE VALOR ADICIONADO - SVA
-
-As partes abaixo mencionadas, especialmente o CONTRATANTE, tiveram total acesso ao CONTRATO DE PRESTACAO DE SCM - SERVICOS DE COMUNICACAO MULTIMIDIA e ao CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, que estao disponibilizados no site da CONTRATADA ({{ site_empresa }}), CONCORDANDO ambas as partes com todos os termos desses contratos, suas clausulas e condicoes.
-
-================================================================================
-                              1. QUALIFICACAO DAS PARTES
-================================================================================
-
-CONTRATADA:
-Razao Social: {{ razao_social }}
-CNPJ: {{ cnpj_empresa }}
-Endereco: {{ endereco_empresa }}, {{ numero_empresa }} - {{ bairro_empresa }}
-Cidade: {{ cidade_empresa }} - {{ estado_empresa }} | CEP: {{ cep_empresa }}
-Telefone: {{ telefone_empresa }} | E-mail: {{ email_empresa }}
-Site: {{ site_empresa }}
-Autorizacao ANATEL: {{ anatel_autorizacao }}
-
-CONTRATANTE:
-Nome: {{ nome_completo }}
-CPF: {{ cpf }}
-RG: {{ rg or 'Nao informado' }}
-Data de Nascimento: {{ data_nascimento or 'Nao informado' }}
-Telefone: {{ celular }}
-E-mail: {{ email or 'Nao informado' }}
-
-ENDERECO DE INSTALACAO:
-{{ endereco }}, {{ numero }}
-{% if complemento %}Complemento: {{ complemento }}{% endif %}
-{% if condominio_nome %}Condominio: {{ condominio_nome }}{% endif %}
-{% if bloco %}Bloco: {{ bloco }}{% endif %}
-{% if apartamento %}Apartamento: {{ apartamento }}{% endif %}
-Bairro: {{ bairro }} | Cidade: {{ cidade }}
-CEP: {{ cep or 'Nao informado' }}
-Ponto de Referencia: {{ ponto_referencia or 'Nao informado' }}
-
-================================================================================
-                              2. DO OBJETO E PLANO CONTRATADO
-================================================================================
-
-O presente contrato tem como objeto a prestacao, pela CONTRATADA, do Servico de Comunicacao Multimidia (SCM) - Internet, conforme plano detalhado abaixo:
-
-PLANO CONTRATADO:
-{{ plano_escolhido }}
-
-CARACTERISTICAS TECNICAS:
-- Tecnologia: {{ tecnologia or 'Fibra Optica' }}
-- Prazo para Instalacao: {{ prazo_instalacao or '10' }} dias uteis
-- Vigencia Contratual: {{ vigencia_contratual or '12' }} meses
-
-================================================================================
-                              3. VALORES E CONDICOES DE PAGAMENTO
-================================================================================
-
------------------------------------------------------------+------------------
-DESCRICAO                                                  | VALOR (R$)
------------------------------------------------------------+------------------
-Mensalidade                                                | {{ valor_mensal }}
-Taxa de Instalacao                                         | {{ valor_instalacao or '0,00' }}
-Vencimento                                                 | Dia {{ data_vencimento }} de cada mes
-Forma de Pagamento                                         | {{ forma_pagamento or 'Boleto Bancario' }}
------------------------------------------------------------+------------------
-JUROS E MULTAS:                                            |
-Juros Moratorios                                           | 1% ao mes
-Multa por Atraso                                           | 2%
-Reajuste Anual                                             | {{ indice_correcao or 'IPCA' }}
------------------------------------------------------------+------------------
-
-================================================================================
-                              4. SERVICOS DE VALOR ADICIONADO (SVA)
-================================================================================
-
-O CONTRATANTE declara ciencia de que Servicos de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
-
-Todos os detalhes, regras e condicoes dos SVA estao disponiveis no CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, disponivel no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
-
-================================================================================
-                              5. EQUIPAMENTOS EM COMODATO
-================================================================================
-
-A CONTRATADA disponibiliza ao CONTRATANTE, em regime de comodato, o(s) seguinte(s) equipamento(s):
-
-Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
-Modelo: {{ equipamento_modelo }}
-Acessorios: {{ equipamento_acessorios or 'Fonte de alimentacao, cabo Ethernet' }}
-
-O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolve-lo(s) no final do contrato nas condicoes em que lhe foram entregues, salvo desgaste natural.
-
-================================================================================
-                              6. CONTRATO DE PERMANENCIA / FIDELIDADE
-================================================================================
-
-O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO DE FIDELIDADE e:
-
-{% if optou_fidelidade %}
-( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
-(   ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
-
-CONDICOES DA FIDELIDADE:
-- Prazo minimo: 12 meses
-- Multa por rescissao antecipada: ate 30% sobre o valor das parcelas vincendas
-- Beneficios aplicaveis: descontos e condicoes especiais conforme plano contratado
-{% else %}
-(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
-( X ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
-
-CONDICOES SEM FIDELIDADE:
-- Contrato por prazo indeterminado
-- Cancelamento a qualquer momento, sem multa
-- Valor integral do plano aplicado
-{% endif %}
-
-================================================================================
-                              7. DISPOSICOES GERAIS E OBSERVACOES
-================================================================================
-
-- A Contratada tera o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a analise de viabilidade tecnica. Caso constatada a inviabilidade tecnica, o contrato sera cancelado automaticamente sem qualquer onus para ambas as partes.
-
-- O Contratante declara ter conhecimento que a medicao da banda contratada atraves de aparelhos WI-FI pode variar, e que o correto e medir por meio de equipamentos via cabo.
-
-- O Contratante esta ciente dos motivos que podem culminar na degradacao dos servicos, conforme previsto nos contratos disponiveis no site.
-
-- Este Termo de Adesao, juntamente com os CONTRATOS DE PRESTACAO DE SCM E SVA disponiveis no site da CONTRATADA, constituem o acordo integral entre as partes.
-
-================================================================================
-                              8. DECLARACAO DE CONCORDANCIA
-================================================================================
-
-Declaro, para os devidos fins, que sao corretos os dados cadastrais e informacoes por mim prestadas neste instrumento.
-
-Declaro estar ciente que a assinatura deste instrumento representa expressa concordancia aos termos e condicoes dos CONTRATOS DE PRESTACAO DE SCM E SVA, disponiveis no site da Contratada.
-
-Declaro que tive previo acesso a todas as informacoes relativas aos contratos mencionados, bem como ao plano de servico por mim ora contratado.
-
-Declaro que o presente documento, juntamente com os contratos mencionados, formam um unico instrumento contratual.
-
-================================================================================
-                                    9. ASSINATURA
-================================================================================
-
-{{ cidade }}/{{ estado_empresa }}, {{ data_assinatura }}.
-
-__________________________________________________________
-Contratada: {{ razao_social }}
-Assinatura / Carimbo
-
-__________________________________________________________
-Contratante: {{ nome_completo }}
-Assinatura
-
-TESTEMUNHAS:
-
-__________________________________________________________
-Testemunha 1
-Nome: _________________________  CPF: __________________________
-
-__________________________________________________________
-Testemunha 2
-Nome: _________________________  CPF: __________________________
-
-================================================================================
-                        10. FORO DE ELEICAO
-================================================================================
-
-As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer duvidas ou controversias oriundas do presente contrato, com expressa renuncia a qualquer outro, por mais privilegiado que seja.
-"""
-
 # ============================================================================
-# FUNCAO AUXILIAR PARA CONVERTER TEXTO PARA LATIN-1
+# CÁLCULO DE MULTAS DECRESCENTES
 # ============================================================================
-def safe_latin1_encode(texto):
-    """
-    Converte texto para latin-1 substituindo caracteres não suportados.
-    """
+def calcular_multas_decrescentes(beneficio_total_str):
+    """Calcula os valores decrescentes de multa baseado no benefício total."""
     try:
-        return texto.encode('latin-1').decode('latin-1')
-    except UnicodeEncodeError:
-        # Substitui caracteres problemáticos
-        texto = texto.replace('á', 'a').replace('à', 'a').replace('ã', 'a').replace('â', 'a')
-        texto = texto.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
-        texto = texto.replace('í', 'i').replace('ì', 'i').replace('î', 'i')
-        texto = texto.replace('ó', 'o').replace('ò', 'o').replace('õ', 'o').replace('ô', 'o')
-        texto = texto.replace('ú', 'u').replace('ù', 'u').replace('û', 'u')
-        texto = texto.replace('ç', 'c')
-        texto = texto.replace('Á', 'A').replace('À', 'A').replace('Ã', 'A').replace('Â', 'A')
-        texto = texto.replace('É', 'E').replace('È', 'E').replace('Ê', 'E')
-        texto = texto.replace('Í', 'I').replace('Ì', 'I').replace('Î', 'I')
-        texto = texto.replace('Ó', 'O').replace('Ò', 'O').replace('Õ', 'O').replace('Ô', 'O')
-        texto = texto.replace('Ú', 'U').replace('Ù', 'U').replace('Û', 'U')
-        texto = texto.replace('Ç', 'C')
-        # Tenta novamente
-        return texto.encode('latin-1', errors='replace').decode('latin-1')
+        base = float(str(beneficio_total_str).replace(".", "").replace(",", "."))
+    except:
+        base = 600.00
+    
+    percentuais = {
+        11: 92, 10: 83, 9: 75, 8: 67, 7: 58,
+        6: 50, 5: 42, 4: 33, 3: 25, 2: 17, 1: 8
+    }
+    
+    resultado = {}
+    for meses, pct in percentuais.items():
+        valor = base * (pct / 100)
+        resultado[f"multa_{meses}"] = f"{valor:.2f}".replace(".", ",")
+    
+    return resultado
 
 # ============================================================================
 # FUNCOES DE GERACAO DE PDF
@@ -386,6 +298,7 @@ def gerar_pdf_contrato(dados):
         st.error(f"Erro ao gerar contrato: {e}")
         return None
 
+
 def gerar_pdf_comodato(dados):
     """Gera PDF do termo de comodato e retorna bytes"""
     if not TERMO_COMODATO_TEMPLATE:
@@ -418,10 +331,11 @@ def gerar_pdf_comodato(dados):
         st.error(f"Erro ao gerar termo de comodato: {e}")
         return None
 
+
 def gerar_pdf_termo_adesao(dados_cliente):
     """
-    Gera o PDF do Termo de Adesao Unificado (SCM + referencia SVA)
-    Usa dados do cliente + dados da empresa
+    Gera o PDF do Termo de Adesão Unificado.
+    Adapta o conteúdo conforme o 'tipo_tratativa' selecionado.
     """
     if not TERMO_ADESAO_TEMPLATE:
         return None
@@ -429,11 +343,21 @@ def gerar_pdf_termo_adesao(dados_cliente):
     try:
         # Dados base da empresa
         dados = DADOS_EMPRESA.copy()
-        
-        # Mesclar com os dados do cliente (cliente tem prioridade)
         dados.update(dados_cliente)
         
-        # Garantir campos obrigatorios
+        # Pega configuração do tipo de tratativa (default = padrão)
+        tipo_key = dados.get("tipo_tratativa", "padrao")
+        config = TIPOS_TRATATIVA.get(tipo_key, TIPOS_TRATATIVA["padrao"])
+        
+        # Injeta as configurações no template
+        dados["tipo_tratativa_secao2_titulo"] = config["secao2_titulo"]
+        dados["tipo_tratativa_secao2_texto"] = Template(config["secao2_texto"]).render(dados)
+        dados["tem_desconto_promocional"] = config["tem_desconto_promocional"]
+        dados["tem_troca_roteador"] = config["tem_troca_roteador"]
+        dados["tem_wifi_adicional"] = config["tem_wifi_adicional"]
+        dados["multa_base"] = config["multa_base"]
+        
+        # Garantir campos obrigatórios com defaults
         dados.setdefault("valor_mensal", extrair_valor_do_plano(dados.get("plano_escolhido", "")))
         dados.setdefault("optou_fidelidade", True)
         dados.setdefault("data_assinatura", datetime.now().strftime("%d/%m/%Y"))
@@ -450,23 +374,35 @@ def gerar_pdf_termo_adesao(dados_cliente):
         dados.setdefault("equipamento_modelo", "Nao informado")
         dados.setdefault("equipamento_acessorios", "Fonte de alimentacao, cabo Ethernet")
         dados.setdefault("valor_instalacao", "0,00")
+        dados.setdefault("valor_promocional", "0,00")
+        dados.setdefault("valor_sem_fidelidade", "0,00")
+        dados.setdefault("valor_com_fidelidade", "0,00")
+        dados.setdefault("beneficio_total", "600,00")
+        dados.setdefault("beneficio_descricao", "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais).")
+        dados.setdefault("modalidade", "Contratacao")
+        dados.setdefault("equipamento_adicional_modelo", "")
+        dados.setdefault("sva_selecionados", [])
+        dados.setdefault("prazo_instalacao", "10")
+        dados.setdefault("vigencia_contratual", "12")
+        dados.setdefault("prazo_viabilidade", "10")
         
-        # Renderizar template
+        # Calcula as multas decrescentes
+        dados.update(calcular_multas_decrescentes(dados["beneficio_total"]))
+        
+        # Renderiza
         template = Template(TERMO_ADESAO_TEMPLATE)
         texto = template.render(dados)
         
-        # Gerar PDF
+        # Gera PDF
         pdf = FPDF()
         pdf.add_page()
         
-        # Adiciona logo se existir
         if os.path.exists("logo.png"):
             pdf.image("logo.png", x=10, y=8, w=40)
             pdf.ln(30)
         
         pdf.set_font("Arial", size=9)
         for linha in texto.split("\n"):
-            # Converter para latin-1 com seguranca
             linha_segura = safe_latin1_encode(linha)
             pdf.multi_cell(0, 6, linha_segura)
         
