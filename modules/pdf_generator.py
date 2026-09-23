@@ -1,6 +1,7 @@
 # modules/pdf_generator.py
 import os
 import re
+import unicodedata
 import streamlit as st
 from jinja2 import Template
 from fpdf import FPDF
@@ -100,7 +101,7 @@ TIPOS_TRATATIVA = {
 }
 
 # ============================================================================
-# LISTAS ESTATICAS
+# LISTAS ESTÁTICAS
 # ============================================================================
 MODELOS_ROTEADORES = [
     "Tp Link Ax3000 Xx530v Wifi 6 Mesh Dual Band Bivolt",
@@ -184,7 +185,7 @@ PLANOS = [
 ]
 
 # ============================================================================
-# FUNCAO PARA EXTRAIR VALOR DO PLANO
+# FUNÇÃO PARA EXTRAIR VALOR DO PLANO
 # ============================================================================
 def extrair_valor_do_plano(plano_nome):
     """Extrai o valor do nome do plano."""
@@ -201,54 +202,116 @@ def extrair_valor_do_plano(plano_nome):
     
     return "0,00"
 
-# ============================================================================
-# FUNCAO AUXILIAR PARA CONVERTER TEXTO PARA LATIN-1
-# ============================================================================
-def safe_latin1_encode(texto):
-    """Converte texto para latin-1 substituindo caracteres não suportados."""
-    try:
-        return texto.encode('latin-1').decode('latin-1')
-    except UnicodeEncodeError:
-        texto = texto.replace('á', 'a').replace('à', 'a').replace('ã', 'a').replace('â', 'a')
-        texto = texto.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
-        texto = texto.replace('í', 'i').replace('ì', 'i').replace('î', 'i')
-        texto = texto.replace('ó', 'o').replace('ò', 'o').replace('õ', 'o').replace('ô', 'o')
-        texto = texto.replace('ú', 'u').replace('ù', 'u').replace('û', 'u')
-        texto = texto.replace('ç', 'c')
-        texto = texto.replace('Á', 'A').replace('À', 'A').replace('Ã', 'A').replace('Â', 'A')
-        texto = texto.replace('É', 'E').replace('È', 'E').replace('Ê', 'E')
-        texto = texto.replace('Í', 'I').replace('Ì', 'I').replace('Î', 'I')
-        texto = texto.replace('Ó', 'O').replace('Ò', 'O').replace('Õ', 'O').replace('Ô', 'O')
-        texto = texto.replace('Ú', 'U').replace('Ù', 'U').replace('Û', 'U')
-        texto = texto.replace('Ç', 'C')
-        return texto.encode('latin-1', errors='replace').decode('latin-1')
 
 # ============================================================================
-# FUNCOES PARA CARREGAR TEMPLATES
+# ✅ FUNÇÃO ROBUSTA DE SANITIZAÇÃO PARA LATIN-1
+# ============================================================================
+def safe_latin1_encode(texto):
+    """
+    Converte texto para latin-1 de forma ROBUSTA:
+    1. Normaliza caracteres Unicode (NFKD separa acentos dos caracteres base)
+    2. Remove caracteres de controle (exceto \n, \r, \t)
+    3. Substitui acentos latinos por equivalentes ASCII
+    4. Remove emojis e símbolos que não existem em latin-1
+    
+    Retorna SEMPRE uma string válida em latin-1.
+    """
+    if texto is None:
+        return ""
+    
+    if not isinstance(texto, str):
+        texto = str(texto)
+    
+    # Passo 1: Normalizar (NFKD separa "é" em "e" + acento)
+    try:
+        texto = unicodedata.normalize('NFKD', texto)
+    except Exception:
+        pass
+    
+    # Passo 2: Remover caracteres de controle (exceto \n, \r, \t)
+    texto = ''.join(
+        c for c in texto
+        if unicodedata.category(c)[0] != 'C' or c in '\n\r\t'
+    )
+    
+    # Passo 3: Substituições explícitas de caracteres latinos com acento
+    substituicoes = {
+        'á': 'a', 'à': 'a', 'ã': 'a', 'â': 'a', 'ä': 'a', 'å': 'a',
+        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+        'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+        'ó': 'o', 'ò': 'o', 'õ': 'o', 'ô': 'o', 'ö': 'o',
+        'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+        'ç': 'c', 'ñ': 'n', 'ý': 'y',
+        'Á': 'A', 'À': 'A', 'Ã': 'A', 'Â': 'A', 'Ä': 'A', 'Å': 'A',
+        'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
+        'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
+        'Ó': 'O', 'Ò': 'O', 'Õ': 'O', 'Ô': 'O', 'Ö': 'O',
+        'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
+        'Ç': 'C', 'Ñ': 'N', 'Ý': 'Y',
+        # Símbolos tipográficos comuns
+        '—': '-', '–': '-', '…': '...',
+        '"': '"', '"': '"', ''': "'", ''': "'",
+        '•': '-', '·': '-', '€': 'EUR', '£': 'GBP',
+        '\u00a0': ' ',  # non-breaking space
+    }
+    for orig, dest in substituicoes.items():
+        texto = texto.replace(orig, dest)
+    
+    # Passo 4: Remover qualquer caractere que ainda não seja latin-1
+    texto_limpo = []
+    for c in texto:
+        try:
+            c.encode('latin-1')
+            texto_limpo.append(c)
+        except UnicodeEncodeError:
+            # Remove emojis e símbolos não suportados
+            pass
+    
+    return ''.join(texto_limpo)
+
+
+# ============================================================================
+# FUNÇÕES PARA CARREGAR TEMPLATES
 # ============================================================================
 def load_template(filename):
-    """Carrega um template de arquivo externo"""
+    """Carrega um template de arquivo externo com encoding UTF-8."""
     path = os.path.join("templates", filename)
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                conteudo = f.read()
+            # Remove BOM se presente
+            if conteudo.startswith('\ufeff'):
+                conteudo = conteudo[1:]
+            return conteudo
+        except UnicodeDecodeError:
+            # Fallback: tenta latin-1
+            with open(path, "r", encoding="latin-1") as f:
+                return f.read()
     else:
         st.error(f"Template '{filename}' nao encontrado em /templates/")
         return ""
 
-# Carrega templates de arquivos externos
+# Carrega templates
 CONTRATO_TEMPLATE = load_template("contrato.txt")
 TERMO_COMODATO_TEMPLATE = load_template("comodato.txt")
 TERMO_ADESAO_TEMPLATE = load_template("termo_adesao.txt")
 
+
 # ============================================================================
-# CÁLCULO DE MULTAS DECRESCENTES
+# CÁLCULO DE MULTAS DECRESCENTES (ROBUSTO)
 # ============================================================================
 def calcular_multas_decrescentes(beneficio_total_str):
     """Calcula os valores decrescentes de multa baseado no benefício total."""
     try:
-        base = float(str(beneficio_total_str).replace(".", "").replace(",", "."))
-    except:
+        # Limpa formatação: "R$ 600,00" -> "600.00"
+        valor_limpo = str(beneficio_total_str)
+        valor_limpo = re.sub(r'[R$\s]', '', valor_limpo)
+        valor_limpo = valor_limpo.replace(".", "").replace(",", ".")
+        base = float(valor_limpo)
+        if base <= 0:
+            base = 600.00
+    except (ValueError, TypeError, AttributeError):
         base = 600.00
     
     percentuais = {
@@ -263,11 +326,47 @@ def calcular_multas_decrescentes(beneficio_total_str):
     
     return resultado
 
+
 # ============================================================================
-# FUNCOES DE GERACAO DE PDF
+# FUNÇÕES DE GERAÇÃO DE PDF
 # ============================================================================
+def _gerar_pdf_generico(texto_renderizado, tamanho_fonte=10, altura_linha=8):
+    """
+    Função auxiliar que gera PDF a partir de texto renderizado.
+    Aplica sanitização robusta e trata erros por linha.
+    """
+    pdf = FPDF()
+    pdf.add_page()
+    
+    if os.path.exists("logo.png"):
+        try:
+            pdf.image("logo.png", x=10, y=8, w=40)
+            pdf.ln(30)
+        except Exception:
+            pass  # Se falhar ao carregar logo, continua sem ele
+    
+    pdf.set_font("Arial", size=tamanho_fonte)
+    
+    for i, linha in enumerate(texto_renderizado.split("\n")):
+        linha_segura = safe_latin1_encode(linha)
+        try:
+            pdf.multi_cell(0, altura_linha, linha_segura)
+        except Exception as e:
+            # Em caso de erro numa linha específica, tenta uma versão ainda mais limpa
+            linha_ultra_segura = ''.join(
+                c if ord(c) < 256 else '?' for c in linha
+            )
+            try:
+                pdf.multi_cell(0, altura_linha, linha_ultra_segura)
+            except Exception:
+                # Se ainda falhar, pula a linha
+                print(f"[AVISO] Linha {i} ignorada: {e}")
+    
+    return pdf.output(dest='S').encode('latin-1', errors='replace')
+
+
 def gerar_pdf_contrato(dados):
-    """Gera PDF do contrato e retorna bytes"""
+    """Gera PDF do contrato e retorna bytes."""
     if not CONTRATO_TEMPLATE:
         return None
     try:
@@ -281,26 +380,17 @@ def gerar_pdf_contrato(dados):
 
         template = Template(CONTRATO_TEMPLATE)
         contrato_preenchido = template.render(dados)
-        pdf = FPDF()
-        pdf.add_page()
         
-        if os.path.exists("logo.png"):
-            pdf.image("logo.png", x=10, y=8, w=40)
-            pdf.ln(30)
-        
-        pdf.set_font("Arial", size=10)
-        for linha in contrato_preenchido.split("\n"):
-            linha_segura = safe_latin1_encode(linha)
-            pdf.multi_cell(0, 8, linha_segura)
-        
-        return pdf.output(dest='S').encode('latin1')
+        return _gerar_pdf_generico(contrato_preenchido, tamanho_fonte=10, altura_linha=8)
     except Exception as e:
         st.error(f"Erro ao gerar contrato: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 def gerar_pdf_comodato(dados):
-    """Gera PDF do termo de comodato e retorna bytes"""
+    """Gera PDF do termo de comodato e retorna bytes."""
     if not TERMO_COMODATO_TEMPLATE:
         return None
     try:
@@ -314,21 +404,12 @@ def gerar_pdf_comodato(dados):
 
         template = Template(TERMO_COMODATO_TEMPLATE)
         termo_preenchido = template.render(dados)
-        pdf = FPDF()
-        pdf.add_page()
         
-        if os.path.exists("logo.png"):
-            pdf.image("logo.png", x=10, y=8, w=40)
-            pdf.ln(30)
-        
-        pdf.set_font("Arial", size=10)
-        for linha in termo_preenchido.split("\n"):
-            linha_segura = safe_latin1_encode(linha)
-            pdf.multi_cell(0, 8, linha_segura)
-        
-        return pdf.output(dest='S').encode('latin1')
+        return _gerar_pdf_generico(termo_preenchido, tamanho_fonte=10, altura_linha=8)
     except Exception as e:
         st.error(f"Erro ao gerar termo de comodato: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -357,7 +438,9 @@ def gerar_pdf_termo_adesao(dados_cliente):
         dados["tem_wifi_adicional"] = config["tem_wifi_adicional"]
         dados["multa_base"] = config["multa_base"]
         
-        # Garantir campos obrigatórios com defaults
+        # ====================================================================
+        # ✅ GARANTIR QUE TODOS OS CAMPOS TENHAM VALORES VÁLIDOS
+        # ====================================================================
         dados.setdefault("valor_mensal", extrair_valor_do_plano(dados.get("plano_escolhido", "")))
         dados.setdefault("optou_fidelidade", True)
         dados.setdefault("data_assinatura", datetime.now().strftime("%d/%m/%Y"))
@@ -378,13 +461,35 @@ def gerar_pdf_termo_adesao(dados_cliente):
         dados.setdefault("valor_sem_fidelidade", "0,00")
         dados.setdefault("valor_com_fidelidade", "0,00")
         dados.setdefault("beneficio_total", "600,00")
-        dados.setdefault("beneficio_descricao", "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais).")
+        dados.setdefault(
+            "beneficio_descricao",
+            "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais)."
+        )
         dados.setdefault("modalidade", "Contratacao")
         dados.setdefault("equipamento_adicional_modelo", "")
-        dados.setdefault("sva_selecionados", [])
         dados.setdefault("prazo_instalacao", "10")
         dados.setdefault("vigencia_contratual", "12")
         dados.setdefault("prazo_viabilidade", "10")
+        
+        # ✅ Garantir que sva_selecionados seja sempre uma lista válida
+        if not isinstance(dados.get("sva_selecionados"), list):
+            dados["sva_selecionados"] = []
+        
+        # ✅ Corrigir valores None que possam ter vindo
+        for campo in ["valor_promocional", "valor_sem_fidelidade", "valor_com_fidelidade",
+                      "beneficio_total", "beneficio_descricao", "modalidade",
+                      "equipamento_adicional_modelo", "valor_mensal"]:
+            if dados.get(campo) is None:
+                if campo == "beneficio_total":
+                    dados[campo] = "600,00"
+                elif campo == "beneficio_descricao":
+                    dados[campo] = "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais)."
+                elif campo == "modalidade":
+                    dados[campo] = "Contratacao"
+                elif campo == "valor_mensal":
+                    dados[campo] = extrair_valor_do_plano(dados.get("plano_escolhido", ""))
+                else:
+                    dados[campo] = "0,00"
         
         # Calcula as multas decrescentes
         dados.update(calcular_multas_decrescentes(dados["beneficio_total"]))
@@ -393,21 +498,21 @@ def gerar_pdf_termo_adesao(dados_cliente):
         template = Template(TERMO_ADESAO_TEMPLATE)
         texto = template.render(dados)
         
+        # ====================================================================
+        # ✅ DIAGNÓSTICO (opcional - remova em produção)
+        # ====================================================================
+        # import sys
+        # print(f"[DEBUG] Template: {len(TERMO_ADESAO_TEMPLATE)} chars", file=sys.stderr)
+        # print(f"[DEBUG] Renderizado: {len(texto)} chars", file=sys.stderr)
+        # problematicos = set(c for c in texto if ord(c) > 255)
+        # if problematicos:
+        #     print(f"[DEBUG] Chars não-latin1: {problematicos}", file=sys.stderr)
+        
         # Gera PDF
-        pdf = FPDF()
-        pdf.add_page()
-        
-        if os.path.exists("logo.png"):
-            pdf.image("logo.png", x=10, y=8, w=40)
-            pdf.ln(30)
-        
-        pdf.set_font("Arial", size=9)
-        for linha in texto.split("\n"):
-            linha_segura = safe_latin1_encode(linha)
-            pdf.multi_cell(0, 6, linha_segura)
-        
-        return pdf.output(dest='S').encode('latin1')
+        return _gerar_pdf_generico(texto, tamanho_fonte=9, altura_linha=6)
     
     except Exception as e:
         st.error(f"Erro ao gerar termo de adesao: {e}")
+        import traceback
+        traceback.print_exc()
         return None
