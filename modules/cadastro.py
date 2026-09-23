@@ -1,16 +1,13 @@
 """
-cadastro.py - COMPLETO ATUALIZADO (VERSÃO COM TERMO DE ADESÃO + CHECKBOX IXC)
-Correções aplicadas:
-- Obtenção correta do condominio_id_ixc antes de salvar
-- Logs detalhados para debug do condomínio
-- Integração correta com integracao_ixc.py atualizado
+cadastro.py - COMPLETO ATUALIZADO
+Versão com:
+- Termo de Adesão Unificado (7 tipos de tratativa)
+- Checkbox de integração IXC
+- Obtenção correta do condominio_id_ixc
+- Logs detalhados para debug
 - Tratamento adequado de erros
-- Botão de integração com IXC para edição/completar cadastro
-- NOVO: Termo de Adesão substituindo contrato tradicional
-- NOVO: Checkbox de fidelidade (12 meses)
-- NOVO: Multiselect de SVA (opcional)
-- NOVO: Valor mensal auto-preenchido do plano
-- NOVO: Checkbox "Integrar com IXC ao salvar" (marcado por padrão)
+- Multiselect de SVA
+- Valor mensal auto-preenchido
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -21,7 +18,14 @@ import string
 import streamlit.components.v1 as components
 from urllib.parse import quote
 from .utils import normalize_phone, validar_cpf, get_followup_date
-from .pdf_generator import gerar_pdf_contrato, gerar_pdf_comodato, gerar_pdf_termo_adesao, MODELOS_ROTEADORES, PLANOS
+from .pdf_generator import (
+    gerar_pdf_contrato,
+    gerar_pdf_comodato,
+    gerar_pdf_termo_adesao,
+    MODELOS_ROTEADORES,
+    PLANOS,
+    TIPOS_TRATATIVA
+)
 from pymongo.errors import DuplicateKeyError
 import copy
 from typing import Dict, Optional, Any
@@ -70,10 +74,7 @@ def extrair_valor_plano(plano_nome):
 # 🛡️ FUNÇÃO AUXILIAR PARA ACESSAR SESSION_STATE COM SEGURANÇA
 # ============================================================================
 def safe_session_state_get(key, default=""):
-    """
-    Obtém um valor do session_state com segurança, garantindo que seja string.
-    Evita erro de NoneType ao chamar .strip()
-    """
+    """Obtém um valor do session_state com segurança, garantindo que seja string."""
     valor = st.session_state.get(key)
     if valor is None:
         return default
@@ -81,9 +82,7 @@ def safe_session_state_get(key, default=""):
 
 
 def safe_session_state_set(key, value):
-    """
-    Define um valor no session_state com segurança, convertendo None para string vazia.
-    """
+    """Define um valor no session_state com segurança."""
     if value is None:
         st.session_state[key] = ""
     else:
@@ -91,10 +90,7 @@ def safe_session_state_set(key, value):
 
 
 def obter_dados_condominio(suffix):
-    """
-    Obtém todos os dados do condomínio do session_state.
-    Retorna um dicionário com todos os campos.
-    """
+    """Obtém todos os dados do condomínio do session_state."""
     return {
         "condominio_id": safe_session_state_get(f"condominio_id_{suffix}"),
         "condominio_nome": safe_session_state_get(f"condominio_nome_{suffix}"),
@@ -109,7 +105,7 @@ def obter_dados_condominio(suffix):
 
 
 # ============================================================================
-# 🏢 CONDOMÍNIO - Import Correto
+# 🏢 CONDOMÍNIO
 # ============================================================================
 try:
     from .condominios import get_condominio_options, get_condominio_by_id
@@ -136,7 +132,6 @@ try:
         enviar_cliente_para_ixc_com_verificacao
     )
 except ImportError:
-    # Funções dummy se módulo não existir
     def enviar_cliente_para_ixc(cliente_data):
         return False, None, "Módulo de integração IXC não disponível", None
     def registrar_pendencia_integracao(cliente_id, cliente_data, erro_msg):
@@ -162,10 +157,6 @@ except ImportError:
 # ============================================================================
 @st.cache_resource(ttl=300)
 def get_condominio_options_cached(collection):
-    """
-    Retorna opções de condomínio COM CACHE.
-    Evita queries repetidas no banco de dados.
-    """
     try:
         from .condominios import get_all_condominios
         condominios = get_all_condominios()
@@ -175,50 +166,36 @@ def get_condominio_options_cached(collection):
 
 
 # ============================================================================
-# ✅ MANUTENÇÃO DE ÍNDICES - Versão definitiva (sem erros)
+# ✅ MANUTENÇÃO DE ÍNDICES
 # ============================================================================
 def garantir_indices(clientes_collection):
-    """
-    Garante que os índices essenciais existam.
-    Foco principal: índice UNIQUE no celular (evita duplicatas).
-    """
     try:
         indices_existentes = clientes_collection.index_information()
-        
-        # 1. Índice ÚNICO do Celular (CRÍTICO - evita duplicatas)
+
         if "celular_1" not in indices_existentes:
             clientes_collection.create_index([("celular", 1)], unique=True, name="celular_1")
         elif not indices_existentes["celular_1"].get("unique", False):
-            # Recriar como único se necessário
             clientes_collection.drop_index("celular_1")
             clientes_collection.create_index([("celular", 1)], unique=True, name="celular_1")
-        
-        # 2. Índice para CPF (facilita buscas)
+
         if "cpf_1" not in indices_existentes:
             clientes_collection.create_index([("cpf", 1)], name="cpf_1")
-        
-        # 3. Índice para integração IXC
+
         if "integrado_ixc_1" not in indices_existentes:
             clientes_collection.create_index([("integrado_ixc", 1)], name="integrado_ixc_1")
-        
-        # 4. Índice para data de cadastro (ordenação)
+
         if "data_cadastro_-1" not in indices_existentes:
             clientes_collection.create_index([("data_cadastro", -1)], name="data_cadastro_-1")
-        
+
         return True
     except Exception as e:
-        # Não mostrar erro para o usuário
         return False
 
 
 # ============================================================================
-# ✅ ATUALIZAR ENDEREÇO E CEP POR CONDOMÍNIO - VERSÃO CORRIGIDA
+# ✅ ATUALIZAR ENDEREÇO E CEP POR CONDOMÍNIO
 # ============================================================================
 def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_options):
-    """
-    Atualiza o session_state com dados do condomínio selecionado.
-    Agora inclui CEP, bloco e apartamento também.
-    """
     cond_id = condominio_options.get(condominio_nome)
     if cond_id:
         cond_data = get_condominio_by_id(cond_id)
@@ -230,8 +207,7 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
             safe_session_state_set(f"cep_{suffix}", cond_data.get("cep", ""))
             safe_session_state_set(f"condominio_id_{suffix}", str(cond_id))
             safe_session_state_set(f"condominio_nome_{suffix}", condominio_nome)
-            
-            # 👇 NOVO: Salvar bloco e apartamento padrão se existirem
+
             if cond_data.get("bloco_padrao"):
                 safe_session_state_set(f"bloco_{suffix}", cond_data.get("bloco_padrao", ""))
             if cond_data.get("apartamento_padrao"):
@@ -239,34 +215,26 @@ def atualizar_endereco_por_condominio(condominio_nome, suffix, condominio_option
 
 
 # ============================================================================
-# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC - VERSÃO ATUALIZADA
+# ✅ VERIFICAR E EXIBIR CLIENTE EXISTENTE NO IXC
 # ============================================================================
 def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict, form_key: str = ""):
-    """
-    Renderiza um aviso informando que o cliente já existe no IXC.
-    Retorna 'continuar' se o usuário confirmar, 'cancelar' se não.
-    Agora com botão amarelo "Salvar Assim Mesmo" logo abaixo do checkbox.
-    """
     cpf = cliente_data.get("cpf")
     if not cpf:
         return None
-    
+
     cpf_digits = "".join(filter(str.isdigit, str(cpf)))
     if len(cpf_digits) != 11:
         return None
-    
-    # Verificar no IXC (apenas ID e dados básicos)
+
     with st.spinner("🔍 Verificando cadastro no IXC..."):
         resultado = verificar_cliente_existente_ixc(cpf_digits, config)
-    
+
     if not resultado["existe"]:
-        return None  # Cliente não existe, prosseguir normalmente
-    
-    # ========== CLIENTE EXISTE NO IXC ==========
+        return None
+
     id_ixc = resultado.get("id_ixc", "N/A")
     dados = resultado.get("dados", {})
-    
-    # Construir mensagem do aviso
+
     mensagem = f"""
 ⚠️ ATENÇÃO: Cliente já possui cadastro no IXC!
 
@@ -286,7 +254,7 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict, form_ke
         mensagem += f"\n🏠 Endereço: `{end} {num}`".strip()
     if dados.get("ativo"):
         mensagem += f"\n📅 Status: `{'✅ Ativo' if dados.get('ativo') == 'S' else '❌ Inativo'}`"
-    
+
     mensagem += """
 
 💡 O que fazer?
@@ -294,15 +262,14 @@ def render_aviso_cliente_existente_ixc(cliente_data: Dict, config: Dict, form_ke
 - Se estiverem desatualizados, atualize manualmente no IXC
 - O cadastro no CRM será salvo normalmente, vinculado ao ID existente
 - ⚠️ Nenhum dado será alterado no IXC automaticamente"""
-    
+
     st.warning(mensagem)
-    
-    # Usar checkbox para confirmação
+
     continuar = st.checkbox(
         "✅ Confirmo que verifiquei os dados e quero continuar com o cadastro",
         key=f"confirmar_ixc_existente_checkbox_{form_key}"
     )
-    
+
     if continuar:
         st.session_state["confirmar_ixc_existente"] = True
         return "continuar"
@@ -341,7 +308,6 @@ OPCOES_INTERNET = ["Selecione...", "Giga+", "Internet10", "TR Telecom", "Claro",
 
 
 def copiar_para_area_de_transferencia(texto, botao_key):
-    """Exibe um botão que copia o texto para a área de transferência usando JavaScript."""
     components.html(
         f"""
         <script>
@@ -356,14 +322,12 @@ def copiar_para_area_de_transferencia(texto, botao_key):
 
 
 def gerar_codigo_indicacao():
-    """Gera um código no formato: Trace + 6 números aleatórios + 3 letras aleatórias maiúsculas."""
     numeros = ''.join(random.choices(string.digits, k=6))
     letras = ''.join(random.choices(string.ascii_uppercase, k=3))
     return f"Trace{numeros}{letras}"
 
 
 def gerar_link_whatsapp_solicitacao(nome, celular, cpf=None):
-    """Gera um link do WhatsApp com mensagem pré-formatada para análise de cadastro."""
     cpf_texto = f"\nCPF: {cpf}" if cpf else ""
     mensagem = f"Temos um cadastro novo:\nNome: {nome}\nTelefone: {celular}{cpf_texto}"
     mensagem_codificada = quote(mensagem)
@@ -378,7 +342,6 @@ def limpar_cpf(cpf):
 
 
 def montar_endereco_completo(endereco, numero, complemento=""):
-    """Helper para montar endereço consistente."""
     partes = [p.strip() for p in [endereco, numero] if p]
     res = " - ".join(partes)
     if complemento.strip():
@@ -425,44 +388,158 @@ def render_campos_restritivos(key_suffix, valor_restritivo, cliente=None):
 
 
 def render_motivo_recusa_ativacao(key_suffix, seguiu_ativacao, cliente=None):
-    """Renderiza o campo de motivo de recusa apenas quando seguiu_ativacao == 'Não'"""
     if seguiu_ativacao == "Não":
         st.markdown("### 📊 Motivo da Recusa de Ativação")
         motivo_atual = None
         if cliente:
             motivo_atual = cliente.get("motivo_recusa_ativacao", "Selecione...")
         index_motivo = MOTIVOS_RECUSA_ATIVACAO.index(motivo_atual) if motivo_atual in MOTIVOS_RECUSA_ATIVACAO else 0
-        
+
         motivo_recusa = st.selectbox(
             "Selecione o motivo da recusa*",
             MOTIVOS_RECUSA_ATIVACAO,
             index=index_motivo,
             key=f"motivo_recusa_ativacao_{key_suffix}"
         )
-        
+
         detalhes_recusa = st.text_area(
             "Detalhes adicionais sobre a recusa (opcional)",
             value=cliente.get("detalhes_recusa_ativacao", "") if cliente else "",
             placeholder="Ex: Cliente possui 3 registros no SPC dos últimos 6 meses...",
             key=f"detalhes_recusa_ativacao_{key_suffix}"
         )
-        
+
         return motivo_recusa, detalhes_recusa
     else:
         return None, None
 
 
 # ============================================================================
+# 🆕 FUNÇÃO AUXILIAR: RENDERIZAR CAMPOS DINÂMICOS DE TRATATIVA
+# ============================================================================
+def render_campos_tratativa(key_suffix, tipo_tratativa, config_tratativa, valor_mensal, cliente=None):
+    """
+    Renderiza os campos dinâmicos do tipo de tratativa selecionado.
+    Retorna uma tupla com todos os valores.
+    """
+    cliente = cliente or {}
+
+    # 1. Desconto promocional
+    if config_tratativa["tem_desconto_promocional"]:
+        st.markdown("#### 💸 Valores Promocionais")
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            valor_promocional = st.text_input(
+                "Valor Promocional (R$)*",
+                value=cliente.get("valor_promocional", "49,90"),
+                key=f"valor_promocional_{key_suffix}"
+            )
+        with col_p2:
+            st.text_input(
+                "Valor Regular (R$)",
+                value=valor_mensal,
+                disabled=True,
+                key=f"valor_regular_display_{key_suffix}"
+            )
+    else:
+        valor_promocional = cliente.get("valor_promocional", "0,00")
+
+    # 2. Fidelidade baseada em benefício
+    if config_tratativa["multa_base"] == "beneficio":
+        st.markdown("#### 🔒 Valores de Fidelidade")
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            valor_sem_fidelidade = st.text_input(
+                "Valor SEM Fidelidade (R$)*",
+                value=cliente.get("valor_sem_fidelidade", "119,99"),
+                key=f"valor_sem_fidelidade_{key_suffix}"
+            )
+        with col_f2:
+            valor_com_fidelidade = st.text_input(
+                "Valor COM Fidelidade (R$)*",
+                value=cliente.get("valor_com_fidelidade", "89,99"),
+                key=f"valor_com_fidelidade_{key_suffix}"
+            )
+        with col_f3:
+            try:
+                v_sem = float(valor_sem_fidelidade.replace(",", "."))
+                v_com = float(valor_com_fidelidade.replace(",", "."))
+                desconto_mensal = v_sem - v_com
+                beneficio_total_calc = desconto_mensal * 12
+                beneficio_total = f"{beneficio_total_calc:.2f}".replace(".", ",")
+                desconto_mensal_str = f"{desconto_mensal:.2f}".replace(".", ",")
+            except:
+                beneficio_total = "360,00"
+                desconto_mensal_str = "30,00"
+
+            st.text_input(
+                "Benefício Total (R$)",
+                value=beneficio_total,
+                disabled=True,
+                key=f"beneficio_total_display_{key_suffix}"
+            )
+
+        beneficio_descricao = (
+            f"Desconto mensal de R$ {desconto_mensal_str} sobre o valor da oferta sem permanência "
+            f"(R$ {valor_sem_fidelidade}), passando a pagar R$ {valor_com_fidelidade} mensais durante "
+            f"o período de 12 meses. Benefício econômico total de R$ {beneficio_total}."
+        )
+    else:
+        valor_sem_fidelidade = cliente.get("valor_sem_fidelidade", "0,00")
+        valor_com_fidelidade = cliente.get("valor_com_fidelidade", valor_mensal)
+        beneficio_total = cliente.get("beneficio_total", "600,00")
+        beneficio_descricao = cliente.get(
+            "beneficio_descricao",
+            "Isenção integral da taxa de instalação, no valor de R$ 600,00 (seiscentos reais)."
+        )
+
+    # 3. Wi-Fi Adicional
+    if config_tratativa["tem_wifi_adicional"]:
+        st.markdown("#### 📶 Equipamento Wi-Fi Adicional")
+        equip_adicional_modelo = st.text_input(
+            "Modelo do Roteador Adicional*",
+            value=cliente.get("equipamento_adicional_modelo", "TP-Link Roteador Wi-Fi Gigabit Dual Band. 4 antenas"),
+            key=f"equip_adicional_modelo_{key_suffix}"
+        )
+    else:
+        equip_adicional_modelo = cliente.get("equipamento_adicional_modelo", "")
+
+    # 4. Modalidade
+    if tipo_tratativa not in ["padrao", "novo_com_desconto"]:
+        opcoes_mod = ["Upgrade / Refidelização", "Retenção / Refidelização", "Retenção / Upgrade"]
+        modalidade_atual = cliente.get("modalidade", "Upgrade / Refidelização")
+        index_mod = opcoes_mod.index(modalidade_atual) if modalidade_atual in opcoes_mod else 0
+        modalidade = st.selectbox(
+            "Modalidade*",
+            opcoes_mod,
+            index=index_mod,
+            key=f"modalidade_{key_suffix}"
+        )
+    else:
+        modalidade = cliente.get("modalidade", "Contratação")
+
+    return {
+        "valor_promocional": valor_promocional,
+        "valor_sem_fidelidade": valor_sem_fidelidade,
+        "valor_com_fidelidade": valor_com_fidelidade,
+        "beneficio_total": beneficio_total,
+        "beneficio_descricao": beneficio_descricao,
+        "modalidade": modalidade,
+        "equipamento_adicional_modelo": equip_adicional_modelo,
+    }
+
+
+    # ============================================================================
 # ✅ EXPANDER PARA VISUALIZAR/EDITAR CADASTRO COMPLETO
 # ============================================================================
 def expander_visualizar_editar(cliente, clientes_collection):
     if not cliente or not isinstance(cliente, dict):
         st.error("❌ Cliente não encontrado.")
         return
-    
+
     with st.expander("📋 Visualizar / Editar Cadastro Completo", expanded=True):
         st.success(f"Visualizando cadastro de: {cliente['nome_completo']}")
-        
+
         col_bt1, col_bt2 = st.columns(2)
         with col_bt1:
             if st.button("❌ Fechar", key="fechar_visualizar"):
@@ -479,18 +556,18 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.session_state["acao_selecionada"] = "Novo Cadastro"
                 st.session_state["form_key"] += 1
                 st.rerun()
-        
+
         # Verificação de endereço bloqueado
         endereco_atual = (cliente.get("endereco") or "").strip()
         numero_atual = (cliente.get("numero") or "").strip()
-        
+
         if endereco_atual and numero_atual:
             cliente_bloqueado = clientes_collection.find_one({
                 "endereco": endereco_atual,
                 "numero": numero_atual,
                 "endereco_bloqueado": True
             })
-            
+
             if cliente_bloqueado:
                 endereco_completo = montar_endereco_completo(endereco_atual, numero_atual, cliente.get("complemento", ""))
                 st.markdown(
@@ -513,10 +590,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     f'</div>',
                     unsafe_allow_html=True
                 )
-        
+
         if st.button("🔒 Bloquear Este Endereço", key="bloquear_endereco_visualizar"):
             st.session_state["mostrar_form_bloqueio_visualizar"] = True
-        
+
         if st.session_state.get("mostrar_form_bloqueio_visualizar", False):
             st.markdown("#### 📝 Observações de Bloqueio de Endereço:")
             observacoes_bloqueio = st.text_area(
@@ -524,7 +601,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 value=cliente.get("observacoes_bloqueio_endereco", ""),
                 key="observacoes_bloqueio_visualizar"
             )
-            
+
             col_conf, col_canc = st.columns(2)
             with col_conf:
                 if st.button("✅ Confirmar Bloqueio", key="confirmar_bloqueio_visualizar"):
@@ -536,9 +613,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         complemento_atual = cliente.get("complemento", "").strip()
                         if complemento_atual:
                             query["complemento"] = complemento_atual
-                        
+
                         endereco_completo_bloq = montar_endereco_completo(endereco_atual, numero_atual, complemento_atual)
-                        
+
                         update_data = {
                             "$set": {
                                 "endereco_bloqueado": True,
@@ -548,73 +625,73 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                 "data_bloqueio": datetime.now()
                             }
                         }
-                        
+
                         result = clientes_collection.update_many(query, update_data)
                         st.success(f"✅ Endereço '{endereco_completo_bloq}' bloqueado com sucesso! ({result.modified_count} cadastros afetados.)")
-                        
+
                         cliente["endereco_bloqueado"] = True
                         cliente["observacoes_bloqueio_endereco"] = observacoes_bloqueio.strip() if observacoes_bloqueio.strip() else None
-                        
+
                         st.session_state["mostrar_form_bloqueio_visualizar"] = False
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Erro ao bloquear endereço: {e}")
-            
+
             with col_canc:
                 if st.button("❌ Cancelar", key="cancelar_bloqueio_visualizar"):
                     st.session_state["mostrar_form_bloqueio_visualizar"] = False
                     st.rerun()
-        
+
         key_suffix = "visualizar"
-        
-        # 🏢 CONDOMÍNIO - Selectbox de Condomínio (FORA do form)
+
+        # 🏢 CONDOMÍNIO
         st.markdown("### 🏢 Localização")
         condominio_options = {"Nenhum / Não se aplica": None}
         condominio_options.update(get_condominio_options())
-        
+
         cond_id_salvo = cliente.get("condominio_id")
         cond_nome_salvo = cliente.get("condominio_nome")
-        
+
         index_cond = 0
         if cond_nome_salvo and cond_nome_salvo in condominio_options:
             index_cond = list(condominio_options.keys()).index(cond_nome_salvo)
-        
+
         condominio_select = st.selectbox(
             "Condomínio (Opcional)",
             options=list(condominio_options.keys()),
             index=index_cond,
             key=f"condominio_select_{key_suffix}"
         )
-        
+
         if condominio_select and condominio_select != "Nenhum / Não se aplica":
             if condominio_select != cond_nome_salvo:
                 atualizar_endereco_por_condominio(condominio_select, key_suffix, condominio_options)
             else:
                 safe_session_state_set(f"condominio_id_{key_suffix}", cond_id_salvo)
                 safe_session_state_set(f"condominio_nome_{key_suffix}", cond_nome_salvo)
-        
+
         with st.container(border=True):
             st.markdown("### 📌 Informações de Origem")
-            
+
             origem_opcoes = ["Selecione...", "Radio Show FM", "Opa Suite", "Whatsapp", "Instagram", "Indicação", "Loja", "Panfleto", "PaP", "Ex Cliente", "Prospecção Ativa (Zap, Email, Telegram)", "Facebook", "Site"]
             origem_atual = cliente.get("origem", "")
             index_origem = origem_opcoes.index(origem_atual) if origem_atual in origem_opcoes else 0
             origem = st.selectbox("De onde veio?", origem_opcoes, index=index_origem, key=f"origem_{key_suffix}")
-            
+
             restritivo_opcoes = ["Selecione...", "Sim", "Não"]
             restritivo_atual = cliente.get("restritivo", "")
             index_restritivo = restritivo_opcoes.index(restritivo_atual) if restritivo_atual in restritivo_opcoes else 0
             restritivo = st.selectbox("Restritivo?", restritivo_opcoes, index=index_restritivo, key=f"restritivo_{key_suffix}_fora_form")
-            
+
             qtd_registros, ano_recente, servico_internet = render_campos_restritivos(key_suffix, restritivo, cliente)
-            
+
             col_seg, col_int = st.columns([1, 1.2])
             with col_seg:
                 seguiu_ativacao_opcoes = ["Selecione...", "Sim", "Não"]
                 seguiu_ativacao_atual = cliente.get("seguiu_ativacao", "")
                 index_seguiu = seguiu_ativacao_opcoes.index(seguiu_ativacao_atual) if seguiu_ativacao_atual in seguiu_ativacao_opcoes else 0
                 seguiu_ativacao = st.selectbox("Seguiu para Ativação?", seguiu_ativacao_opcoes, index=index_seguiu, key=f"seguiu_ativacao_{key_suffix}")
-            
+
             with col_int:
                 ja_possui_internet_atual = cliente.get("ja_possui_internet", "")
                 index_internet = OPCOES_INTERNET.index(ja_possui_internet_atual) if ja_possui_internet_atual in OPCOES_INTERNET else 0
@@ -624,7 +701,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     index=index_internet,
                     key=f"ja_possui_internet_{key_suffix}"
                 )
-            
+
             st.markdown("### 🛒 Produtos de Interesse")
             produtos_interesse_atual = cliente.get("produtos_interesse", [])
             produtos_interesse = st.multiselect(
@@ -634,31 +711,31 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 key=f"produtos_interesse_{key_suffix}",
                 help="Selecione um ou mais produtos discutidos com o cliente"
             )
-            
+
             motivo_recusa, detalhes_recusa = render_motivo_recusa_ativacao(key_suffix, seguiu_ativacao, cliente)
-            
+
             codigo_indicacao_atual = cliente.get("codigo_indicacao", "")
             if codigo_indicacao_atual:
                 st.markdown(f"### 🎁 Código de Indicação: `{codigo_indicacao_atual}`")
-            
+
             st.markdown("### 📅 Follow-up")
             retorno_agendado_atual = cliente.get("retorno_agendado", "")
             cliente_ja_tem_agendamento = False
-            
-            if retorno_agendado_atual and len(retorno_agendado_atual) == 10: 
+
+            if retorno_agendado_atual and len(retorno_agendado_atual) == 10:
                 try:
                     datetime.strptime(retorno_agendado_atual, "%Y-%m-%d")
                     cliente_ja_tem_agendamento = True
                 except:
                     pass
-            
+
             if cliente_ja_tem_agendamento:
                 st.info(f"⚠️ **Cliente já possui agendamento em {retorno_agendado_atual}**. O follow-up não será alterado para não perder a agenda.")
                 followup_opcao = "Nenhum"
                 retorno_agendado = retorno_agendado_atual
             else:
                 followup_opcoes = ["Selecione...", "1 dia", "3 dias", "5 dias", "10 dias", "Personalizado (mês/ano)"]
-                
+
                 if retorno_agendado_atual:
                     if len(retorno_agendado_atual) == 7:
                         index_followup = followup_opcoes.index("Personalizado (mês/ano)")
@@ -679,14 +756,14 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         index_followup = 0
                 else:
                     index_followup = 0
-                
+
                 followup_opcao = st.selectbox("Follow-up em:", followup_opcoes, index=index_followup, key=f"followup_opcao_{key_suffix}")
-                
+
                 if followup_opcao == "Personalizado (mês/ano)":
                     dia_default = st.session_state.get(f"dias_{key_suffix}", datetime.now().day)
                     mes_default = st.session_state.get(f"mes_{key_suffix}", datetime.now().month)
                     ano_default = st.session_state.get(f"ano_{key_suffix}", datetime.now().year)
-                    
+
                     col_dia, col_mes, col_ano = st.columns(3)
                     with col_dia:
                         dia = st.selectbox("Dia", list(range(1, 32)), index=min(dia_default - 1, 30), key=f"dias_{key_suffix}")
@@ -694,13 +771,13 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         mes = st.selectbox("Mês", list(range(1, 13)), format_func=lambda x: datetime(2000, x, 1).strftime('%B'), index=mes_default - 1, key=f"mes_{key_suffix}")
                     with col_ano:
                         ano = st.selectbox("Ano", list(range(datetime.now().year, datetime.now().year + 3)), index=ano_default - datetime.now().year, key=f"ano_{key_suffix}")
-                    
+
                     retorno_agendado = get_followup_date(followup_opcao, mes, ano, dia)
                 elif followup_opcao in ["1 dia", "3 dias", "5 dias", "10 dias"]:
                     retorno_agendado = get_followup_date(followup_opcao)
                 else:
                     retorno_agendado = ""
-            
+
             st.markdown("### 📝 Observações Gerais")
             observacoes_atual = cliente.get("observacoes", "")
             observacoes = st.text_area(
@@ -709,7 +786,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 placeholder="Ex: Cliente gostou da conexão e quer mais 3 pontos na semana que vem.",
                 key=f"observacoes_{key_suffix}"
             )
-            
+
             st.markdown("### 📝 Observações de Follow-up *(exclusivo para acompanhamento)*")
             obs_followup_atual = cliente.get("observacoes_followup", "")
             obs_followup = st.text_area(
@@ -718,22 +795,19 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 placeholder="Ex: Cliente ligou hoje, está aguardando retorno do financeiro.",
                 key=f"observacoes_followup_{key_suffix}"
             )
-        
+
         # ========== 🚀 INTEGRAÇÃO IXC ==========
         st.markdown("### 🔌 Integração com IXCsoft")
-        
-        # Verificar se cliente tem dados mínimos para integração
+
         cpf_digits = "".join(filter(str.isdigit, str(cliente.get("cpf", ""))))
         dados_minimos = len(cpf_digits) >= 11 and cliente.get("endereco") and cliente.get("numero")
-        
+
         if cliente.get("integrado_ixc"):
             st.success(f"✅ Integrado ao IXC - ID: `{cliente.get('id_ixc', 'N/A')}`")
-            
-            # Mostrar se o condomínio foi vinculado
+
             if cliente.get("condominio_vinculado_ixc") is False:
                 st.warning("⚠️ O condomínio NÃO foi vinculado no IXC. Verifique manualmente.")
-            
-            # Mostrar data da integração
+
             if cliente.get("data_integracao_ixc"):
                 try:
                     data_int = cliente["data_integracao_ixc"]
@@ -742,19 +816,16 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     st.info(f"📅 Integrado em: {data_int.strftime('%d/%m/%Y %H:%M')}")
                 except:
                     pass
-            
-            # Botão para reintegrar (atualizar dados)
+
             if st.button("🔄 Reintegrar/Atualizar IXC", key=f"reintegrar_ixc_{cliente['_id']}"):
                 st.info("ℹ️ Para atualizar dados no IXC, edite o cadastro e clique em 'Atualizar Cadastro' - a reintegração automática será feita no próximo salvamento.")
-                
+
         elif cliente.get("integrado_ixc") is False:
             st.warning("⚠️ Pendente de integração com IXC")
-            
-            # Mostrar erro anterior se houver
+
             if cliente.get("erro_integracao_ixc"):
                 st.warning(f"⚠️ Último erro: {cliente['erro_integracao_ixc'][:200]}")
-            
-            # Botão para integrar
+
             col_ixc1, col_ixc2 = st.columns([1, 3])
             with col_ixc1:
                 if st.button("🚀 Integrar com IXC Agora", key=f"integrar_ixc_{cliente['_id']}", type="primary"):
@@ -763,28 +834,25 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     else:
                         with st.spinner("🔄 Integrando cliente com o IXC..."):
                             from .integracao_ixc import enviar_cliente_para_ixc_com_verificacao
-                            
+
                             resultado = enviar_cliente_para_ixc_com_verificacao(
                                 cliente,
                                 cliente["_id"],
                                 clientes_collection
                             )
-                            
+
                             if resultado["sucesso"]:
                                 st.success(f"✅ {resultado['mensagem']}")
-                                # Atualizar cliente na sessão
                                 st.session_state["cliente_selecionado"]["integrado_ixc"] = True
                                 if resultado.get("id_ixc"):
                                     st.session_state["cliente_selecionado"]["id_ixc"] = resultado["id_ixc"]
                                 st.rerun()
                             else:
                                 st.error(f"❌ {resultado['mensagem']}")
-                                # Atualizar cliente na sessão com o erro
                                 st.session_state["cliente_selecionado"]["erro_integracao_ixc"] = resultado['mensagem']
         else:
             st.info("ℹ️ Aguardando integração com IXC")
-            
-            # Botão para integrar (caso não tenha status definido)
+
             col_ixc1, col_ixc2 = st.columns([1, 3])
             with col_ixc1:
                 if st.button("🚀 Integrar com IXC", key=f"integrar_ixc_{cliente['_id']}", type="primary"):
@@ -793,13 +861,13 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     else:
                         with st.spinner("🔄 Integrando cliente com o IXC..."):
                             from .integracao_ixc import enviar_cliente_para_ixc_com_verificacao
-                            
+
                             resultado = enviar_cliente_para_ixc_com_verificacao(
                                 cliente,
                                 cliente["_id"],
                                 clientes_collection
                             )
-                            
+
                             if resultado["sucesso"]:
                                 st.success(f"✅ {resultado['mensagem']}")
                                 st.session_state["cliente_selecionado"]["integrado_ixc"] = True
@@ -809,8 +877,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             else:
                                 st.error(f"❌ {resultado['mensagem']}")
                                 st.session_state["cliente_selecionado"]["erro_integracao_ixc"] = resultado['mensagem']
-        
-        # Mostrar informações de diagnóstico
+
         if st.checkbox("🔍 Mostrar informações de diagnóstico IXC", key=f"diagnostico_ixc_{cliente['_id']}"):
             st.json({
                 "integrado_ixc": cliente.get("integrado_ixc"),
@@ -825,11 +892,11 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 "erro_integracao_ixc": cliente.get("erro_integracao_ixc"),
                 "data_integracao_ixc": str(cliente.get("data_integracao_ixc")) if cliente.get("data_integracao_ixc") else None
             })
-        
+
         with st.form("form_editar_cadastro"):
             st.markdown("### ⚙️ Informações do Sistema")
             st.text_input("Cadastrado por:", value=cliente.get("cadastrado_por", "N/A"), disabled=True, key="cadastrado_por_visualizar")
-            
+
             data_cadastro = cliente.get("data_cadastro")
             if data_cadastro:
                 if isinstance(data_cadastro, str):
@@ -848,13 +915,13 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     st.text_input("Data de cadastro:", value="Não disponível", disabled=True, key="data_cadastro_visualizar")
             else:
                 st.text_input("Data de cadastro:", value="Não disponível", disabled=True, key="data_cadastro_visualizar")
-            
+
             st.subheader("📝 Dados do Cliente")
-            
+
             col_tel1, col_tel2, col_tel3 = st.columns(3)
             with col_tel1:
                 celular = st.text_input("Celular Principal*", max_chars=15, value=cliente["celular"], key="celular_editar")
-            
+
             with col_tel2:
                 celular_contato_1 = st.text_input(
                     "Contato 1",
@@ -870,7 +937,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     placeholder="Ex: Esposa",
                     key="descricao_contato_1_editar"
                 )
-            
+
             with col_tel3:
                 celular_contato_2 = st.text_input(
                     "Contato 2",
@@ -886,15 +953,15 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     placeholder="Ex: Mãe",
                     key="descricao_contato_2_editar"
                 )
-            
+
             nome_completo = st.text_input("Nome completo*", max_chars=80, value=cliente["nome_completo"], key="nome_completo_editar")
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 cpf = st.text_input("CPF*", max_chars=14, placeholder="000.000.000-00", value=cliente.get("cpf", ""), key="cpf_editar")
             with col2:
                 rg = st.text_input("RG*", max_chars=15, placeholder="12.345.678-9", value=cliente.get("rg", ""), key="rg_editar")
-            
+
             data_nascimento_str = cliente.get("data_nascimento")
             data_nascimento = None
             if data_nascimento_str:
@@ -902,11 +969,11 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     data_nascimento = datetime.strptime(data_nascimento_str, "%Y-%m-%d").date()
                 except:
                     pass
-            
+
             data_nascimento = st.date_input("Data de nascimento*", value=data_nascimento, format="DD/MM/YYYY", key="data_nascimento_editar", min_value=datetime(1900, 1, 1))
-            
+
             email = st.text_input("Email*", max_chars=50, value=cliente.get("email", ""), key="email_editar")
-            
+
             col1, col2 = st.columns([3, 1])
             with col1:
                 endereco_valor = safe_session_state_get(f"endereco_{key_suffix}", cliente.get("endereco", ""))
@@ -923,7 +990,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     value=numero_valor if numero_valor else "",
                     key=f"numero_{key_suffix}"
                 )
-            
+
             col_bloco, col_apto = st.columns(2)
             with col_bloco:
                 bloco_valor = safe_session_state_get(f"bloco_{key_suffix}", cliente.get("bloco", ""))
@@ -931,7 +998,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
             with col_apto:
                 apto_valor = safe_session_state_get(f"apartamento_{key_suffix}", cliente.get("apartamento", ""))
                 apartamento = st.text_input("Apartamento", value=apto_valor if apto_valor else "", key=f"apartamento_{key_suffix}")
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 complemento_valor = safe_session_state_get(f"complemento_{key_suffix}", cliente.get("complemento", ""))
@@ -947,7 +1014,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     value=ponto_ref_valor if ponto_ref_valor else "",
                     key=f"ponto_referencia_{key_suffix}"
                 )
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 bairro_valor = safe_session_state_get(f"bairro_{key_suffix}", cliente.get("bairro", ""))
@@ -963,8 +1030,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     value=cidade_valor if cidade_valor else "",
                     key=f"cidade_{key_suffix}"
                 )
-            
-            # ✅ CAMPO CEP
+
             col1, col2 = st.columns(2)
             with col1:
                 cep_valor = safe_session_state_get(f"cep_{key_suffix}", cliente.get("cep", ""))
@@ -977,7 +1043,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 )
             with col2:
                 pass
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 tipo_moradia_atual = cliente.get("tipo_moradia", "")
@@ -988,12 +1054,12 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     index=index_tipo_moradia,
                     key=f"tipo_moradia_{key_suffix}"
                 )
-            
+
             with col2:
                 tempo_moradia_atual = cliente.get("tempo_moradia", {})
                 tempo_valor_atual = tempo_moradia_atual.get("valor", 0) if isinstance(tempo_moradia_atual, dict) else 0
                 tempo_unidade_atual = tempo_moradia_atual.get("unidade", "Anos") if isinstance(tempo_moradia_atual, dict) else "Anos"
-                
+
                 tempo_moradia_valor = st.selectbox(
                     "Tempo de Moradia",
                     list(range(0, 51)),
@@ -1006,14 +1072,14 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     index=0 if tempo_unidade_atual == "Anos" else 1,
                     key=f"tempo_moradia_unidade_{key_suffix}"
                 )
-            
+
             plano_atual = cliente.get("plano_escolhido")
             index_plano = (PLANOS.index(plano_atual) + 1) if plano_atual in PLANOS else 0
             plano_escolhido = st.selectbox("Plano escolhido*", ["Selecione..."] + PLANOS, index=index_plano, key="plano_escolhido_editar")
 
-            # ========== 🎬 SERVIÇOS DE VALOR ADICIONADO (SVA) ==========
+            # ========== 🎬 SVA ==========
             st.markdown("### 🎬 Serviços de Valor Adicionado (SVA)")
-            
+
             sva_selecionados = st.multiselect(
                 "Selecione os SVA inclusos no plano (opcional - para referência)",
                 options=SVA_OPCOES,
@@ -1021,14 +1087,13 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 key=f"sva_selecionados_editar",
                 help="Selecione todos os SVA que o cliente contratou. Os valores já estão embutidos no plano."
             )
-            
-            # Mostrar resumo dos SVA selecionados
+
             if sva_selecionados:
                 st.info(f"📌 **SVA selecionados:** {len(sva_selecionados)} serviço(s)")
                 for sva in sva_selecionados:
                     st.caption(f"• {sva}")
 
-            # ========== 💰 VALOR MENSAL (AUTO-PREENCHIDO) ==========
+            # ========== 💰 VALOR MENSAL ==========
             valor_mensal = st.text_input(
                 "Valor Mensal (R$)*",
                 value=extrair_valor_plano(plano_escolhido),
@@ -1037,30 +1102,65 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 help="Valor extraído automaticamente do plano selecionado"
             )
 
-            # ========== 🔒 CONTRATO DE PERMANÊNCIA (FIDELIDADE) ==========
+            # ========== 🔒 FIDELIDADE ==========
             st.markdown("### 🔒 Contrato de Permanência (Fidelidade)")
-            
+
             optou_fidelidade = st.radio(
                 "Deseja contratar com fidelidade de 12 meses?",
                 options=["Sim", "Não"],
                 index=0 if cliente.get("optou_fidelidade", True) else 1,
                 key="optou_fidelidade_editar",
-                help="Planos com fidelidade podem ter descontos especiais. A multa por rescisão antecipada é de até 30% sobre o valor das parcelas vincendas.",
+                help="Planos com fidelidade podem ter descontos especiais.",
                 horizontal=True
             )
-            
+
             if optou_fidelidade == "Sim":
                 st.success("✅ Cliente optou pela fidelidade de 12 meses")
             else:
                 st.info("ℹ️ Cliente optou por NÃO ter fidelidade")
-            
+
+            # ========== 🆕 TIPO DE TRATATIVA ==========
+            st.markdown("### 📋 Tipo de Tratativa")
+            st.caption("Selecione o tipo de termo. Campos adicionais aparecerão conforme a escolha.")
+
+            opcoes_tratativa = {k: v["label"] for k, v in TIPOS_TRATATIVA.items()}
+            tipo_atual = cliente.get("tipo_tratativa", "padrao")
+            index_tipo = list(opcoes_tratativa.keys()).index(tipo_atual) if tipo_atual in opcoes_tratativa else 0
+
+            tipo_tratativa_label = st.selectbox(
+                "Selecione o tipo de termo:",
+                options=list(opcoes_tratativa.values()),
+                index=index_tipo,
+                key="tipo_tratativa_editar"
+            )
+
+            tipo_tratativa = next(k for k, v in opcoes_tratativa.items() if v == tipo_tratativa_label)
+            config_tratativa = TIPOS_TRATATIVA[tipo_tratativa]
+
+            # Renderiza campos dinâmicos
+            campos_tratativa = render_campos_tratativa(
+                key_suffix="editar",
+                tipo_tratativa=tipo_tratativa,
+                config_tratativa=config_tratativa,
+                valor_mensal=valor_mensal,
+                cliente=cliente
+            )
+
+            valor_promocional = campos_tratativa["valor_promocional"]
+            valor_sem_fidelidade = campos_tratativa["valor_sem_fidelidade"]
+            valor_com_fidelidade = campos_tratativa["valor_com_fidelidade"]
+            beneficio_total = campos_tratativa["beneficio_total"]
+            beneficio_descricao = campos_tratativa["beneficio_descricao"]
+            modalidade = campos_tratativa["modalidade"]
+            equip_adicional_modelo = campos_tratativa["equipamento_adicional_modelo"]
+
             profissao = st.text_input("Profissão*", max_chars=50, value=cliente.get("profissao", ""), key="profissao_editar")
-            
+
             data_vencimento = st.selectbox("Melhor data de vencimento*", list(range(1, 32)), index=(int(cliente["data_vencimento"]) - 1) if cliente.get("data_vencimento") else 0, key="data_vencimento_editar")
-            
+
             codigo_indicador_atual = cliente.get("codigo_indicador", "")
             codigo_indicador = st.text_input("Código de Quem Indicou", max_chars=15, value=codigo_indicador_atual, key="codigo_indicador_editar")
-            
+
             st.subheader("📷 Foto do Documento")
             foto_documento_base64 = cliente.get("foto_documento_base64")
             if foto_documento_base64:
@@ -1068,9 +1168,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     st.image(base64.b64decode(foto_documento_base64), caption="Foto atual", width=250)
                 except Exception as e:
                     st.warning("⚠️ Não foi possível carregar a foto salva.")
-            
+
             foto_documento = st.file_uploader("Envie uma nova foto (JPG ou PNG) - Opcional", type=["jpg", "png", "jpeg"], key="foto_documento_editar")
-            
+
             st.subheader("📦 Equipamento em Comodato")
             modelo_atual = cliente.get("equipamento_modelo")
             index_modelo = MODELOS_ROTEADORES.index(modelo_atual) if modelo_atual in MODELOS_ROTEADORES else 0
@@ -1078,7 +1178,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
             equip_desc = st.text_input("Descrição do Equipamento", max_chars=50, value=cliente.get("equipamento_descricao", "Roteador Wi-Fi"), key="equip_desc_editar")
             equip_codigo = st.text_input("Informação Adicional*", max_chars=50, placeholder="Ex: Número de série", value=cliente.get("equipamento_codigo", ""), key="equip_codigo_editar")
             equip_acessorios = st.text_input("Acessórios", max_chars=100, value=cliente.get("equipamento_acessorios", "Fonte de alimentação, cabo Ethernet"), key="equip_acessorios_editar")
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 if st.session_state.get("gerando_termo_visualizar"):
@@ -1120,11 +1220,20 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                 "equipamento_acessorios": equip_acessorios,
                                 "sva_selecionados": sva_selecionados,
                                 "valor_instalacao": "0,00",
+                                # NOVOS CAMPOS DE TRATATIVA
+                                "tipo_tratativa": tipo_tratativa,
+                                "valor_promocional": valor_promocional,
+                                "valor_sem_fidelidade": valor_sem_fidelidade,
+                                "valor_com_fidelidade": valor_com_fidelidade,
+                                "beneficio_total": beneficio_total,
+                                "beneficio_descricao": beneficio_descricao,
+                                "modalidade": modalidade,
+                                "equipamento_adicional_modelo": equip_adicional_modelo,
                             }
                             st.session_state["gerando_termo_visualizar"] = True
                             st.session_state["nome_arquivo_termo_visualizar"] = f"Termo_Adesao_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
-            
+
             with col2:
                 if st.session_state.get("gerando_comodato_visualizar"):
                     st.form_submit_button("⏳ Gerando termo...", disabled=True)
@@ -1159,11 +1268,11 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             st.session_state["gerando_comodato_visualizar"] = True
                             st.session_state["nome_arquivo_comodato_visualizar"] = f"Termo_Comodato_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
-            
+
             if st.form_submit_button("📝 Gerar Mensagem de Confirmação", type="secondary"):
                 cpf_limpo = limpar_cpf(cpf) or "Não informado"
                 tempo_moradia_texto = f"{tempo_moradia_valor} {tempo_moradia_unidade.lower()}" if tempo_moradia_valor > 0 else "Não informado"
-                
+
                 campos = {
                     "Nome completo": nome_completo,
                     "Celular Principal": celular,
@@ -1186,16 +1295,16 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     "Profissão": profissao,
                     "Melhor data de vencimento": str(data_vencimento)
                 }
-                
+
                 mensagem = "Os dados abaixo estão corretos?\n"
                 for chave, valor in campos.items():
                     mensagem += f"{chave}: {valor}\n"
                 mensagem += "\nAguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposição!"
-                
+
                 st.session_state["mensagem_confirmacao_visualizar"] = mensagem
                 st.success("✅ Mensagem gerada!")
-            
-            # ========== 🔌 CHECKBOX DE INTEGRAÇÃO IXC (VISUALIZAR/EDITAR) ==========
+
+            # ========== 🔌 CHECKBOX DE INTEGRAÇÃO IXC ==========
             st.markdown("### 🔌 Integração com IXC")
             integrar_ixc_editar = st.checkbox(
                 "Integrar com IXC ao atualizar",
@@ -1206,9 +1315,9 @@ def expander_visualizar_editar(cliente, clientes_collection):
             )
             if not integrar_ixc_editar:
                 st.warning("⚠️ A atualização será salva **apenas localmente**. Nenhuma chamada ao IXC será feita.")
-            
+
             atualizar = st.form_submit_button("🔄 Atualizar Cadastro", type="primary")
-            
+
             if atualizar:
                 if not all([nome_completo, celular, plano_escolhido != "Selecione..."]):
                     st.error("⚠️ Nome, Celular e Plano são obrigatórios!")
@@ -1218,29 +1327,26 @@ def expander_visualizar_editar(cliente, clientes_collection):
                     else:
                         if seguiu_ativacao == "Sim" and not cliente_ja_tem_agendamento:
                             retorno_agendado = ""
-                        
+
                         restritivo_valor_salvar = restritivo if restritivo != "Selecione..." else ""
-                        
+
                         codigo_indicacao = cliente.get("codigo_indicacao")
                         if seguiu_ativacao == "Sim" and not codigo_indicacao:
                             codigo_indicacao = gerar_codigo_indicacao()
-                        
+
                         cpf_limpo = limpar_cpf(cpf)
-                        
-                        # ========== OBTER DADOS DO CONDOMÍNIO ==========
+
                         dados_cond = obter_dados_condominio(key_suffix)
-                        
-                        # Buscar id_ixc do condomínio se disponível
+
                         cond_id_ixc = None
                         if dados_cond.get("condominio_id"):
                             try:
                                 config_ixc = get_ixc_config()
                                 if config_ixc:
                                     cond_id_ixc = obter_id_ixc_condominio(dados_cond["condominio_id"], config_ixc)
-                                    print(f"✅ ID IXC do condomínio obtido: {cond_id_ixc}")
                             except Exception as e:
-                                print(f"⚠️ Erro ao obter id_ixc do condomínio: {e}")
-                        
+                                pass
+
                         update_data = {
                             "nome_completo": nome_completo,
                             "celular": normalize_phone(celular),
@@ -1301,15 +1407,24 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "valor_mensal": valor_mensal,
                             "optou_fidelidade": optou_fidelidade == "Sim",
                             "sva_selecionados": sva_selecionados if sva_selecionados else [],
+                            # NOVOS CAMPOS DE TRATATIVA
+                            "tipo_tratativa": tipo_tratativa,
+                            "valor_promocional": valor_promocional,
+                            "valor_sem_fidelidade": valor_sem_fidelidade,
+                            "valor_com_fidelidade": valor_com_fidelidade,
+                            "beneficio_total": beneficio_total,
+                            "beneficio_descricao": beneficio_descricao,
+                            "modalidade": modalidade,
+                            "equipamento_adicional_modelo": equip_adicional_modelo,
                         }
-                        
+
                         if foto_documento:
                             foto_bytes = foto_documento.read()
                             foto_base64 = base64.b64encode(foto_bytes).decode('utf-8')
                             update_data["foto_documento_base64"] = foto_base64
                         else:
                             update_data["foto_documento_base64"] = cliente.get("foto_documento_base64", "")
-                        
+
                         if equip_desc and equip_desc != "Roteador Wi-Fi":
                             update_data["equipamento_descricao"] = equip_desc
                         if equip_modelo and equip_modelo in MODELOS_ROTEADORES:
@@ -1318,35 +1433,30 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             update_data["equipamento_codigo"] = equip_codigo
                         if equip_acessorios and equip_acessorios != "Fonte de alimentação, cabo Ethernet":
                             update_data["equipamento_acessorios"] = equip_acessorios
-                        
+
                         try:
-                            # Atualizar no MongoDB
                             clientes_collection.update_one({"_id": cliente["_id"]}, {"$set": update_data})
                             st.success("✅ Cadastro atualizado com sucesso!")
-                            
-                            # ========== 🚀 INTEGRAÇÃO COM IXC APÓS ATUALIZAÇÃO ==========
+
                             if not integrar_ixc_editar:
-                                # 🔕 Integração desabilitada pelo usuário
                                 st.info("ℹ️ Integração com IXC desabilitada. Nenhuma sincronização foi feita.")
                             elif cliente.get("integrado_ixc") and cliente.get("id_ixc"):
                                 st.info(f"ℹ️ Cliente já integrado ao IXC (ID: {cliente.get('id_ixc')})")
                             elif cliente.get("integrado_ixc") is False or cliente.get("integrado_ixc") is None:
-                                # Verificar se cliente tem dados mínimos e tentar integrar
                                 cpf_digits_check = "".join(filter(str.isdigit, str(cpf_limpo or "")))
                                 if len(cpf_digits_check) >= 11 and update_data.get("endereco") and update_data.get("numero"):
                                     st.info("🔄 Tentando integrar com IXC automaticamente...")
                                     with st.spinner("🔄 Integrando com IXC..."):
                                         from .integracao_ixc import enviar_cliente_para_ixc_com_verificacao
-                                        
-                                        # Buscar dados atualizados do cliente
+
                                         cliente_atualizado = clientes_collection.find_one({"_id": cliente["_id"]})
-                                        
+
                                         resultado_ixc = enviar_cliente_para_ixc_com_verificacao(
                                             cliente_atualizado,
                                             cliente["_id"],
                                             clientes_collection
                                         )
-                                        
+
                                         if resultado_ixc["sucesso"]:
                                             st.success(f"✅ {resultado_ixc['mensagem']}")
                                             if resultado_ixc.get("id_ixc"):
@@ -1356,12 +1466,12 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                             st.warning(f"⚠️ {resultado_ixc['mensagem']}")
                                 else:
                                     st.info("💡 Para integrar com IXC, preencha CPF, Endereço e Número e clique em 'Integrar com IXC' no painel acima.")
-                            
+
                             st.balloons()
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Erro ao atualizar: {e}")
-        
+
         if "mensagem_confirmacao_visualizar" in st.session_state:
             st.subheader("📧 Mensagem de Confirmação Gerada:")
             st.code(st.session_state["mensagem_confirmacao_visualizar"], language="text")
@@ -1370,146 +1480,152 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.rerun()
 
 
-# ============================================================================
+                # ============================================================================
 # ✅ FUNÇÃO PRINCIPAL: render_cadastro
 # ============================================================================
 def render_cadastro(clientes_collection):
     st.session_state["clientes_collection"] = clientes_collection
-    
-    # ✅ Garantir índices essenciais (especialmente o unique do celular)
+
+    # ✅ Garantir índices essenciais
     if "indices_garantidos" not in st.session_state:
         garantir_indices(clientes_collection)
         st.session_state["indices_garantidos"] = True
-    
+
+    # Inicialização de estados
     if "mostrar_botao_novo" not in st.session_state:
         st.session_state["mostrar_botao_novo"] = False
-    
+
     if "acao_selecionada" not in st.session_state:
         st.session_state["acao_selecionada"] = "Novo Cadastro"
-    
+
     if "busca_pre_preenchida" not in st.session_state:
         st.session_state["busca_pre_preenchida"] = ""
-    
+
     if "form_key" not in st.session_state:
         st.session_state["form_key"] = 0
-    
+
     if "mostrar_completar" not in st.session_state:
         st.session_state["mostrar_completar"] = False
-    
+
     if "mostrar_visualizar" not in st.session_state:
         st.session_state["mostrar_visualizar"] = False
-    
+
     if "cliente_selecionado" not in st.session_state:
         st.session_state["cliente_selecionado"] = None
-    
+
     if "gerando_contrato_principal" not in st.session_state:
         st.session_state["gerando_contrato_principal"] = False
-    
+
     if "contrato_pronto_principal" not in st.session_state:
         st.session_state["contrato_pronto_principal"] = False
-    
+
     if "gerando_comodato_principal" not in st.session_state:
         st.session_state["gerando_comodato_principal"] = False
-    
+
     if "comodato_pronto_principal" not in st.session_state:
         st.session_state["comodato_pronto_principal"] = False
 
     if "gerando_termo_principal" not in st.session_state:
         st.session_state["gerando_termo_principal"] = False
-    
+
     if "termo_pronto_principal" not in st.session_state:
         st.session_state["termo_pronto_principal"] = False
-    
+
     if "ignorar_bloqueio" not in st.session_state:
         st.session_state["ignorar_bloqueio"] = False
-    
+
     if "endereco_bloqueado_confirmado" not in st.session_state:
         st.session_state["endereco_bloqueado_confirmado"] = {}
-    
+
     if "confirmar_ixc_existente" not in st.session_state:
         st.session_state["confirmar_ixc_existente"] = False
-    
+
+    # ================== BUSCA GLOBAL ==================
     st.markdown("### 🔍 Buscar cliente por nome, CPF ou Celular")
     busca_global = st.text_input(
         "Digite o nome, CPF ou celular do cliente",
         placeholder="Ex: Diego Roberto, 21973570259 ou (11) 98765-4321",
         key=f"busca_global_{st.session_state['form_key']}"
     )
-    
+
     if busca_global.strip():
         busca_normalizada = normalize_phone(busca_global)
         cpf_puro = re.sub(r'\D', '', busca_global)
-        
+
         query = {"$or": []}
         query["$or"].append({"nome_completo": {"$regex": busca_global, "$options": "i"}})
-        
+
         if busca_normalizada:
             query["$or"].append({"celular": busca_normalizada})
             query["$or"].append({"celular_contato_1": busca_normalizada})
             query["$or"].append({"celular_contato_2": busca_normalizada})
-        
+
         if len(cpf_puro) == 11 and cpf_puro[0] != '9':
             query["$or"].append({"cpf": cpf_puro})
-        
+
         query["$or"].append({"descricao_contato_1": {"$regex": busca_global, "$options": "i"}})
         query["$or"].append({"descricao_contato_2": {"$regex": busca_global, "$options": "i"}})
-        
+
         if query["$or"]:
             clientes_encontrados = clientes_collection.find(query)
             clientes_lista = list(clientes_encontrados)
-            
+
             if len(clientes_lista) > 0:
                 st.success(f"✅ {len(clientes_lista)} cliente(s) encontrado(s)!")
-                
+
                 for cliente in clientes_lista:
                     if not cliente or not isinstance(cliente, dict):
                         continue
-                    
+
                     with st.expander(f"📋 {cliente['nome_completo']}", expanded=False):
                         st.write(f"**Nome:** {cliente.get('nome_completo', 'N/A')}")
                         st.write(f"**CPF:** {cliente.get('cpf', 'N/A')}")
                         st.write(f"**Celular (Principal):** {cliente.get('celular', 'N/A')}")
-                        
+
                         cont1 = cliente.get('celular_contato_1')
                         desc1 = cliente.get('descricao_contato_1')
                         cont2 = cliente.get('celular_contato_2')
                         desc2 = cliente.get('descricao_contato_2')
-                        
+
                         if cont1 or cont2:
                             st.markdown("**Contatos Adicionais:**")
                             if cont1:
                                 st.write(f"• {cont1} ({desc1 or '—'})")
                             if cont2:
                                 st.write(f"• {cont2} ({desc2 or '—'})")
-                        
+
                         st.write(f"**Email:** {cliente.get('email', 'N/A')}")
                         st.write(f"**Plano:** {cliente.get('plano_escolhido', 'N/A')}")
                         st.write(f"**Tipo de Cadastro:** {cliente.get('tipo_cadastro', 'N/A').title()}")
                         st.write(f"**Status:** {cliente.get('status', 'N/A').title()}")
                         st.write(f"**Origem:** {cliente.get('origem', 'N/A')}")
                         st.write(f"**Cadastrado por:** {cliente.get('cadastrado_por', 'N/A')}")
-                        
+
+                        if cliente.get("tipo_tratativa") and cliente.get("tipo_tratativa") != "padrao":
+                            tipo_label = TIPOS_TRATATIVA.get(cliente["tipo_tratativa"], {}).get("label", cliente["tipo_tratativa"])
+                            st.info(f"📋 **Tipo de Tratativa:** {tipo_label}")
+
                         if cliente.get("condominio_nome"):
                             st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')}")
                         if cliente.get("bloco"):
                             st.write(f"**Bloco:** {cliente.get('bloco', 'N/A')}")
                         if cliente.get("apartamento"):
                             st.write(f"**Apartamento:** {cliente.get('apartamento', 'N/A')}")
-                        
+
                         produtos_interesse_cliente = cliente.get("produtos_interesse", [])
                         if produtos_interesse_cliente:
                             st.write(f"**🛒 Produtos de Interesse:** {', '.join(produtos_interesse_cliente)}")
-                        
+
                         endereco_atual = (cliente.get("endereco") or "").strip()
                         numero_atual = (cliente.get("numero") or "").strip()
-                        
+
                         if endereco_atual and numero_atual:
                             cliente_bloqueado = clientes_collection.find_one({
                                 "endereco": endereco_atual,
                                 "numero": numero_atual,
                                 "endereco_bloqueado": True
                             })
-                            
+
                             if cliente_bloqueado:
                                 endereco_completo = montar_endereco_completo(endereco_atual, numero_atual, cliente.get("complemento", ""))
                                 st.markdown(
@@ -1525,8 +1641,7 @@ def render_cadastro(clientes_collection):
                                     f'</div>',
                                     unsafe_allow_html=True
                                 )
-                        
-                        # ✅ Exibir status de integração IXC
+
                         st.markdown("---")
                         st.markdown("**🔌 Status IXC:**")
                         if cliente.get("integrado_ixc"):
@@ -1539,7 +1654,7 @@ def render_cadastro(clientes_collection):
                                 st.caption(f"Erro: {cliente['erro_integracao_ixc'][:100]}")
                         else:
                             st.info("ℹ️ Aguardando integração")
-                        
+
                         data_cadastro = cliente.get("data_cadastro")
                         if data_cadastro:
                             if isinstance(data_cadastro, str):
@@ -1553,31 +1668,31 @@ def render_cadastro(clientes_collection):
                                 st.write("**Data de Cadastro:** Não disponível")
                         else:
                             st.write("**Data de Cadastro:** Não disponível")
-                        
+
                         st.write(f"**Restritivo:** {cliente.get('restritivo', 'N/A')}")
                         if cliente.get("restritivo") == "Sim":
                             st.write(f"**Registros:** {cliente.get('restritivo_qtd_registros', 'N/A')}")
                             st.write(f"**Ano mais recente:** {cliente.get('restritivo_ano_recente', 'N/A')}")
                             st.write(f"**Serviço de internet:** {cliente.get('restritivo_servico_internet', 'N/A')}")
-                        
+
                         st.write(f"**Seguiu para Ativação:** {cliente.get('seguiu_ativacao', 'N/A')}")
                         if cliente.get("seguiu_ativacao") == "Não" and cliente.get("motivo_recusa_ativacao"):
                             st.write(f"**Motivo da Recusa:** {cliente.get('motivo_recusa_ativacao', 'N/A')}")
                             if cliente.get("detalhes_recusa_ativacao"):
                                 st.write(f"**Detalhes:** {cliente.get('detalhes_recusa_ativacao', 'N/A')}")
-                        
+
                         st.write(f"**Já Possui Internet?:** {cliente.get('ja_possui_internet', 'N/A')}")
                         st.write(f"**Código de Indicação:** {cliente.get('codigo_indicacao', 'N/A')}")
-                        
+
                         if cliente.get("retorno_agendado"):
                             st.write(f"**Retorno agendado:** {cliente['retorno_agendado']}")
-                        
+
                         if cliente.get("observacoes"):
                             st.write(f"**Observações Gerais:** {cliente['observacoes']}")
-                        
+
                         if cliente.get("observacoes_followup"):
                             st.write(f"**Observações de Follow-up:** {cliente['observacoes_followup']}")
-                        
+
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.button("📝 Ver Detalhes / Editar", key=f"ver_detalhes_{cliente['_id']}"):
@@ -1587,7 +1702,7 @@ def render_cadastro(clientes_collection):
                                 st.session_state["cliente_selecionado"] = copy.deepcopy(dict(cliente))
                                 st.session_state["mostrar_visualizar"] = True
                                 st.rerun()
-                        
+
                         with col2:
                             if cliente.get("tipo_cadastro") == "simples":
                                 if st.button("✏️ Completar Cadastro", key=f"completar_{cliente['_id']}"):
@@ -1601,24 +1716,26 @@ def render_cadastro(clientes_collection):
                                 st.write("Cadastro já completo")
             else:
                 st.warning("⚠️ Nenhum cliente encontrado.")
-    
+
     if st.button("➕ Iniciar Novo Cadastro", key="novo_cadastro_via_busca"):
         st.session_state["acao_selecionada"] = "Novo Cadastro"
         st.session_state["busca_pre_preenchida"] = ""
         st.rerun()
     else:
         st.info("🔍 Digite um nome, CPF (11 dígitos) ou celular para buscar.")
-    
+
+    # ================== EXPANDERS ==================
     if st.session_state["mostrar_completar"] and st.session_state["cliente_selecionado"]:
         try:
             from .cadastro_completo import expander_completar_cadastro
             expander_completar_cadastro(st.session_state["cliente_selecionado"], clientes_collection)
         except:
             st.info("Função de completar cadastro em desenvolvimento.")
-    
+
     if st.session_state["mostrar_visualizar"] and st.session_state["cliente_selecionado"]:
         expander_visualizar_editar(st.session_state["cliente_selecionado"], clientes_collection)
-    
+
+    # ================== AÇÃO ==================
     acao = st.radio(
         "Selecione a ação:",
         ["Novo Cadastro", "Completar Cadastro Existente"],
@@ -1626,22 +1743,23 @@ def render_cadastro(clientes_collection):
         horizontal=True,
         help="Completar: busca um cadastro simples e permite preencher os dados restantes."
     )
-    
+
+    # ================== NOVO CADASTRO ==================
     if acao == "Novo Cadastro" and not st.session_state.get("mostrar_visualizar", False) and not st.session_state.get("mostrar_completar", False):
         tipo_cadastro = st.radio("Tipo de cadastro:", ["Cadastro Simples", "Cadastro CRM"], horizontal=True)
-        
+
         st.subheader(f"📝 {tipo_cadastro}")
-        
+
         def get_valor_inicial(chave, default=""):
             valor = st.session_state.get("dados_temp_bloqueio", {}).get(chave, default)
             return valor if valor is not None else default
-        
+
         nome_completo = st.text_input(
             "Nome completo*",
             value=get_valor_inicial("nome_completo", ""),
             key=f"nome_completo_{st.session_state['form_key']}"
         )
-        
+
         col_tel1, col_tel2, col_tel3 = st.columns(3)
         with col_tel1:
             celular_principal = st.text_input(
@@ -1651,7 +1769,7 @@ def render_cadastro(clientes_collection):
                 value=get_valor_inicial("celular_principal", ""),
                 key=f"campo_celular_principal_{st.session_state['form_key']}"
             )
-        
+
         with col_tel2:
             celular_contato_1 = st.text_input(
                 "Contato 1",
@@ -1667,7 +1785,7 @@ def render_cadastro(clientes_collection):
                 value=get_valor_inicial("descricao_contato_1", ""),
                 key=f"descricao_contato_1_{st.session_state['form_key']}"
             )
-        
+
         with col_tel3:
             celular_contato_2 = st.text_input(
                 "Contato 2",
@@ -1683,7 +1801,7 @@ def render_cadastro(clientes_collection):
                 value=get_valor_inicial("descricao_contato_2", ""),
                 key=f"descricao_contato_2_{st.session_state['form_key']}"
             )
-        
+
         cpf = st.text_input(
             "CPF*",
             max_chars=14,
@@ -1691,7 +1809,7 @@ def render_cadastro(clientes_collection):
             value=get_valor_inicial("cpf", ""),
             key=f"campo_cpf_{st.session_state['form_key']}"
         ) if tipo_cadastro == "Cadastro CRM" else ""
-        
+
         restritivo = ""
         qtd_registros = ano_recente = servico_internet = None
         seguiu_ativacao = ""
@@ -1701,11 +1819,12 @@ def render_cadastro(clientes_collection):
         motivo_recusa = None
         detalhes_recusa = None
         produtos_interesse = []
-        
+
+        # ========== CADASTRO CRM: Informações adicionais ==========
         if tipo_cadastro == "Cadastro CRM":
             with st.container(border=True):
                 st.markdown("### 📌 Informações de Origem")
-                
+
                 origem_opcoes = ["Selecione...", "Radio Show FM", "Opa Suite", "Whatsapp", "Instagram", "Indicação", "Loja", "Panfleto", "PaP", "Ex Cliente", "Prospecção Ativa (Zap, Email, Telegram)", "Facebook", "Site"]
                 origem = st.selectbox(
                     "De onde veio?",
@@ -1713,7 +1832,7 @@ def render_cadastro(clientes_collection):
                     index=origem_opcoes.index(get_valor_inicial("origem", "Selecione...")) if get_valor_inicial("origem") in origem_opcoes else 0,
                     key=f"origem_novo_{st.session_state['form_key']}"
                 )
-                
+
                 st.markdown("### 📅 Follow-up")
                 col_auto, col_manual = st.columns([2, 3])
                 with col_auto:
@@ -1723,7 +1842,7 @@ def render_cadastro(clientes_collection):
                         index=["Nenhum", "1 dia", "3 dias", "5 dias", "10 dias"].index(get_valor_inicial("followup_opcao", "Nenhum")),
                         key=f"followup_auto_{st.session_state['form_key']}"
                     )
-                
+
                 with col_manual:
                     data_personalizada_str = get_valor_inicial("data_personalizada")
                     data_personalizada = datetime.strptime(data_personalizada_str, "%Y-%m-%d").date() if data_personalizada_str else None
@@ -1734,23 +1853,23 @@ def render_cadastro(clientes_collection):
                         format="DD/MM/YYYY",
                         key=f"data_followup_manual_{st.session_state['form_key']}"
                     )
-                    
+
                     if data_personalizada:
                         retorno_agendado = data_personalizada.strftime("%Y-%m-%d")
                     elif followup_opcao != "Nenhum":
                         retorno_agendado = get_followup_date(followup_opcao)
                     else:
                         retorno_agendado = ""
-                
+
                 restritivo = st.selectbox(
                     "Restritivo?",
                     ["Selecione...", "Sim", "Não"],
                     index=["Selecione...", "Sim", "Não"].index(get_valor_inicial("restritivo", "Selecione...")),
                     key=f"restritivo_novo_{st.session_state['form_key']}"
                 )
-                
+
                 qtd_registros, ano_recente, servico_internet = render_campos_restritivos("novo", restritivo)
-                
+
                 col_seg, col_int = st.columns([1, 1.2])
                 with col_seg:
                     seguiu_ativacao = st.selectbox(
@@ -1759,7 +1878,7 @@ def render_cadastro(clientes_collection):
                         index=["Selecione...", "Sim", "Não"].index(get_valor_inicial("seguiu_ativacao", "Selecione...")),
                         key=f"seguiu_ativacao_novo_{st.session_state['form_key']}"
                     )
-                
+
                 with col_int:
                     ja_possui_internet = st.selectbox(
                         "Já Possui Internet?",
@@ -1767,7 +1886,7 @@ def render_cadastro(clientes_collection):
                         index=OPCOES_INTERNET.index(get_valor_inicial("ja_possui_internet", "Selecione...")) if get_valor_inicial("ja_possui_internet") in OPCOES_INTERNET else 0,
                         key=f"ja_possui_internet_novo_{st.session_state['form_key']}"
                     )
-                
+
                 st.markdown("### 🛒 Produtos de Interesse")
                 produtos_interesse = st.multiselect(
                     "Quais produtos despertaram interesse?",
@@ -1776,16 +1895,16 @@ def render_cadastro(clientes_collection):
                     key=f"produtos_interesse_novo_{st.session_state['form_key']}",
                     help="Selecione um ou mais produtos discutidos com o cliente"
                 )
-                
+
                 motivo_recusa, detalhes_recusa = render_motivo_recusa_ativacao("novo", seguiu_ativacao)
-                
+
                 codigo_indicador = st.text_input(
                     "Código de Quem Indicou",
                     max_chars=15,
                     value=get_valor_inicial("codigo_indicador", ""),
                     key=f"codigo_indicador_novo_{st.session_state['form_key']}"
                 )
-                
+
                 st.markdown("### 📝 Observações")
                 observacoes = st.text_area(
                     "Adicione observações ou resumo sobre o cliente",
@@ -1793,7 +1912,7 @@ def render_cadastro(clientes_collection):
                     value=get_valor_inicial("observacoes", ""),
                     key=f"observacoes_novo_{st.session_state['form_key']}"
                 )
-                
+
                 st.markdown("### 📝 Observações de Follow-up *(exclusivo para acompanhamento)*")
                 observacoes_followup_simples = st.text_area(
                     " ",
@@ -1812,7 +1931,7 @@ def render_cadastro(clientes_collection):
                         index=["Nenhum", "1 dia", "3 dias", "5 dias", "10 dias"].index(get_valor_inicial("followup_opcao_simples", "Nenhum")),
                         key=f"followup_auto_simples_{st.session_state['form_key']}"
                     )
-                
+
                 with col_manual:
                     data_personalizada_simples_str = get_valor_inicial("data_personalizada_simples")
                     data_personalizada_simples = datetime.strptime(data_personalizada_simples_str, "%Y-%m-%d").date() if data_personalizada_simples_str else None
@@ -1823,14 +1942,14 @@ def render_cadastro(clientes_collection):
                         format="DD/MM/YYYY",
                         key=f"data_followup_manual_simples_{st.session_state['form_key']}"
                     )
-                    
+
                     if data_personalizada_simples:
                         retorno_agendado = data_personalizada_simples.strftime("%Y-%m-%d")
                     elif followup_opcao_simples != "Nenhum":
                         retorno_agendado = get_followup_date(followup_opcao_simples)
                     else:
                         retorno_agendado = ""
-                
+
                 st.markdown("### 🛒 Produtos de Interesse (opcional)")
                 produtos_interesse = st.multiselect(
                     "Quais produtos despertaram interesse?",
@@ -1839,67 +1958,66 @@ def render_cadastro(clientes_collection):
                     key=f"produtos_interesse_simples_{st.session_state['form_key']}",
                     help="Selecione um ou mais produtos de interesse"
                 )
-                
+
                 observacoes_followup_simples = st.text_area(
                     "Adicione observações iniciais para o follow-up",
                     placeholder="Ex: Cliente está em dúvida entre dois planos.",
                     value=get_valor_inicial("observacoes_followup_simples", ""),
                     key=f"observacoes_followup_simples_{st.session_state['form_key']}"
                 )
-            
+
             origem = "Selecione..."
             observacoes = ""
             ja_possui_internet = ""
-        
-        # 🏢 CONDOMÍNIO - Selectbox de Condomínio
+
+        # ========== CONDOMÍNIO ==========
         st.markdown("### 🏢 Localização")
         condominio_options = {"Nenhum / Não se aplica": None}
         condominio_options.update(get_condominio_options())
-        
+
         condominio_select = st.selectbox(
             "Condomínio (Opcional)",
             options=list(condominio_options.keys()),
             index=0,
             key=f"condominio_select_novo_{st.session_state['form_key']}"
         )
-        
-        # 👇 CRÍTICO: Atualizar session_state com os dados do condomínio
+
         if condominio_select and condominio_select != "Nenhum / Não se aplica":
             atualizar_endereco_por_condominio(condominio_select, st.session_state['form_key'], condominio_options)
-        
+
         endereco_para_salvar = get_valor_inicial("endereco", "").strip() if tipo_cadastro == "Cadastro CRM" else ""
         numero_para_salvar = get_valor_inicial("numero", "").strip()
-        
+
         cliente_bloqueado = None
-        
+
         if endereco_para_salvar and numero_para_salvar:
             cliente_bloqueado = clientes_collection.find_one({
                 "endereco": endereco_para_salvar,
                 "numero": numero_para_salvar,
                 "endereco_bloqueado": True
             })
-        
+
         if cliente_bloqueado and not st.session_state["ignorar_bloqueio"]:
             endereco_completo = montar_endereco_completo(endereco_para_salvar, numero_para_salvar, get_valor_inicial("complemento", ""))
-            
+
             st.markdown(
                 f'<div style="background-color:#ffe6e6; padding:8px; border-radius:6px; margin-bottom:12px; font-weight:bold; font-size:1em;">'
                 f'🚨 <strong>Endereço bloqueado:</strong><br><small>{endereco_completo}</small>'
                 f'</div>',
                 unsafe_allow_html=True
             )
-            
+
             motivo = cliente_bloqueado.get("observacoes_bloqueio_endereco", "").strip()
             if motivo:
                 st.markdown(f"<p style='background-color:#f0f0f0; padding:8px; border-radius:5px; font-size:0.9em;'><strong>📌 Motivo:</strong> {motivo}</p>", unsafe_allow_html=True)
             else:
                 st.markdown("<p style='background-color:#fff3cd; padding:8px; border-radius:5px; font-size:0.9em;'><strong>⚠️ Motivo não informado.</strong></p>", unsafe_allow_html=True)
-            
+
             clientes_com_mesmo_endereco = list(clientes_collection.find({
                 "endereco": endereco_para_salvar,
                 "numero": numero_para_salvar
             }))
-            
+
             if clientes_com_mesmo_endereco:
                 st.markdown(f"<p style='margin-top:12px;'><strong>👥 Já há {len(clientes_com_mesmo_endereco)} cadastro(s) neste endereço:</strong></p>", unsafe_allow_html=True)
                 for c in clientes_com_mesmo_endereco:
@@ -1908,7 +2026,7 @@ def render_cadastro(clientes_collection):
                     cpf_c = c.get("cpf", "")
                     tipo = c.get("tipo_cadastro", "—")
                     status = c.get("status", "—")
-                    
+
                     data_str = ""
                     data_cad = c.get("data_cadastro")
                     if data_cad:
@@ -1918,21 +2036,21 @@ def render_cadastro(clientes_collection):
                             data_str = f" • {data_cad.strftime('%d/%m/%Y %H:%M')}"
                         except:
                             pass
-                    
+
                     cpf_display = f" • CPF: {cpf_c[:3]}***{cpf_c[-2:]}" if cpf_c and len(cpf_c) == 11 else ""
-                    
+
                     badge_tipo = "Simples" if tipo == "simples" else "🟢 Completo"
                     badge_status = "Novo" if status == "novo" else "Em análise" if status == "analise" else "🟢 Convertido" if status == "convertido" else status
-                    
+
                     st.markdown(
                         f"- **{nome}** • `{celular}`{cpf_display}{data_str}<br>"
                         f"<span style='font-size:0.85em; background-color:#e0e0e0; padding:2px 6px; border-radius:4px;'>{badge_tipo}</span>  "
                         f"<span style='font-size:0.85em; background-color:#d0e0ff; padding:2px 6px; border-radius:4px;'>{badge_status}</span>",
                         unsafe_allow_html=True
                     )
-            
+
             st.markdown("<p style='margin-top:12px; font-weight:bold;'>Você deseja continuar com o cadastro mesmo assim?</p>", unsafe_allow_html=True)
-            
+
             col_conf, col_canc = st.columns(2)
             with col_conf:
                 if st.button("✅ Continuar mesmo assim", key="continuar_bloqueio_novo_fora_form"):
@@ -1942,7 +2060,7 @@ def render_cadastro(clientes_collection):
                         "numero": numero_para_salvar
                     }
                     st.rerun()
-            
+
             with col_canc:
                 if st.button("❌ Cancelar Cadastro", key="cancelar_bloqueio_novo_fora_form"):
                     st.info("Cadastro cancelado.")
@@ -1953,9 +2071,12 @@ def render_cadastro(clientes_collection):
                     if "endereco_bloqueado_confirmado" in st.session_state:
                         del st.session_state["endereco_bloqueado_confirmado"]
                     return
-            
+
             return
-        
+
+        # ==================================================================
+        # FORMULÁRIO PRINCIPAL
+        # ==================================================================
         with st.form(f"novo_cadastro_{st.session_state['form_key']}"):
             if tipo_cadastro == "Cadastro CRM":
                 col1, col2 = st.columns(2)
@@ -1967,7 +2088,7 @@ def render_cadastro(clientes_collection):
                         value=get_valor_inicial("rg", ""),
                         key=f"rg_{st.session_state['form_key']}"
                     )
-                
+
                 with col2:
                     data_nascimento = st.date_input(
                         "Data de nascimento*",
@@ -1976,13 +2097,13 @@ def render_cadastro(clientes_collection):
                         key=f"data_nascimento_{st.session_state['form_key']}",
                         min_value=datetime(1900, 1, 1)
                     )
-                
+
                 email = st.text_input(
                     "Email*",
                     value=get_valor_inicial("email", ""),
                     key=f"email_{st.session_state['form_key']}"
                 )
-                
+
                 col1, col2 = st.columns([3, 1])
                 with col1:
                     endereco_valor = safe_session_state_get(f"endereco_{st.session_state['form_key']}", get_valor_inicial("endereco", ""))
@@ -1999,23 +2120,23 @@ def render_cadastro(clientes_collection):
                         value=numero_valor if numero_valor else "",
                         key=f"numero_{st.session_state['form_key']}"
                     )
-                
+
                 col_bloco, col_apto = st.columns(2)
                 with col_bloco:
                     bloco_valor = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
                     bloco = st.text_input(
-                        "Bloco", 
+                        "Bloco",
                         value=bloco_valor if bloco_valor else "",
                         key=f"bloco_{st.session_state['form_key']}"
                     )
                 with col_apto:
                     apto_valor = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
                     apartamento = st.text_input(
-                        "Apartamento", 
+                        "Apartamento",
                         value=apto_valor if apto_valor else "",
                         key=f"apartamento_{st.session_state['form_key']}"
                     )
-                
+
                 col1, col2 = st.columns(2)
                 with col1:
                     complemento_valor = safe_session_state_get(f"complemento_{st.session_state['form_key']}", get_valor_inicial("complemento", ""))
@@ -2031,7 +2152,7 @@ def render_cadastro(clientes_collection):
                         value=ponto_ref_valor if ponto_ref_valor else "",
                         key=f"ponto_referencia_{st.session_state['form_key']}"
                     )
-                
+
                 col1, col2 = st.columns(2)
                 with col1:
                     bairro_valor = safe_session_state_get(f"bairro_{st.session_state['form_key']}", get_valor_inicial("bairro", ""))
@@ -2047,8 +2168,7 @@ def render_cadastro(clientes_collection):
                         value=cidade_valor if cidade_valor else "",
                         key=f"cidade_{st.session_state['form_key']}"
                     )
-                
-                # ✅ CAMPO CEP
+
                 col1, col2 = st.columns(2)
                 with col1:
                     cep_valor = safe_session_state_get(f"cep_{st.session_state['form_key']}", get_valor_inicial("cep", ""))
@@ -2061,7 +2181,7 @@ def render_cadastro(clientes_collection):
                     )
                 with col2:
                     pass
-                
+
                 col1, col2 = st.columns(2)
                 with col1:
                     tipo_moradia = st.selectbox(
@@ -2070,7 +2190,7 @@ def render_cadastro(clientes_collection):
                         index=0,
                         key=f"tipo_moradia_{st.session_state['form_key']}"
                     )
-                
+
                 with col2:
                     tempo_moradia_valor = st.selectbox(
                         "Tempo de Moradia",
@@ -2084,7 +2204,7 @@ def render_cadastro(clientes_collection):
                         index=0,
                         key=f"tempo_moradia_unidade_{st.session_state['form_key']}"
                     )
-                
+
                 plano_atual = get_valor_inicial("plano_escolhido", "")
                 index_plano = (PLANOS.index(plano_atual) + 1) if plano_atual in PLANOS else 0
                 plano_escolhido = st.selectbox(
@@ -2094,9 +2214,9 @@ def render_cadastro(clientes_collection):
                     key=f"plano_escolhido_{st.session_state['form_key']}"
                 )
 
-                # ========== 🎬 SERVIÇOS DE VALOR ADICIONADO (SVA) ==========
+                # ========== 🎬 SVA ==========
                 st.markdown("### 🎬 Serviços de Valor Adicionado (SVA)")
-                
+
                 sva_selecionados = st.multiselect(
                     "Selecione os SVA inclusos no plano (opcional - para referência)",
                     options=SVA_OPCOES,
@@ -2104,14 +2224,13 @@ def render_cadastro(clientes_collection):
                     key=f"sva_selecionados_{st.session_state['form_key']}",
                     help="Selecione todos os SVA que o cliente contratou. Os valores já estão embutidos no plano."
                 )
-                
-                # Mostrar resumo dos SVA selecionados
+
                 if sva_selecionados:
                     st.info(f"📌 **SVA selecionados:** {len(sva_selecionados)} serviço(s)")
                     for sva in sva_selecionados:
                         st.caption(f"• {sva}")
 
-                # ========== 💰 VALOR MENSAL (AUTO-PREENCHIDO) ==========
+                # ========== 💰 VALOR MENSAL ==========
                 valor_mensal = st.text_input(
                     "Valor Mensal (R$)*",
                     value=extrair_valor_plano(plano_escolhido),
@@ -2120,50 +2239,82 @@ def render_cadastro(clientes_collection):
                     help="Valor extraído automaticamente do plano selecionado"
                 )
 
-                # ========== 🔒 CONTRATO DE PERMANÊNCIA (FIDELIDADE) ==========
+                # ========== 🔒 FIDELIDADE ==========
                 st.markdown("### 🔒 Contrato de Permanência (Fidelidade)")
-                
+
                 optou_fidelidade = st.radio(
                     "Deseja contratar com fidelidade de 12 meses?",
                     options=["Sim", "Não"],
-                    index=0,  # "Sim" como padrão
+                    index=0,
                     key=f"optou_fidelidade_{st.session_state['form_key']}",
-                    help="Planos com fidelidade podem ter descontos especiais. A multa por rescisão antecipada é de até 30% sobre o valor das parcelas vincendas.",
+                    help="Planos com fidelidade podem ter descontos especiais.",
                     horizontal=True
                 )
-                
+
                 if optou_fidelidade == "Sim":
                     st.success("✅ Cliente optou pela fidelidade de 12 meses")
                 else:
                     st.info("ℹ️ Cliente optou por NÃO ter fidelidade")
-                
+
+                # ========== 🆕 TIPO DE TRATATIVA ==========
+                st.markdown("### 📋 Tipo de Tratativa")
+                st.caption("Selecione o tipo de termo. Campos adicionais aparecerão conforme a escolha.")
+
+                opcoes_tratativa = {k: v["label"] for k, v in TIPOS_TRATATIVA.items()}
+                tipo_tratativa_label = st.selectbox(
+                    "Selecione o tipo de termo:",
+                    options=list(opcoes_tratativa.values()),
+                    index=0,
+                    key=f"tipo_tratativa_{st.session_state['form_key']}"
+                )
+
+                tipo_tratativa = next(k for k, v in opcoes_tratativa.items() if v == tipo_tratativa_label)
+                config_tratativa = TIPOS_TRATATIVA[tipo_tratativa]
+
+                # Renderiza campos dinâmicos
+                campos_tratativa = render_campos_tratativa(
+                    key_suffix=st.session_state['form_key'],
+                    tipo_tratativa=tipo_tratativa,
+                    config_tratativa=config_tratativa,
+                    valor_mensal=valor_mensal,
+                    cliente=None
+                )
+
+                valor_promocional = campos_tratativa["valor_promocional"]
+                valor_sem_fidelidade = campos_tratativa["valor_sem_fidelidade"]
+                valor_com_fidelidade = campos_tratativa["valor_com_fidelidade"]
+                beneficio_total = campos_tratativa["beneficio_total"]
+                beneficio_descricao = campos_tratativa["beneficio_descricao"]
+                modalidade = campos_tratativa["modalidade"]
+                equip_adicional_modelo = campos_tratativa["equipamento_adicional_modelo"]
+
                 profissao = st.text_input(
                     "Profissão*",
                     value=get_valor_inicial("profissao", ""),
                     key=f"profissao_{st.session_state['form_key']}"
                 )
-                
+
                 data_vencimento = st.selectbox(
                     "Melhor data de vencimento*",
                     list(range(1, 32)),
                     index=int(get_valor_inicial("data_vencimento", 1)) - 1,
                     key=f"data_vencimento_{st.session_state['form_key']}"
                 )
-                
+
                 st.subheader("📷 Foto segurando documento com foto (RG, CNH, etc) - Opcional")
                 foto_documento = st.file_uploader(
                     "Envie a foto aqui (JPG ou PNG) - Opcional",
                     type=["jpg", "png", "jpeg"],
                     key=f"foto_documento_{st.session_state['form_key']}"
                 )
-                
+
                 st.subheader("📦 Equipamento em Comodato (opcional)")
                 equip_desc = st.text_input(
                     "Descrição do Equipamento",
                     value=get_valor_inicial("equip_desc", "Roteador Wi-Fi"),
                     key=f"equip_desc_{st.session_state['form_key']}"
                 )
-                
+
                 modelo_atual = get_valor_inicial("equip_modelo", "")
                 index_modelo = MODELOS_ROTEADORES.index(modelo_atual) if modelo_atual in MODELOS_ROTEADORES else 0
                 equip_modelo = st.selectbox(
@@ -2172,20 +2323,21 @@ def render_cadastro(clientes_collection):
                     index=index_modelo,
                     key=f"equip_modelo_{st.session_state['form_key']}"
                 )
-                
+
                 equip_codigo = st.text_input(
                     "Informação Adicional*",
                     placeholder="Ex: Número de série",
                     value=get_valor_inicial("equip_codigo", ""),
                     key=f"equip_codigo_{st.session_state['form_key']}"
                 )
-                
+
                 equip_acessorios = st.text_input(
                     "Acessórios",
                     value=get_valor_inicial("equip_acessorios", "Fonte de alimentação, cabo Ethernet"),
                     key=f"equip_acessorios_{st.session_state['form_key']}"
                 )
             else:
+                # CADASTRO SIMPLES - valores default
                 rg = email = endereco = numero = bairro = ponto_referencia = cep = ""
                 plano_escolhido = "Não informado"
                 profissao = ""
@@ -2204,13 +2356,23 @@ def render_cadastro(clientes_collection):
                 valor_mensal = "0,00"
                 optou_fidelidade = "Sim"
                 sva_selecionados = []
-                
+
+                # Defaults para tipo de tratativa em cadastro simples
+                tipo_tratativa = "padrao"
+                valor_promocional = "0,00"
+                valor_sem_fidelidade = "0,00"
+                valor_com_fidelidade = "0,00"
+                beneficio_total = "600,00"
+                beneficio_descricao = ""
+                modalidade = "Contratação"
+                equip_adicional_modelo = ""
+
                 bloco_valor = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
                 bloco = bloco_valor if bloco_valor else ""
-                
+
                 apto_valor = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
                 apartamento = apto_valor if apto_valor else ""
-            
+
             # ================== BOTÕES DE GERAÇÃO DE DOCUMENTOS ==================
             col1, col2 = st.columns(2)
             with col1:
@@ -2253,11 +2415,20 @@ def render_cadastro(clientes_collection):
                                 "equipamento_acessorios": equip_acessorios,
                                 "sva_selecionados": sva_selecionados,
                                 "valor_instalacao": "0,00",
+                                # NOVOS CAMPOS DE TRATATIVA
+                                "tipo_tratativa": tipo_tratativa,
+                                "valor_promocional": valor_promocional,
+                                "valor_sem_fidelidade": valor_sem_fidelidade,
+                                "valor_com_fidelidade": valor_com_fidelidade,
+                                "beneficio_total": beneficio_total,
+                                "beneficio_descricao": beneficio_descricao,
+                                "modalidade": modalidade,
+                                "equipamento_adicional_modelo": equip_adicional_modelo,
                             }
                             st.session_state["gerando_termo_principal"] = True
                             st.session_state["nome_arquivo_termo_principal"] = f"Termo_Adesao_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
-            
+
             with col2:
                 if st.session_state["gerando_comodato_principal"]:
                     st.form_submit_button("⏳ Gerando termo...", disabled=True)
@@ -2292,12 +2463,12 @@ def render_cadastro(clientes_collection):
                             st.session_state["gerando_comodato_principal"] = True
                             st.session_state["nome_arquivo_comodato_principal"] = f"Termo_Comodato_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
-            
+
             if st.form_submit_button("📝 Gerar Mensagem de Confirmação", type="secondary"):
                 cpf_limpo = limpar_cpf(cpf) or "Não informado"
                 tempo_moradia_texto = f"{tempo_moradia_valor} {tempo_moradia_unidade.lower()}" if tempo_moradia_valor > 0 else "Não informado"
                 produtos_texto = ", ".join(produtos_interesse) if produtos_interesse else "Nenhum"
-                
+
                 campos = {
                     "Nome completo": nome_completo,
                     "Celular Principal": celular_principal,
@@ -2321,19 +2492,17 @@ def render_cadastro(clientes_collection):
                     "Melhor data de vencimento": str(data_vencimento),
                     "Produtos de Interesse": produtos_texto
                 }
-                
+
                 mensagem = "Os dados abaixo estão corretos?\n"
                 for chave, valor in campos.items():
                     mensagem += f"{chave}: {valor}\n"
                 mensagem += "\nAguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposição!"
-                
+
                 st.session_state["mensagem_confirmacao_novo"] = mensagem
                 st.success("✅ Mensagem gerada!")
-            
-            # ==================================================================
-            # 🆕 CHECKBOX DE INTEGRAÇÃO IXC (NOVO CADASTRO)
-            # ==================================================================
-            integrar_ixc = True  # valor padrão caso não seja CRM
+
+            # ========== 🔌 CHECKBOX DE INTEGRAÇÃO IXC ==========
+            integrar_ixc = True
             if tipo_cadastro == "Cadastro CRM":
                 st.markdown("---")
                 st.markdown("### 🔌 Integração com IXC")
@@ -2346,22 +2515,18 @@ def render_cadastro(clientes_collection):
                 )
                 if not integrar_ixc:
                     st.warning("⚠️ O cadastro será salvo **apenas localmente**. Nenhuma chamada ao IXC será feita.")
-            
+
             # ==================================================================
-            # 🟡 BOTÃO DE SALVAR - VERSÃO COM COR AMARELA PARA IXC EXISTENTE
+            # VERIFICAÇÃO IXC + BOTÃO DE SALVAR
             # ==================================================================
-            # Primeiro, verificar se o cliente existe no IXC (fora do form para não travar)
             cliente_existe_ixc = False
             id_ixc_existente = None
             ixc_confirmado = False
-            
-            # Verificação do IXC - será executada quando o form for renderizado
-            # ⚠️ NOVO: só verifica se o usuário QUER integrar
+
             config = get_ixc_config()
             if tipo_cadastro == "Cadastro CRM" and cpf and config and integrar_ixc:
                 cpf_digits = "".join(filter(str.isdigit, str(cpf)))
                 if len(cpf_digits) == 11:
-                    # Usar cache para não repetir a verificação a cada rerun
                     cache_key = f"ixc_verification_{cpf_digits}"
                     if cache_key not in st.session_state:
                         with st.spinner("🔍 Verificando se cliente já existe no IXC..."):
@@ -2369,18 +2534,17 @@ def render_cadastro(clientes_collection):
                             st.session_state[cache_key] = resultado_ixc
                     else:
                         resultado_ixc = st.session_state[cache_key]
-                    
+
                     if resultado_ixc.get("existe"):
                         cliente_existe_ixc = True
                         id_ixc_existente = resultado_ixc.get("id_ixc")
-                        
-                        # Renderizar aviso e capturar resultado
+
                         acao = render_aviso_cliente_existente_ixc(
-                            {"cpf": cpf_digits}, 
-                            config, 
+                            {"cpf": cpf_digits},
+                            config,
                             str(st.session_state['form_key'])
                         )
-                        
+
                         if acao == "cancelar":
                             return
                         elif acao == "continuar":
@@ -2389,15 +2553,12 @@ def render_cadastro(clientes_collection):
                         else:
                             ixc_confirmado = False
                             st.session_state["confirmar_ixc_existente"] = False
-            
-            # Determinar qual botão mostrar
+
             mostrar_botao_especial = cliente_existe_ixc and not ixc_confirmado
-            
-            # CSS para o botão amarelo
+
             if mostrar_botao_especial:
                 st.markdown("""
                 <style>
-                /* Estilo para o botão amarelo "Salvar Assim Mesmo" */
                 div[data-testid="stFormSubmitButton"] button {
                     background-color: #FFD700 !important;
                     color: #1a1a1a !important;
@@ -2420,27 +2581,23 @@ def render_cadastro(clientes_collection):
                 }
                 </style>
                 """, unsafe_allow_html=True)
-            
-            # Criar colunas para centralizar o botão
+
             col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
             with col_btn2:
                 if mostrar_botao_especial:
-                    # 🟡 BOTÃO AMARELO ESPECIAL
                     enviado = st.form_submit_button(
-                        "🟡 Salvar Assim Mesmo", 
+                        "🟡 Salvar Assim Mesmo",
                         type="secondary",
                         use_container_width=True
                     )
-                    # Texto de aviso abaixo do botão
                     st.caption("⚠️ Cliente já existe no IXC - o cadastro será vinculado ao ID existente")
                 else:
-                    # 💾 BOTÃO NORMAL
                     enviado = st.form_submit_button(
-                        "💾 Salvar Cadastro", 
+                        "💾 Salvar Cadastro",
                         type="primary",
                         use_container_width=True
                     )
-            
+
             # ==================================================================
             # PROCESSAMENTO DO ENVIO
             # ==================================================================
@@ -2452,78 +2609,74 @@ def render_cadastro(clientes_collection):
                 elif tipo_cadastro == "Cadastro CRM" and seguiu_ativacao == "Não" and (not motivo_recusa or motivo_recusa == "Selecione..."):
                     st.error("⚠️ Quando 'Seguiu para Ativação' for 'Não', é obrigatório selecionar o motivo da recusa.")
                 else:
-                    # Obter valores do session_state com segurança
                     temp_endereco = st.session_state.get(f"endereco_{st.session_state['form_key']}")
                     endereco_salvo = temp_endereco.strip() if temp_endereco else ""
-                    
+
                     temp_numero = st.session_state.get(f"numero_{st.session_state['form_key']}")
                     numero_salvo = temp_numero.strip() if temp_numero else ""
-                    
+
                     temp_cep = st.session_state.get(f"cep_{st.session_state['form_key']}")
                     cep_salvo = temp_cep.strip() if temp_cep else ""
-                    
+
                     if endereco_salvo and numero_salvo:
                         cliente_bloqueado = clientes_collection.find_one({
                             "endereco": endereco_salvo,
                             "numero": numero_salvo,
                             "endereco_bloqueado": True
                         })
-                        
+
                         conf = st.session_state.get("endereco_bloqueado_confirmado", {})
                         confirmado = (
                             conf.get("endereco") == endereco_salvo and
                             conf.get("numero") == numero_salvo
                         )
-                        
+
                         if cliente_bloqueado and not st.session_state.get("ignorar_bloqueio", False) and not confirmado:
                             temp_complemento = st.session_state.get(f"complemento_{st.session_state['form_key']}")
                             complemento_valor = temp_complemento.strip() if temp_complemento else ""
-                            
+
                             endereco_completo = montar_endereco_completo(endereco_salvo, numero_salvo, complemento_valor)
                             motivo = cliente_bloqueado.get("observacoes_bloqueio_endereco", "Não informado")
-                            
+
                             st.error("❌ Este endereço está bloqueado! Por favor, clique em 'Continuar mesmo assim' para prosseguir.")
                             st.info(f"📌 {endereco_completo}\nMotivo: {motivo}")
                             return
-                    
+
                     if seguiu_ativacao == "Sim":
                         retorno_agendado = ""
-                    
+
                     codigo_indicacao = None
                     if seguiu_ativacao == "Sim":
                         codigo_indicacao = gerar_codigo_indicacao()
-                    
+
                     foto_base64 = ""
                     if foto_documento:
                         foto_bytes = foto_documento.read()
                         foto_base64 = base64.b64encode(foto_bytes).decode('utf-8')
-                    
+
                     tipo = "simples" if tipo_cadastro == "Cadastro Simples" else "completo"
-                    
+
                     celular_normalizado = normalize_phone(celular_principal)
-                    
+
                     nome_atendente = st.session_state.get("nome_usuario", "Desconhecido")
                     cadastrado_por = nome_atendente
-                    
+
                     cpf_limpo = limpar_cpf(cpf)
-                    
-                    # Obter valores adicionais com segurança
+
                     temp_complemento = st.session_state.get(f"complemento_{st.session_state['form_key']}")
                     complemento_salvo = temp_complemento.strip() if temp_complemento else ""
-                    
+
                     temp_cidade = st.session_state.get(f"cidade_{st.session_state['form_key']}")
                     cidade_salvo = temp_cidade.strip() if temp_cidade else ""
-                    
+
                     temp_bairro = st.session_state.get(f"bairro_{st.session_state['form_key']}")
                     bairro_salvo = temp_bairro.strip() if temp_bairro else ""
-                    
+
                     temp_ponto_ref = st.session_state.get(f"ponto_referencia_{st.session_state['form_key']}")
                     ponto_ref_salvo = temp_ponto_ref.strip() if temp_ponto_ref else ""
-                    
-                    # ========== 👇 CRÍTICO: OBTER DADOS DO CONDOMÍNIO CORRETAMENTE ==========
+
                     dados_cond = obter_dados_condominio(st.session_state['form_key'])
-                    
-                    # 🔑 Buscar o id_ixc do condomínio se disponível
+
                     cond_id_ixc = None
                     if dados_cond.get("condominio_id"):
                         try:
@@ -2533,8 +2686,7 @@ def render_cadastro(clientes_collection):
                                 print(f"✅ ID IXC do condomínio obtido: {cond_id_ixc}")
                         except Exception as e:
                             print(f"⚠️ Erro ao obter id_ixc do condomínio: {e}")
-                    
-                    # 🔑 Log para debug
+
                     print(f"\n{'='*70}")
                     print(f"🔍 DEBUG - Dados do condomínio salvos:")
                     print(f"   condominio_id: {dados_cond['condominio_id']}")
@@ -2543,7 +2695,7 @@ def render_cadastro(clientes_collection):
                     print(f"   bloco: {dados_cond['bloco']}")
                     print(f"   apartamento: {dados_cond['apartamento']}")
                     print(f"{'='*70}\n")
-                    
+
                     cliente_data = {
                         "nome_completo": nome_completo,
                         "celular": celular_normalizado,
@@ -2592,33 +2744,37 @@ def render_cadastro(clientes_collection):
                         "codigo_indicador": safe_strip_codigo_indicador(codigo_indicador),
                         "endereco_bloqueado": False,
                         "observacoes_bloqueio_endereco": None,
-                        # 👇 CRÍTICO: USAR OS DADOS OBTIDOS DA FUNÇÃO
                         "condominio_id": dados_cond["condominio_id"],
                         "condominio_nome": dados_cond["condominio_nome"],
-                        "condominio_id_ixc": cond_id_ixc,  # ID do IXC para integração
+                        "condominio_id_ixc": cond_id_ixc,
                         "bloco": dados_cond["bloco"] if dados_cond["bloco"] else None,
                         "apartamento": dados_cond["apartamento"] if dados_cond["apartamento"] else None,
                         "produtos_interesse": produtos_interesse if produtos_interesse else [],
                         "integrado_ixc": False,
-                        "integracao_ixc_habilitada": integrar_ixc,  # 🆕 NOVO
+                        "integracao_ixc_habilitada": integrar_ixc,
                         "tentativas_integracao": 0,
-                        # NOVOS CAMPOS
                         "valor_mensal": valor_mensal if tipo_cadastro == "Cadastro CRM" else "0,00",
                         "optou_fidelidade": optou_fidelidade == "Sim" if tipo_cadastro == "Cadastro CRM" else False,
                         "sva_selecionados": sva_selecionados if tipo_cadastro == "Cadastro CRM" else [],
+                        # NOVOS CAMPOS DE TRATATIVA
+                        "tipo_tratativa": tipo_tratativa if tipo_cadastro == "Cadastro CRM" else "padrao",
+                        "valor_promocional": valor_promocional if tipo_cadastro == "Cadastro CRM" else "0,00",
+                        "valor_sem_fidelidade": valor_sem_fidelidade if tipo_cadastro == "Cadastro CRM" else "0,00",
+                        "valor_com_fidelidade": valor_com_fidelidade if tipo_cadastro == "Cadastro CRM" else "0,00",
+                        "beneficio_total": beneficio_total if tipo_cadastro == "Cadastro CRM" else "600,00",
+                        "beneficio_descricao": beneficio_descricao if tipo_cadastro == "Cadastro CRM" else "",
+                        "modalidade": modalidade if tipo_cadastro == "Cadastro CRM" else "Contratação",
+                        "equipamento_adicional_modelo": equip_adicional_modelo if tipo_cadastro == "Cadastro CRM" else "",
                     }
-                    
-                    # ========== 🚀 SALVAR NO MONGODB ==========
+
                     try:
                         result = clientes_collection.insert_one(cliente_data)
                         st.success(f"✅ {tipo_cadastro} salvo com sucesso!")
                         st.balloons()
                         st.session_state["mostrar_botao_novo"] = True
-                        
-                        # ========== 🚀 INTEGRAÇÃO COM IXC ==========
+
                         if tipo_cadastro == "Cadastro CRM":
                             if not integrar_ixc:
-                                # 🔕 Integração desabilitada pelo usuário
                                 clientes_collection.update_one(
                                     {"_id": result.inserted_id},
                                     {"$set": {
@@ -2631,7 +2787,6 @@ def render_cadastro(clientes_collection):
                             else:
                                 try:
                                     if cliente_existe_ixc and id_ixc_existente:
-                                        # Cliente já existe no IXC - apenas vincular
                                         update_fields = {
                                             "integrado_ixc": True,
                                             "data_integracao_ixc": datetime.now(),
@@ -2644,9 +2799,8 @@ def render_cadastro(clientes_collection):
                                         st.info(f"ℹ️ Cliente já existia no IXC (ID: {id_ixc_existente}). Nenhum dado foi alterado no IXC.")
                                         st.success("✅ Cliente vinculado ao IXC com sucesso!")
                                     else:
-                                        # Tentar criar no IXC
                                         sucesso_ixc, id_ixc, erro_ixc, condominio_vinculado = enviar_cliente_para_ixc(cliente_data)
-                                        
+
                                         if sucesso_ixc:
                                             update_fields = {
                                                 "integrado_ixc": True,
@@ -2654,20 +2808,15 @@ def render_cadastro(clientes_collection):
                                             }
                                             if id_ixc and id_ixc not in ["ok", "existente"]:
                                                 update_fields["id_ixc"] = id_ixc
-                                            
-                                            # Registra no Mongo se o condomínio não pôde ser
-                                            # vinculado no IXC, para dar pra filtrar/corrigir depois
+
                                             if condominio_vinculado is False:
                                                 update_fields["condominio_vinculado_ixc"] = False
-                                            
+
                                             clientes_collection.update_one(
                                                 {"_id": result.inserted_id},
                                                 {"$set": update_fields}
                                             )
-                                            
-                                            # 👇 CRÍTICO: o cliente pode ter sido criado no IXC com
-                                            # sucesso, mas SEM o condomínio vinculado. Isso não pode
-                                            # mais passar em silêncio — avisa quem está cadastrando.
+
                                             if condominio_vinculado is False:
                                                 st.success("✅ Cliente integrado ao IXCsoft com sucesso!")
                                                 st.warning(
@@ -2685,11 +2834,8 @@ def render_cadastro(clientes_collection):
                                 except Exception as e:
                                     st.warning(f"⚠️ Erro na integração com IXC (cadastro salvo localmente): {str(e)[:100]}")
                         else:
-                            # Cadastro Simples - não integra com IXC
                             st.info("💡 Cadastro simples salvo. Para integrar com o IXC, complete o cadastro usando a opção 'Completar Cadastro Existente'.")
-                        
-                        # ========== FIM DA INTEGRAÇÃO ==========
-                        
+
                         if "ignorar_bloqueio" in st.session_state:
                             del st.session_state["ignorar_bloqueio"]
                         if "endereco_bloqueado_confirmado" in st.session_state:
@@ -2698,18 +2844,17 @@ def render_cadastro(clientes_collection):
                             del st.session_state["dados_temp_bloqueio"]
                         if "confirmar_ixc_existente" in st.session_state:
                             st.session_state["confirmar_ixc_existente"] = False
-                        
-                        # Limpar cache do IXC
+
                         if cpf:
                             cpf_digits_clean = "".join(filter(str.isdigit, str(cpf)))
                             cache_key = f"ixc_verification_{cpf_digits_clean}"
                             if cache_key in st.session_state:
                                 del st.session_state[cache_key]
-                        
+
                         if codigo_indicacao:
                             st.markdown(f"### 🎁 Código de Indicação: `{codigo_indicacao}`")
                             copiar_para_area_de_transferencia(codigo_indicacao, f"copy_{result.inserted_id}")
-                        
+
                         if tipo_cadastro == "Cadastro CRM":
                             link_whatsapp = gerar_link_whatsapp_solicitacao(
                                 nome_completo,
@@ -2723,48 +2868,50 @@ def render_cadastro(clientes_collection):
                                 f'📲 Solicitar Análise</a>',
                                 unsafe_allow_html=True
                             )
-                        
+
                         if "mensagem_confirmacao_novo" in st.session_state:
                             del st.session_state["mensagem_confirmacao_novo"]
-                    
+
                     except DuplicateKeyError:
                         st.error("❌ Celular já cadastrado no sistema!")
                         st.info("💡 Use a busca global para encontrar e atualizar o cadastro existente.")
-                    
+
                     except Exception as e:
                         st.error(f"❌ Erro inesperado ao salvar: {str(e)}")
-    
+
+    # ================== MENSAGEM DE CONFIRMAÇÃO ==================
     if "mensagem_confirmacao_novo" in st.session_state:
         st.subheader("📧 Mensagem de Confirmação Gerada:")
         st.code(st.session_state["mensagem_confirmacao_novo"], language="text")
         if st.button("🗑️ Limpar Mensagem", key="limpar_msg_novo"):
             del st.session_state["mensagem_confirmacao_novo"]
             st.rerun()
-    
+
+    # ================== COMPLETAR CADASTRO ==================
     elif acao == "Completar Cadastro Existente":
         st.info("🔍 Busque um cadastro simples para completar os dados.")
         busca = st.text_input("Digite o nome ou telefone do cliente", placeholder="Ex: Ana Silva ou (11) 98765-4321", value=st.session_state["busca_pre_preenchida"], key=f"busca_completar_{st.session_state['form_key']}")
-        
+
         if st.session_state["busca_pre_preenchida"]:
             st.session_state["busca_pre_preenchida"] = ""
-        
+
         if busca:
             busca_normalizada = normalize_phone(busca)
-            
+
             query_conditions = [{"nome_completo": {"$regex": busca, "$options": "i"}}]
-            
+
             if busca_normalizada:
                 query_conditions.append({"celular": busca_normalizada})
                 query_conditions.append({"celular_contato_1": busca_normalizada})
                 query_conditions.append({"celular_contato_2": busca_normalizada})
                 query_conditions.append({"descricao_contato_1": {"$regex": busca, "$options": "i"}})
                 query_conditions.append({"descricao_contato_2": {"$regex": busca, "$options": "i"}})
-            
+
             cliente = clientes_collection.find_one({"$or": query_conditions})
-            
+
             if cliente:
                 st.success(f"✅ Encontrado: {cliente['nome_completo']} - {cliente['celular']}")
-                
+
                 if cliente.get("tipo_cadastro") == "simples":
                     if st.button("✏️ Abrir Formulário para Completar", key="abrir_completar_radio"):
                         st.session_state["cliente_selecionado"] = copy.deepcopy(dict(cliente))
@@ -2774,35 +2921,34 @@ def render_cadastro(clientes_collection):
                     st.info("ℹ️ Este cadastro já está completo.")
             else:
                 st.warning("⚠️ Nenhum cliente encontrado com esse nome ou telefone.")
-    
-    # Gerar PDFs - ADICIONAR O TERMO DE ADESÃO
+
+    # ================== GERAÇÃO DE PDFs ==================
     for tipo in ["contrato", "comodato", "termo"]:
         for contexto in ["principal", "visualizar", "completar"]:
             estado_gerando = f"gerando_{tipo}_{contexto}"
             dados_temp = f"dados_temp_{tipo}_{contexto}"
             nome_arquivo = f"nome_arquivo_{tipo}_{contexto}"
-            
+
             if st.session_state.get(estado_gerando) and dados_temp in st.session_state:
                 with st.spinner(f"📝 Gerando seu documento..."):
-                    # Função correta para cada tipo
                     if tipo == "contrato":
                         func_gerar = gerar_pdf_contrato
                     elif tipo == "termo":
                         func_gerar = gerar_pdf_termo_adesao
                     else:
                         func_gerar = gerar_pdf_comodato
-                    
+
                     pdf_bytes = func_gerar(st.session_state[dados_temp])
-                    
+
                     if pdf_bytes:
                         st.session_state[f"{tipo}_pdf_bytes"] = pdf_bytes
                         st.session_state[f"{tipo}_nome"] = st.session_state[nome_arquivo]
                         st.session_state[f"{tipo}_pronto_{contexto}"] = True
-                        
+
                         del st.session_state[estado_gerando]
                         del st.session_state[dados_temp]
                         del st.session_state[nome_arquivo]
-                        
+
                         st.rerun()
                     else:
                         st.error(f"❌ Falha ao gerar o documento.")
@@ -2812,8 +2958,8 @@ def render_cadastro(clientes_collection):
                             del st.session_state[dados_temp]
                         if nome_arquivo in st.session_state:
                             del st.session_state[nome_arquivo]
-    
-    # Download do Termo de Adesão
+
+    # ================== DOWNLOADS ==================
     if "termo_pdf_bytes" in st.session_state and "termo_nome" in st.session_state:
         st.download_button(
             label="📄 Baixar Termo de Adesão",
@@ -2822,14 +2968,14 @@ def render_cadastro(clientes_collection):
             mime="application/pdf",
             key="download_termo_global_unica_key"
         )
-        
+
         if st.button("🗑️ Limpar Termo", key="limpar_termo_global"):
             del st.session_state["termo_pdf_bytes"]
             del st.session_state["termo_nome"]
             for key in ["termo_pronto_principal", "termo_pronto_visualizar", "termo_pronto_completar"]:
                 if key in st.session_state:
                     del st.session_state[key]
-    
+
     if "contrato_pdf_bytes" in st.session_state and "contrato_nome" in st.session_state:
         st.download_button(
             label="📥 Baixar Contrato Gerado",
@@ -2838,14 +2984,14 @@ def render_cadastro(clientes_collection):
             mime="application/pdf",
             key="download_contrato_global_unica_key"
         )
-        
+
         if st.button("🗑️ Limpar Contrato", key="limpar_contrato_global"):
             del st.session_state["contrato_pdf_bytes"]
             del st.session_state["contrato_nome"]
             for key in ["contrato_pronto_principal", "contrato_pronto_visualizar", "contrato_pronto_completar"]:
                 if key in st.session_state:
                     del st.session_state[key]
-    
+
     if "comodato_pdf_bytes" in st.session_state and "comodato_nome" in st.session_state:
         st.download_button(
             label="📥 Baixar Termo de Comodato",
@@ -2854,14 +3000,17 @@ def render_cadastro(clientes_collection):
             mime="application/pdf",
             key="download_comodato_global_unica_key"
         )
-        
+
         if st.button("🗑️ Limpar Termo", key="limpar_comodato_global"):
             del st.session_state["comodato_pdf_bytes"]
             del st.session_state["comodato_nome"]
             for key in ["comodato_pronto_principal", "comodato_pronto_visualizar", "comodato_pronto_completar"]:
                 if key in st.session_state:
                     del st.session_state[key]
-    
+
+
+
+                        # ================== BOTÃO NOVO CADASTRO ==================
     if st.session_state.get("mostrar_botao_novo", False):
         if st.button("🔄 Novo Cadastro", key="btn_novo_cadastro_global"):
             keys_to_clear = [
@@ -2896,28 +3045,32 @@ def render_cadastro(clientes_collection):
                 "dados_temp_termo_completar", "nome_arquivo_termo_completar",
                 "dados_temp_bloqueio", "ignorar_bloqueio", "endereco_bloqueado_confirmado",
                 "confirmar_ixc_existente",
-                "integrar_ixc_editar_checkbox"  # 🆕 Limpar o checkbox de edição
+                "integrar_ixc_editar_checkbox"
             ]
-            
-            # Limpar também os caches do IXC
+
+            # Limpar caches do IXC
             ixc_cache_keys = [k for k in st.session_state.keys() if k.startswith("ixc_verification_")]
             for key in ixc_cache_keys:
                 del st.session_state[key]
-            
-            # Limpar também os checkboxes de integração IXC (eles têm o form_key no nome)
+
+            # Limpar checkboxes de integração IXC
             integrar_keys = [k for k in st.session_state.keys() if k.startswith("integrar_ixc_novo_")]
             for key in integrar_keys:
                 del st.session_state[key]
-            
+
             suffixes = ["", "_completar", "_dialog", "_editar", "_visualizar", "_principal"]
             for base_key in keys_to_clear:
                 for suffix in suffixes:
                     key = f"{base_key}{suffix}"
                     if key in st.session_state:
                         del st.session_state[key]
-            
+
             st.session_state["form_key"] += 1
             st.session_state["mostrar_botao_novo"] = False
             st.session_state["acao_selecionada"] = "Novo Cadastro"
             st.session_state["busca_pre_preenchida"] = ""
             st.rerun()
+
+
+
+            
