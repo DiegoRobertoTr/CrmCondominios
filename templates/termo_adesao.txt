@@ -1,187 +1,180 @@
-TERMO DE ADESAO - CONTRATO DE PRESTACAO DE SERVICOS DE COMUNICACAO MULTIMIDIA - SCM E SERVICOS DE VALOR ADICIONADO - SVA
+TERMO DE ADESÃO - CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE COMUNICAÇÃO MULTIMÍDIA - SCM E SERVIÇOS DE VALOR ADICIONADO - SVA
 
-As partes abaixo mencionadas, especialmente o CONTRATANTE, tiveram total acesso ao CONTRATO DE PRESTACAO DE SCM e ao CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, disponibilizados no site da CONTRATADA ({{ site_empresa }}), CONCORDANDO ambas as partes com todos os termos desses contratos.
+As partes abaixo mencionadas, especialmente o CONTRATANTE, tiveram total acesso ao CONTRATO DE PRESTAÇÃO DE SCM - SERVIÇOS DE COMUNICAÇÃO MULTIMÍDIA e ao CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, que estão disponibilizados no site da CONTRATADA ({{ site_empresa }}), CONCORDANDO ambas as partes com todos os termos desses contratos, suas cláusulas e condições.
 
-=====================================================================================
-1. QUALIFICACAO DAS PARTES
-=====================================================================================
+================================================================================
+                              1. QUALIFICAÇÃO DAS PARTES
+================================================================================
 
 CONTRATADA:
-Razao Social: {{ razao_social }}
+Razão Social: {{ razao_social }}
 CNPJ: {{ cnpj_empresa }}
-Endereco: {{ endereco_empresa }}, {{ numero_empresa }} - {{ bairro_empresa }}
+Endereço: {{ endereco_empresa }}, {{ numero_empresa }} - {{ bairro_empresa }}
 Cidade: {{ cidade_empresa }} - {{ estado_empresa }} | CEP: {{ cep_empresa }}
 Telefone: {{ telefone_empresa }} | E-mail: {{ email_empresa }}
 Site: {{ site_empresa }}
-Autorizacao ANATEL: {{ anatel_autorizacao }}
+Autorização ANATEL: {{ anatel_autorizacao }}
 
 CONTRATANTE:
 Nome: {{ nome_completo }}
 CPF: {{ cpf }}
-RG: {{ rg }}
-Data de Nascimento: {{ data_nascimento }}
+RG: {{ rg or 'Não informado' }}
+Data de Nascimento: {{ data_nascimento or 'Não informado' }}
 Telefone: {{ celular }}
-E-mail: {{ email }}
+E-mail: {{ email or 'Não informado' }}
 
-ENDERECO DE INSTALACAO:
+ENDEREÇO DE INSTALAÇÃO:
 {{ endereco }}, {{ numero }}
 {% if complemento %}Complemento: {{ complemento }}{% endif %}
-{% if condominio_nome %}Condominio: {{ condominio_nome }}{% endif %}
+{% if condominio_nome %}Condomínio: {{ condominio_nome }}{% endif %}
 {% if bloco %}Bloco: {{ bloco }}{% endif %}
 {% if apartamento %}Apartamento: {{ apartamento }}{% endif %}
 Bairro: {{ bairro }} | Cidade: {{ cidade }}
-CEP: {{ cep }}
-{% if ponto_referencia %}Ponto de Referencia: {{ ponto_referencia }}{% endif %}
+CEP: {{ cep or 'Não informado' }}
+Ponto de Referência: {{ ponto_referencia or 'Não informado' }}
 
-=====================================================================================
-{{ tipo_tratativa_secao2_titulo }}
-=====================================================================================
+================================================================================
+                              2. DO OBJETO E PLANO CONTRATADO
+================================================================================
 
-{{ tipo_tratativa_secao2_texto }}
+O presente contrato tem como objeto a prestação, pela CONTRATADA, do Serviço de Comunicação Multimídia (SCM) - Internet, conforme plano detalhado abaixo:
 
-PLANO CONTRATADO: {{ plano_escolhido }}
+PLANO CONTRATADO:
+{{ plano_escolhido }}
 
-CARACTERISTICAS TECNICAS:
-- Tecnologia: {{ tecnologia }}
-- Prazo para Instalacao: {{ prazo_instalacao }} dias uteis
-- Vigencia Contratual: {{ vigencia_contratual }} meses
-{% if modalidade %}- Modalidade: {{ modalidade }}{% endif %}
+CARACTERÍSTICAS TÉCNICAS:
+- Tecnologia: {{ tecnologia or 'Fibra Óptica' }}
+- Prazo para Instalação: {{ prazo_instalacao or '10' }} dias úteis
+- Vigência Contratual: {{ vigencia_contratual or '12' }} meses
 
-{% if tem_desconto_promocional %}
-VALORES PROMOCIONAIS:
-- Valor Promocional (1o ao 3o mes): R$ {{ valor_promocional }}
-- Valor Regular apos promocao: R$ {{ valor_mensal }}
-{% endif %}
+================================================================================
+                              3. VALORES E CONDIÇÕES DE PAGAMENTO
+================================================================================
 
-=====================================================================================
-3. VALORES E CONDICOES DE PAGAMENTO
-=====================================================================================
++-----------------------------------------------------------+------------------+
+| DESCRICAO                                                 | VALOR (R$)       |
++-----------------------------------------------------------+------------------+
+| Mensalidade                                               | {{ valor_mensal }}|
+| Taxa de Instalacao                                        | {{ valor_instalacao or '600,00' }} |
+| Vencimento                                                | Dia {{ data_vencimento }} de cada mes |
+| Forma de Pagamento                                        | {{ forma_pagamento or 'Boleto Bancario' }} |
++-----------------------------------------------------------+------------------+
+| JUROS E MULTAS:                                           |                  |
+| Juros Moratorios                                          | 1% ao mes        |
+| Multa por Atraso                                          | 2%               |
+| Reajuste Anual                                            | {{ indice_correcao or 'IPCA' }} |
++-----------------------------------------------------------+------------------+
 
-| DESCRICAO              | VALOR (R$)        |
-| Mensalidade            | {{ valor_mensal }} |
-| Taxa de Instalacao     | {{ valor_instalacao }} |
-| Vencimento             | Dia {{ data_vencimento }} de cada mes |
-| Forma de Pagamento     | {{ forma_pagamento }} |
+================================================================================
+                              4. SERVICOS DE VALOR ADICIONADO (SVA)
+================================================================================
 
-JUROS E MULTAS:
-| Juros Moratorios        | 1% ao mes |
-| Multa por Atraso        | 2% |
-| Reajuste Anual          | {{ indice_correcao }} |
+O CONTRATANTE declara ciência de que Serviços de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
 
-{% if sva_selecionados %}
-=====================================================================================
-4. SERVICOS DE VALOR ADICIONADO (SVA)
-=====================================================================================
+Todos os detalhes, regras e condições dos SVA estão disponíveis no CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, disponível no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
 
-O CONTRATANTE declara ciencia de que os seguintes Servicos de Valor Adicionado (SVA) estao inclusos no plano contratado:
-
-{% for sva in sva_selecionados %}
-  - {{ sva }}
-{% endfor %}
-
-Todos os detalhes, regras e condicoes dos SVA estao disponiveis no CONTRATO DE PRESTACAO DE SERVICOS DE VALOR ADICIONADO - SVA, disponivel no site da CONTRATADA.
-{% endif %}
-
-=====================================================================================
-5. EQUIPAMENTOS EM COMODATO
-=====================================================================================
+================================================================================
+                              5. EQUIPAMENTOS EM COMODATO
+================================================================================
 
 A CONTRATADA disponibiliza ao CONTRATANTE, em regime de comodato, o(s) seguinte(s) equipamento(s):
 
-Equipamento: {{ equipamento_descricao }}
+Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
 Modelo: {{ equipamento_modelo }}
-Acessorios: {{ equipamento_acessorios }}
-{% if equipamento_adicional_modelo %}
-Equipamento Adicional: {{ equipamento_adicional_modelo }}
-{% endif %}
+Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação, cabo Ethernet' }}
 
-O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolve-lo(s) no final do contrato nas condicoes em que lhe foram entregues, salvo desgaste natural.
+O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolvê-lo(s) no final do contrato nas condições em que lhe foram entregues, salvo desgaste natural.
 
-=====================================================================================
-6. CONTRATO DE PERMANENCIA / FIDELIDADE
-=====================================================================================
+================================================================================
+                              6. CONTRATO DE PERMANENCIA / FIDELIDADE
+================================================================================
 
-O CONTRATANTE declara que:
+O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO DE FIDELIDADE e:
 
 {% if optou_fidelidade %}
-[ X ] OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
-[   ] NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
+( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
+(   ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
+
+CONDIÇÕES DA FIDELIDADE:
+- Prazo mínimo: 12 meses
+- Benefício Concedido: Isenção integral da taxa de instalação, no valor de R$ 600,00 (seiscentos reais).
+- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa calculada de forma decrescente, conforme a tabela abaixo, tendo como base o valor total dos benefícios concedidos (R$ 600,00).
+
+TABELA DE CÁLCULO DO VALOR DA MULTA RESCISÓRIA
+
+O VALOR DA MULTA PELA RESCISÃO DO CONTRATO POR PARTE DO CONTRATANTE SERÁ DECRESCENTE, DE ACORDO COM A TABELA:
+
++---------------------+----------------------------------------------+------------------+
+| TEMPO RESTANTE PARA | MULTA                                        | VALOR DA MULTA   |
+| CUMPRIMENTO DA      |                                              |                  |
+| FIDELIDADE          |                                              |                  |
++---------------------+----------------------------------------------+------------------+
+| 12 meses            | 100% do total dos benefícios concedidos.     | R$ 600,00        |
+| 11 meses            | 92% do total dos benefícios concedidos.      | R$ 552,00        |
+| 10 meses            | 83% do total dos benefícios concedidos.      | R$ 498,00        |
+| 9 meses             | 75% do total dos benefícios concedidos.      | R$ 450,00        |
+| 8 meses             | 67% do total dos benefícios concedidos.      | R$ 402,00        |
+| 7 meses             | 58% do total dos benefícios concedidos.      | R$ 348,00        |
+| 6 meses             | 50% do total dos benefícios concedidos.      | R$ 300,00        |
+| 5 meses             | 42% do total dos benefícios concedidos.      | R$ 252,00        |
+| 4 meses             | 33% do total dos benefícios concedidos.      | R$ 198,00        |
+| 3 meses             | 25% do total dos benefícios concedidos.      | R$ 150,00        |
+| 2 meses             | 17% do total dos benefícios concedidos.      | R$ 102,00        |
+| 1 mês               | 8% do total dos benefícios concedidos.       | R$ 48,00         |
++---------------------+----------------------------------------------+------------------+
+
 {% else %}
-[   ] OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
-[ X ] NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
+(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
+( X ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
+
+CONDIÇÕES SEM FIDELIDADE:
+- Contrato por prazo indeterminado
+- Cancelamento a qualquer momento, sem multa
+- Valor integral do plano aplicado
 {% endif %}
 
-CONDICOES DA FIDELIDADE:
-- Prazo minimo: 12 meses
+================================================================================
+                              7. DISPOSIÇÕES GERAIS E OBSERVAÇÕES
+================================================================================
 
-{% if multa_base == "beneficio" %}
-- Beneficio concedido: {{ beneficio_descricao }}
-- Valor SEM fidelidade: R$ {{ valor_sem_fidelidade }}
-- Valor COM fidelidade: R$ {{ valor_com_fidelidade }}
-- Multa por rescisao antecipada: calculada sobre o beneficio concedido, conforme tabela abaixo:
+- A Contratada terá o prazo de {{ prazo_viabilidade or '10' }} dias para concluir a análise de viabilidade técnica. Caso constatada a inviabilidade técnica, o contrato será cancelado automaticamente sem qualquer ônus para ambas as partes.
 
-TABELA DE MULTAS DECRESCENTES (baseada no beneficio de R$ {{ beneficio_total }}):
-| Meses restantes | % do beneficio | Valor da multa (R$) |
-| 11 meses        | 92%            | {{ multa_11 }} |
-| 10 meses        | 83%            | {{ multa_10 }} |
-|  9 meses        | 75%            | {{ multa_9 }} |
-|  8 meses        | 67%            | {{ multa_8 }} |
-|  7 meses        | 58%            | {{ multa_7 }} |
-|  6 meses        | 50%            | {{ multa_6 }} |
-|  5 meses        | 42%            | {{ multa_5 }} |
-|  4 meses        | 33%            | {{ multa_4 }} |
-|  3 meses        | 25%            | {{ multa_3 }} |
-|  2 meses        | 17%            | {{ multa_2 }} |
-|  1 mes          |  8%            | {{ multa_1 }} |
-{% else %}
-- Multa por rescisao antecipada: ate 30% sobre o valor das parcelas vincendas
-- Beneficios aplicaveis: descontos e condicoes especiais conforme plano contratado
-{% endif %}
+- O Contratante declara ter conhecimento que a medição da banda contratada através de aparelhos WI-FI pode variar, e que o correto é medir por meio de equipamentos via cabo.
 
-=====================================================================================
-7. DISPOSICOES GERAIS
-=====================================================================================
+- O Contratante está ciente dos motivos que podem culminar na degradação dos serviços, conforme previsto nos contratos disponíveis no site.
 
-- A Contratada tera o prazo de {{ prazo_viabilidade }} dias para concluir a analise de viabilidade tecnica. Caso constatada a inviabilidade tecnica, o contrato sera cancelado automaticamente sem qualquer onus para ambas as partes.
+- Este Termo de Adesão, juntamente com os CONTRATOS DE PRESTAÇÃO DE SCM E SVA disponíveis no site da CONTRATADA, constituem o acordo integral entre as partes.
 
-- O Contratante declara ter conhecimento que a medicao da banda contratada atraves de aparelhos WI-FI pode variar, e que o correto e medir por meio de equipamentos via cabo.
+- Finalizado o prazo de permanência/fidelidade contratual, o CONTRATANTE declara estar ciente que não ficará mais sujeito ao prazo de permanência/fidelidade dos serviços, e que a concessão de outros benefícios ou mesmo a manutenção dos benefícios antes concedidos (exemplo: abatimento do valor da mensalidade), fica a critério de ambas as partes firmar NOVO CONTRATO DE PERMANÊNCIA/FIDELIDADE. Assim, com o fim da fidelidade, o CONTRATANTE está ciente que o plano voltará a ser cobrado em seu valor integral com correção do valor pela variação positiva do índice IGP-M acumulado dos últimos 12 (doze) meses.
 
-- O Contratante esta ciente dos motivos que podem culminar na degradacao dos servicos, conforme previsto nos contratos disponiveis no site.
+================================================================================
+                              8. DECLARAÇÃO DE CONCORDÂNCIA
+================================================================================
 
-- Este Termo de Adesao, juntamente com os CONTRATOS DE PRESTACAO DE SCM E SVA disponiveis no site da CONTRATADA, constituem o acordo integral entre as partes.
+Declaro, para os devidos fins, que são corretos os dados cadastrais e informações por mim prestadas neste instrumento.
 
-=====================================================================================
-8. DECLARACAO DE CONCORDANCIA
-=====================================================================================
+Declaro estar ciente que a assinatura deste instrumento representa expressa concordância aos termos e condições dos CONTRATOS DE PRESTAÇÃO DE SCM E SVA, disponíveis no site da Contratada.
 
-Declaro, para os devidos fins, que sao corretos os dados cadastrais e informacoes por mim prestadas neste instrumento.
+Declaro que tive prévio acesso a todas as informações relativas aos contratos mencionados, bem como ao plano de serviço por mim ora contratado.
 
-Declaro estar ciente que a assinatura deste instrumento representa expressa concordancia aos termos e condicoes dos CONTRATOS DE PRESTACAO DE SCM E SVA, disponiveis no site da Contratada.
+Declaro que o presente documento, juntamente com os contratos mencionados, formam um único instrumento contratual.
 
-Declaro que tive previo acesso a todas as informacoes relativas aos contratos mencionados, bem como ao plano de servico por mim ora contratado.
+================================================================================
+                                    9. ASSINATURA
+================================================================================
 
-Declaro que o presente documento, juntamente com os contratos mencionados, formam um unico instrumento contratual.
+{{ cidade }}/{{ estado_empresa }}, {{ data_assinatura }}.
 
-=====================================================================================
-9. ASSINATURA
-=====================================================================================
+__________________________________________________________
+Contratada: {{ razao_social }}
+Assinatura / Carimbo
 
-{{ cidade }}, {{ data_assinatura }}.
+__________________________________________________________
+Contratante: {{ nome_completo }}
+Assinatura
 
+================================================================================
+                        10. FORO DE ELEIÇÃO
+================================================================================
 
-_______________________________________
-CONTRATADA: {{ razao_social }}
-CNPJ: {{ cnpj_empresa }}
-
-
-_______________________________________
-CONTRATANTE: {{ nome_completo }}
-CPF: {{ cpf }}
-
-
-
-=====================================================================================
-10. FORO DE ELECAO
-=====================================================================================
-
-As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer duvidas ou controversias oriundas do presente contrato, com expressa renuncia a qualquer outro, por mais privilegiado que seja.
+As partes elegem o foro da comarca de {{ cidade_empresa }}/{{ estado_empresa }} para dirimir quaisquer dúvidas ou controvérsias oriundas do presente contrato, com expressa renúncia a qualquer outro, por mais privilegiado que seja.
