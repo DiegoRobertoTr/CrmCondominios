@@ -10,6 +10,7 @@ Versão com:
 - Tratamento adequado de erros
 - Multiselect de SVA
 - Valor mensal auto-preenchido
+- ✅ SANITIZAÇÃO ROBUSTA antes de gerar PDF (correção dos caracteres ilegíveis)
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -17,6 +18,7 @@ import base64
 import re
 import random
 import string
+import unicodedata
 import streamlit.components.v1 as components
 from urllib.parse import quote
 from .utils import normalize_phone, validar_cpf, get_followup_date
@@ -155,10 +157,6 @@ except ImportError:
 # ============================================================================
 @st.cache_resource(ttl=300)
 def get_condominio_options_cached(_collection):
-    # O underscore em "_collection" diz ao Streamlit para NÃO tentar
-    # hashear esse argumento (objetos pymongo.Collection não são hasheáveis).
-    # Ele só serve para existir uma entrada de cache por conexão; quem
-    # efetivamente é usado é get_all_condominios(), sem parâmetros.
     try:
         from .condominios import get_all_condominios
         condominios = get_all_condominios()
@@ -189,8 +187,6 @@ def garantir_indices(clientes_collection):
         if "data_cadastro_-1" not in indices_existentes:
             clientes_collection.create_index([("data_cadastro", -1)], name="data_cadastro_-1")
 
-        # ✅ Índice composto para as checagens de endereço bloqueado
-        # (rodam várias vezes por render, sem índice viravam table scan)
         if "endereco_1_numero_1" not in indices_existentes:
             clientes_collection.create_index([("endereco", 1), ("numero", 1)], name="endereco_1_numero_1")
 
@@ -360,6 +356,83 @@ def safe_strip_codigo_indicador(texto):
     return texto.strip() if isinstance(texto, str) and texto.strip() else None
 
 
+# ============================================================================
+# ✅ NOVA FUNÇÃO: SANITIZAÇÃO DOS DADOS DO TERMO DE ADESÃO
+# ============================================================================
+def sanitizar_dados_termo(dados):
+    """
+    Garante que TODOS os campos do termo de adesão tenham valores válidos,
+    evitando que o PDF saia com caracteres ilegíveis por causa de None
+    ou strings mal formatadas.
+    """
+    if not isinstance(dados, dict):
+        dados = {}
+    
+    # Garantir que sva_selecionados seja sempre uma lista
+    if not isinstance(dados.get("sva_selecionados"), list):
+        dados["sva_selecionados"] = []
+    
+    # Lista de campos que devem ter valor padrão
+    defaults = {
+        "rg": "Nao informado",
+        "data_nascimento": "Nao informado",
+        "email": "Nao informado",
+        "cep": "Nao informado",
+        "ponto_referencia": "Nao informado",
+        "complemento": "",
+        "condominio_nome": "",
+        "bloco": "",
+        "apartamento": "",
+        "equipamento_descricao": "Roteador Wi-Fi",
+        "equipamento_modelo": "Nao informado",
+        "equipamento_acessorios": "Fonte de alimentacao, cabo Ethernet",
+        "valor_instalacao": "0,00",
+        "valor_promocional": "0,00",
+        "valor_sem_fidelidade": "0,00",
+        "valor_com_fidelidade": "0,00",
+        "beneficio_total": "600,00",
+        "beneficio_descricao": "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais).",
+        "modalidade": "Contratacao",
+        "equipamento_adicional_modelo": "",
+        "tipo_tratativa": "padrao",
+        "prazo_instalacao": "10",
+        "vigencia_contratual": "12",
+        "prazo_viabilidade": "10",
+    }
+    
+    for campo, valor_default in defaults.items():
+        valor = dados.get(campo)
+        if valor is None or (isinstance(valor, str) and valor.strip() == ""):
+            dados[campo] = valor_default
+    
+    # Garantir que beneficio_descricao não seja vazio quando multa_base == "beneficio"
+    if dados.get("tipo_tratativa", "padrao") != "padrao":
+        if not dados.get("beneficio_descricao"):
+            dados["beneficio_descricao"] = (
+                "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais)."
+            )
+    
+    # Garantir que valor_com_fidelidade tenha fallback no valor_mensal
+    if not dados.get("valor_com_fidelidade") or dados["valor_com_fidelidade"] == "0,00":
+        if dados.get("valor_mensal"):
+            dados["valor_com_fidelidade"] = dados["valor_mensal"]
+    
+    # Converter None para string vazia em campos de texto livre
+    for campo in ["nome_completo", "cpf", "celular", "endereco", "numero",
+                  "bairro", "cidade", "plano_escolhido", "data_vencimento"]:
+        if dados.get(campo) is None:
+            dados[campo] = ""
+    
+    # Garantir optou_fidelidade como booleano
+    if not isinstance(dados.get("optou_fidelidade"), bool):
+        dados["optou_fidelidade"] = True
+    
+    return dados
+
+
+# ============================================================================
+# CAMPOS DINÂMICOS DE RESTRITIVOS
+# ============================================================================
 def render_campos_restritivos(key_suffix, valor_restritivo, cliente=None):
     if valor_restritivo == "Sim":
         st.markdown("### ⚠️ Informações sobre Restrição")
@@ -422,16 +495,11 @@ def render_motivo_recusa_ativacao(key_suffix, seguiu_ativacao, cliente=None):
 
 
 # ============================================================================
-# 🆕 RENDERIZAR CAMPOS DINÂMICOS DE TRATATIVA (FORA DO FORM)
+# 🆕 CAMPOS DINÂMICOS DE TRATATIVA
 # ============================================================================
 def render_campos_tratativa(key_suffix, tipo_tratativa, config_tratativa, valor_mensal, cliente=None):
-    """
-    Renderiza os campos dinâmicos do tipo de tratativa selecionado.
-    ⚠️ DEVE SER CHAMADA FORA DO st.form PARA PERMITIR RERUN IMEDIATO.
-    """
     cliente = cliente or {}
 
-    # 1. Desconto promocional
     if config_tratativa["tem_desconto_promocional"]:
         st.markdown("#### 💸 Valores Promocionais")
         col_p1, col_p2 = st.columns(2)
@@ -451,7 +519,6 @@ def render_campos_tratativa(key_suffix, tipo_tratativa, config_tratativa, valor_
     else:
         valor_promocional = cliente.get("valor_promocional", "0,00")
 
-    # 2. Fidelidade baseada em benefício
     if config_tratativa["multa_base"] == "beneficio":
         st.markdown("#### 🔒 Valores de Fidelidade")
         col_f1, col_f2, col_f3 = st.columns(3)
@@ -500,7 +567,6 @@ def render_campos_tratativa(key_suffix, tipo_tratativa, config_tratativa, valor_
             "Isenção integral da taxa de instalação, no valor de R$ 600,00 (seiscentos reais)."
         )
 
-    # 3. Wi-Fi Adicional
     if config_tratativa["tem_wifi_adicional"]:
         st.markdown("#### 📶 Equipamento Wi-Fi Adicional")
         equip_adicional_modelo = st.text_input(
@@ -511,7 +577,6 @@ def render_campos_tratativa(key_suffix, tipo_tratativa, config_tratativa, valor_
     else:
         equip_adicional_modelo = cliente.get("equipamento_adicional_modelo", "")
 
-    # 4. Modalidade
     if tipo_tratativa not in ["padrao", "novo_com_desconto"]:
         opcoes_mod = ["Upgrade / Refidelização", "Retenção / Refidelização", "Retenção / Upgrade"]
         modalidade_atual = cliente.get("modalidade", "Upgrade / Refidelização")
@@ -537,18 +602,13 @@ def render_campos_tratativa(key_suffix, tipo_tratativa, config_tratativa, valor_
 
 
 # ============================================================================
-# 🆕 LÓGICA DE RESET AUTOMÁTICO AO TROCAR DE TIPO
+# 🆕 RESET AUTOMÁTICO AO TROCAR DE TIPO
 # ============================================================================
 def aplicar_reset_se_trocou_tipo(key_suffix, tipo_tratativa):
-    """
-    Detecta se o usuário trocou o tipo de tratativa e, se sim,
-    reseta os campos específicos para os valores padrão.
-    """
     key_reset = f"tipo_tratativa_anterior_{key_suffix}"
     tipo_anterior = st.session_state.get(key_reset, None)
 
     if tipo_anterior is not None and tipo_anterior != tipo_tratativa:
-        # Resetar campos ao trocar de tipo
         st.session_state[f"valor_promocional_{key_suffix}"] = "49,90"
         st.session_state[f"valor_sem_fidelidade_{key_suffix}"] = "119,99"
         st.session_state[f"valor_com_fidelidade_{key_suffix}"] = "89,99"
@@ -559,12 +619,9 @@ def aplicar_reset_se_trocou_tipo(key_suffix, tipo_tratativa):
 
 
 # ============================================================================
-# 🆕 RESUMO DA TRATATIVA (para exibir dentro do form)
+# 🆕 RESUMO DA TRATATIVA
 # ============================================================================
 def render_resumo_tratativa(tipo_tratativa, config_tratativa, valores):
-    """
-    Exibe um resumo visual da tratativa selecionada dentro do form.
-    """
     st.markdown("### 📋 Resumo da Tratativa Selecionada")
     st.info(f"**Tipo:** {config_tratativa['label']}")
 
@@ -581,6 +638,7 @@ def render_resumo_tratativa(tipo_tratativa, config_tratativa, valores):
 
     if config_tratativa["tem_wifi_adicional"]:
         st.info(f"**Roteador Adicional:** {valores.get('equipamento_adicional_modelo', '')}")
+
 
 
         # ============================================================================
@@ -948,12 +1006,11 @@ def expander_visualizar_editar(cliente, clientes_collection):
             })
 
         # ==================================================================
-        # CAMPOS DE TRATATIVA (FORA DO FORM — rerun imediato)
+        # CAMPOS DE TRATATIVA (FORA DO FORM)
         # ==================================================================
         st.markdown("---")
         st.markdown("## 🔧 Configurações do Termo de Adesão")
 
-        # Plano e valor mensal (fora do form)
         col_pl1, col_pl2 = st.columns([2, 1])
         with col_pl1:
             plano_atual = cliente.get("plano_escolhido")
@@ -973,7 +1030,6 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 help="Valor extraído automaticamente do plano selecionado"
             )
 
-        # Fidelidade (fora do form)
         st.markdown("### 🔒 Contrato de Permanência (Fidelidade)")
         optou_fidelidade = st.radio(
             "Deseja contratar com fidelidade de 12 meses?",
@@ -989,7 +1045,6 @@ def expander_visualizar_editar(cliente, clientes_collection):
         else:
             st.info("ℹ️ Cliente optou por NÃO ter fidelidade")
 
-        # Tipo de tratativa (fora do form)
         st.markdown("### 📋 Tipo de Tratativa")
         st.caption("Selecione o tipo de termo. Campos adicionais aparecerão conforme a escolha.")
 
@@ -1007,10 +1062,8 @@ def expander_visualizar_editar(cliente, clientes_collection):
         tipo_tratativa = next(k for k, v in opcoes_tratativa.items() if v == tipo_tratativa_label)
         config_tratativa = TIPOS_TRATATIVA[tipo_tratativa]
 
-        # Aplica reset automático se trocou de tipo
         aplicar_reset_se_trocou_tipo("editar", tipo_tratativa)
 
-        # Campos dinâmicos (fora do form)
         campos_tratativa = render_campos_tratativa(
             key_suffix="editar",
             tipo_tratativa=tipo_tratativa,
@@ -1043,7 +1096,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.caption(f"• {sva}")
 
         # ==================================================================
-        # FORMULÁRIO (apenas campos estáticos)
+        # FORMULÁRIO (campos estáticos + botões)
         # ==================================================================
         with st.form("form_editar_cadastro"):
             st.markdown("### ⚙️ Informações do Sistema")
@@ -1068,7 +1121,6 @@ def expander_visualizar_editar(cliente, clientes_collection):
             else:
                 st.text_input("Data de cadastro:", value="Não disponível", disabled=True, key="data_cadastro_visualizar")
 
-            # 🆕 RESUMO DA TRATATIVA (dentro do form, para visualização)
             render_resumo_tratativa(
                 tipo_tratativa,
                 config_tratativa,
@@ -1143,19 +1195,10 @@ def expander_visualizar_editar(cliente, clientes_collection):
             col1, col2 = st.columns([3, 1])
             with col1:
                 endereco_valor = safe_session_state_get(f"endereco_{key_suffix}", cliente.get("endereco", ""))
-                endereco = st.text_input(
-                    "Endereço*",
-                    value=endereco_valor if endereco_valor else "",
-                    key=f"endereco_{key_suffix}"
-                )
+                endereco = st.text_input("Endereço*", value=endereco_valor if endereco_valor else "", key=f"endereco_{key_suffix}")
             with col2:
                 numero_valor = safe_session_state_get(f"numero_{key_suffix}", cliente.get("numero", ""))
-                numero = st.text_input(
-                    "Número*",
-                    max_chars=6,
-                    value=numero_valor if numero_valor else "",
-                    key=f"numero_{key_suffix}"
-                )
+                numero = st.text_input("Número*", max_chars=6, value=numero_valor if numero_valor else "", key=f"numero_{key_suffix}")
 
             col_bloco, col_apto = st.columns(2)
             with col_bloco:
@@ -1168,45 +1211,23 @@ def expander_visualizar_editar(cliente, clientes_collection):
             col1, col2 = st.columns(2)
             with col1:
                 complemento_valor = safe_session_state_get(f"complemento_{key_suffix}", cliente.get("complemento", ""))
-                complemento = st.text_input(
-                    "Complemento",
-                    value=complemento_valor if complemento_valor else "",
-                    key=f"complemento_{key_suffix}"
-                )
+                complemento = st.text_input("Complemento", value=complemento_valor if complemento_valor else "", key=f"complemento_{key_suffix}")
             with col2:
                 ponto_ref_valor = safe_session_state_get(f"ponto_referencia_{key_suffix}", cliente.get("ponto_referencia", ""))
-                ponto_referencia = st.text_input(
-                    "Ponto de referência",
-                    value=ponto_ref_valor if ponto_ref_valor else "",
-                    key=f"ponto_referencia_{key_suffix}"
-                )
+                ponto_referencia = st.text_input("Ponto de referência", value=ponto_ref_valor if ponto_ref_valor else "", key=f"ponto_referencia_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
                 bairro_valor = safe_session_state_get(f"bairro_{key_suffix}", cliente.get("bairro", ""))
-                bairro = st.text_input(
-                    "Bairro*",
-                    value=bairro_valor if bairro_valor else "",
-                    key=f"bairro_{key_suffix}"
-                )
+                bairro = st.text_input("Bairro*", value=bairro_valor if bairro_valor else "", key=f"bairro_{key_suffix}")
             with col2:
                 cidade_valor = safe_session_state_get(f"cidade_{key_suffix}", cliente.get("cidade", "Rio de Janeiro"))
-                cidade = st.text_input(
-                    "Cidade*",
-                    value=cidade_valor if cidade_valor else "",
-                    key=f"cidade_{key_suffix}"
-                )
+                cidade = st.text_input("Cidade*", value=cidade_valor if cidade_valor else "", key=f"cidade_{key_suffix}")
 
             col1, col2 = st.columns(2)
             with col1:
                 cep_valor = safe_session_state_get(f"cep_{key_suffix}", cliente.get("cep", ""))
-                cep = st.text_input(
-                    "CEP",
-                    max_chars=10,
-                    placeholder="00000-000",
-                    value=cep_valor if cep_valor else "",
-                    key=f"cep_{key_suffix}"
-                )
+                cep = st.text_input("CEP", max_chars=10, placeholder="00000-000", value=cep_valor if cep_valor else "", key=f"cep_{key_suffix}")
             with col2:
                 pass
 
@@ -1251,7 +1272,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
             if foto_documento_base64:
                 try:
                     st.image(base64.b64decode(foto_documento_base64), caption="Foto atual", width=250)
-                except Exception as e:
+                except Exception:
                     st.warning("⚠️ Não foi possível carregar a foto salva.")
 
             foto_documento = st.file_uploader("Envie uma nova foto (JPG ou PNG) - Opcional", type=["jpg", "png", "jpeg"], key="foto_documento_editar")
@@ -1264,6 +1285,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
             equip_codigo = st.text_input("Informação Adicional*", max_chars=50, placeholder="Ex: Número de série", value=cliente.get("equipamento_codigo", ""), key="equip_codigo_editar")
             equip_acessorios = st.text_input("Acessórios", max_chars=100, value=cliente.get("equipamento_acessorios", "Fonte de alimentação, cabo Ethernet"), key="equip_acessorios_editar")
 
+            # ================== BOTÕES DE GERAÇÃO DE DOCUMENTOS ==================
             col1, col2 = st.columns(2)
             with col1:
                 if st.session_state.get("gerando_termo_visualizar"):
@@ -1279,7 +1301,8 @@ def expander_visualizar_editar(cliente, clientes_collection):
                         elif not all([nome_completo, cpf_valido, endereco, celular, plano_escolhido != "Selecione..."]):
                             st.error("❌ Preencha todos os campos obrigatórios para gerar o termo!")
                         else:
-                            st.session_state["dados_temp_termo_visualizar"] = {
+                            # ✅ SANITIZAÇÃO antes de montar o dicionário
+                            dados_termo = {
                                 "nome_completo": nome_completo,
                                 "cpf": cpf_valido,
                                 "rg": rg,
@@ -1303,17 +1326,21 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                 "equipamento_descricao": equip_desc,
                                 "equipamento_modelo": equip_modelo,
                                 "equipamento_acessorios": equip_acessorios,
-                                "sva_selecionados": sva_selecionados,
+                                "sva_selecionados": sva_selecionados if isinstance(sva_selecionados, list) else [],
                                 "valor_instalacao": "0,00",
-                                "tipo_tratativa": tipo_tratativa,
-                                "valor_promocional": valor_promocional,
-                                "valor_sem_fidelidade": valor_sem_fidelidade,
-                                "valor_com_fidelidade": valor_com_fidelidade,
-                                "beneficio_total": beneficio_total,
-                                "beneficio_descricao": beneficio_descricao,
-                                "modalidade": modalidade,
-                                "equipamento_adicional_modelo": equip_adicional_modelo,
+                                "tipo_tratativa": tipo_tratativa if tipo_tratativa else "padrao",
+                                "valor_promocional": valor_promocional if valor_promocional else "0,00",
+                                "valor_sem_fidelidade": valor_sem_fidelidade if valor_sem_fidelidade else "0,00",
+                                "valor_com_fidelidade": valor_com_fidelidade if valor_com_fidelidade else (valor_mensal or "0,00"),
+                                "beneficio_total": beneficio_total if beneficio_total else "600,00",
+                                "beneficio_descricao": beneficio_descricao if beneficio_descricao else "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais).",
+                                "modalidade": modalidade if modalidade else "Contratacao",
+                                "equipamento_adicional_modelo": equip_adicional_modelo if equip_adicional_modelo else "",
                             }
+                            # ✅ Aplica sanitização final
+                            dados_termo = sanitizar_dados_termo(dados_termo)
+                            
+                            st.session_state["dados_temp_termo_visualizar"] = dados_termo
                             st.session_state["gerando_termo_visualizar"] = True
                             st.session_state["nome_arquivo_termo_visualizar"] = f"Termo_Adesao_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
@@ -1394,8 +1421,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 "Integrar com IXC ao atualizar",
                 value=True,
                 key="integrar_ixc_editar_checkbox",
-                help="Marcado (padrão): sincroniza o cadastro com o IXC. "
-                     "Desmarcado: atualiza apenas localmente, sem tocar no IXC."
+                help="Marcado (padrão): sincroniza o cadastro com o IXC. Desmarcado: atualiza apenas localmente."
             )
             if not integrar_ixc_editar:
                 st.warning("⚠️ A atualização será salva **apenas localmente**. Nenhuma chamada ao IXC será feita.")
@@ -1428,7 +1454,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                 config_ixc = get_ixc_config()
                                 if config_ixc:
                                     cond_id_ixc = obter_id_ixc_condominio(dados_cond["condominio_id"], config_ixc)
-                            except Exception as e:
+                            except Exception:
                                 pass
 
                         update_data = {
@@ -1450,10 +1476,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "cep": cep if cep else None,
                             "ponto_referencia": ponto_referencia if ponto_referencia else None,
                             "tipo_moradia": tipo_moradia if tipo_moradia != "Selecione..." else None,
-                            "tempo_moradia": {
-                                "valor": tempo_moradia_valor,
-                                "unidade": tempo_moradia_unidade
-                            } if tempo_moradia_valor > 0 else None,
+                            "tempo_moradia": {"valor": tempo_moradia_valor, "unidade": tempo_moradia_unidade} if tempo_moradia_valor > 0 else None,
                             "plano_escolhido": plano_escolhido if plano_escolhido != "Selecione..." else None,
                             "profissao": profissao if profissao else None,
                             "data_vencimento": data_vencimento,
@@ -1573,7 +1596,6 @@ def render_cadastro(clientes_collection):
         garantir_indices(clientes_collection)
         st.session_state["indices_garantidos"] = True
 
-    # Inicialização de estados
     estados_default = {
         "mostrar_botao_novo": False,
         "acao_selecionada": "Novo Cadastro",
@@ -1604,8 +1626,6 @@ def render_cadastro(clientes_collection):
         key=f"busca_global_{st.session_state['form_key']}"
     )
 
-    # ✅ Só consulta o banco a partir de 3 caracteres — evita varredura
-    # (regex sem índice) a cada tecla digitada em buscas de 1-2 letras
     if busca_global.strip() and len(busca_global.strip()) >= 3:
         busca_normalizada = normalize_phone(busca_global)
         cpf_puro = re.sub(r'\D', '', busca_global)
@@ -1877,6 +1897,7 @@ def render_cadastro(clientes_collection):
         motivo_recusa = None
         detalhes_recusa = None
         produtos_interesse = []
+        codigo_indicador = ""
 
         if tipo_cadastro == "Cadastro CRM":
             with st.container(border=True):
@@ -2044,9 +2065,8 @@ def render_cadastro(clientes_collection):
             atualizar_endereco_por_condominio(condominio_select, st.session_state['form_key'], condominio_options)
 
         # ==================================================================
-        # CAMPOS DE TRATATIVA (FORA DO FORM — rerun imediato)
+        # CAMPOS DE TRATATIVA (FORA DO FORM)
         # ==================================================================
-        # Inicialização de variáveis para evitar NameError
         plano_escolhido = "Selecione..."
         valor_mensal = "0,00"
         optou_fidelidade = "Sim"
@@ -2065,7 +2085,6 @@ def render_cadastro(clientes_collection):
             st.markdown("---")
             st.markdown("## 🔧 Configurações do Termo de Adesão")
 
-            # Plano e valor (fora do form)
             col_pl1, col_pl2 = st.columns([2, 1])
             with col_pl1:
                 plano_atual = get_valor_inicial("plano_escolhido", "")
@@ -2085,7 +2104,6 @@ def render_cadastro(clientes_collection):
                     help="Valor extraído automaticamente do plano selecionado"
                 )
 
-            # Fidelidade (fora do form)
             st.markdown("### 🔒 Contrato de Permanência (Fidelidade)")
             optou_fidelidade = st.radio(
                 "Deseja contratar com fidelidade de 12 meses?",
@@ -2101,7 +2119,6 @@ def render_cadastro(clientes_collection):
             else:
                 st.info("ℹ️ Cliente optou por NÃO ter fidelidade")
 
-            # Tipo de tratativa (fora do form)
             st.markdown("### 📋 Tipo de Tratativa")
             st.caption("Selecione o tipo de termo. Campos adicionais aparecerão conforme a escolha.")
 
@@ -2116,10 +2133,8 @@ def render_cadastro(clientes_collection):
             tipo_tratativa = next(k for k, v in opcoes_tratativa.items() if v == tipo_tratativa_label)
             config_tratativa = TIPOS_TRATATIVA[tipo_tratativa]
 
-            # Reset automático se trocou de tipo
             aplicar_reset_se_trocou_tipo(st.session_state['form_key'], tipo_tratativa)
 
-            # Campos dinâmicos (fora do form)
             campos_tratativa = render_campos_tratativa(
                 key_suffix=st.session_state['form_key'],
                 tipo_tratativa=tipo_tratativa,
@@ -2136,7 +2151,6 @@ def render_cadastro(clientes_collection):
             modalidade = campos_tratativa["modalidade"]
             equip_adicional_modelo = campos_tratativa["equipamento_adicional_modelo"]
 
-            # SVA (fora do form)
             st.markdown("### 🎬 Serviços de Valor Adicionado (SVA)")
             sva_selecionados = st.multiselect(
                 "Selecione os SVA inclusos no plano (opcional - para referência)",
@@ -2293,61 +2307,31 @@ def render_cadastro(clientes_collection):
                 col_bloco, col_apto = st.columns(2)
                 with col_bloco:
                     bloco_valor = safe_session_state_get(f"bloco_{st.session_state['form_key']}", "")
-                    bloco = st.text_input(
-                        "Bloco",
-                        value=bloco_valor if bloco_valor else "",
-                        key=f"bloco_{st.session_state['form_key']}"
-                    )
+                    bloco = st.text_input("Bloco", value=bloco_valor if bloco_valor else "", key=f"bloco_{st.session_state['form_key']}")
                 with col_apto:
                     apto_valor = safe_session_state_get(f"apartamento_{st.session_state['form_key']}", "")
-                    apartamento = st.text_input(
-                        "Apartamento",
-                        value=apto_valor if apto_valor else "",
-                        key=f"apartamento_{st.session_state['form_key']}"
-                    )
+                    apartamento = st.text_input("Apartamento", value=apto_valor if apto_valor else "", key=f"apartamento_{st.session_state['form_key']}")
 
                 col1, col2 = st.columns(2)
                 with col1:
                     complemento_valor = safe_session_state_get(f"complemento_{st.session_state['form_key']}", get_valor_inicial("complemento", ""))
-                    complemento = st.text_input(
-                        "Complemento",
-                        value=complemento_valor if complemento_valor else "",
-                        key=f"complemento_{st.session_state['form_key']}"
-                    )
+                    complemento = st.text_input("Complemento", value=complemento_valor if complemento_valor else "", key=f"complemento_{st.session_state['form_key']}")
                 with col2:
                     ponto_ref_valor = safe_session_state_get(f"ponto_referencia_{st.session_state['form_key']}", get_valor_inicial("ponto_referencia", ""))
-                    ponto_referencia = st.text_input(
-                        "Ponto de referência",
-                        value=ponto_ref_valor if ponto_ref_valor else "",
-                        key=f"ponto_referencia_{st.session_state['form_key']}"
-                    )
+                    ponto_referencia = st.text_input("Ponto de referência", value=ponto_ref_valor if ponto_ref_valor else "", key=f"ponto_referencia_{st.session_state['form_key']}")
 
                 col1, col2 = st.columns(2)
                 with col1:
                     bairro_valor = safe_session_state_get(f"bairro_{st.session_state['form_key']}", get_valor_inicial("bairro", ""))
-                    bairro = st.text_input(
-                        "Bairro*",
-                        value=bairro_valor if bairro_valor else "",
-                        key=f"bairro_{st.session_state['form_key']}"
-                    )
+                    bairro = st.text_input("Bairro*", value=bairro_valor if bairro_valor else "", key=f"bairro_{st.session_state['form_key']}")
                 with col2:
                     cidade_valor = safe_session_state_get(f"cidade_{st.session_state['form_key']}", get_valor_inicial("cidade", "Rio de Janeiro"))
-                    cidade = st.text_input(
-                        "Cidade*",
-                        value=cidade_valor if cidade_valor else "",
-                        key=f"cidade_{st.session_state['form_key']}"
-                    )
+                    cidade = st.text_input("Cidade*", value=cidade_valor if cidade_valor else "", key=f"cidade_{st.session_state['form_key']}")
 
                 col1, col2 = st.columns(2)
                 with col1:
                     cep_valor = safe_session_state_get(f"cep_{st.session_state['form_key']}", get_valor_inicial("cep", ""))
-                    cep = st.text_input(
-                        "CEP",
-                        max_chars=10,
-                        placeholder="00000-000",
-                        value=cep_valor if cep_valor else "",
-                        key=f"cep_{st.session_state['form_key']}"
-                    )
+                    cep = st.text_input("CEP", max_chars=10, placeholder="00000-000", value=cep_valor if cep_valor else "", key=f"cep_{st.session_state['form_key']}")
                 with col2:
                     pass
 
@@ -2374,7 +2358,6 @@ def render_cadastro(clientes_collection):
                         key=f"tempo_moradia_unidade_{st.session_state['form_key']}"
                     )
 
-                # 🆕 RESUMO DA TRATATIVA (dentro do form, para visualização)
                 render_resumo_tratativa(
                     tipo_tratativa,
                     config_tratativa,
@@ -2388,11 +2371,7 @@ def render_cadastro(clientes_collection):
                     }
                 )
 
-                profissao = st.text_input(
-                    "Profissão*",
-                    value=get_valor_inicial("profissao", ""),
-                    key=f"profissao_{st.session_state['form_key']}"
-                )
+                profissao = st.text_input("Profissão*", value=get_valor_inicial("profissao", ""), key=f"profissao_{st.session_state['form_key']}")
 
                 data_vencimento = st.selectbox(
                     "Melhor data de vencimento*",
@@ -2437,7 +2416,6 @@ def render_cadastro(clientes_collection):
                     key=f"equip_acessorios_{st.session_state['form_key']}"
                 )
             else:
-                # CADASTRO SIMPLES — defaults
                 rg = email = endereco = numero = bairro = ponto_referencia = cep = ""
                 complemento = ""
                 cidade = "Rio de Janeiro"
@@ -2471,7 +2449,7 @@ def render_cadastro(clientes_collection):
                         elif not all([nome_completo, cpf_valido, endereco, celular_principal, plano_escolhido != "Selecione..."]):
                             st.error("❌ Preencha todos os campos obrigatórios para gerar o termo!")
                         else:
-                            st.session_state["dados_temp_termo_principal"] = {
+                            dados_termo = {
                                 "nome_completo": nome_completo,
                                 "cpf": cpf_valido,
                                 "rg": rg,
@@ -2495,17 +2473,20 @@ def render_cadastro(clientes_collection):
                                 "equipamento_descricao": equip_desc,
                                 "equipamento_modelo": equip_modelo,
                                 "equipamento_acessorios": equip_acessorios,
-                                "sva_selecionados": sva_selecionados,
+                                "sva_selecionados": sva_selecionados if isinstance(sva_selecionados, list) else [],
                                 "valor_instalacao": "0,00",
-                                "tipo_tratativa": tipo_tratativa,
-                                "valor_promocional": valor_promocional,
-                                "valor_sem_fidelidade": valor_sem_fidelidade,
-                                "valor_com_fidelidade": valor_com_fidelidade,
-                                "beneficio_total": beneficio_total,
-                                "beneficio_descricao": beneficio_descricao,
-                                "modalidade": modalidade,
-                                "equipamento_adicional_modelo": equip_adicional_modelo,
+                                "tipo_tratativa": tipo_tratativa if tipo_tratativa else "padrao",
+                                "valor_promocional": valor_promocional if valor_promocional else "0,00",
+                                "valor_sem_fidelidade": valor_sem_fidelidade if valor_sem_fidelidade else "0,00",
+                                "valor_com_fidelidade": valor_com_fidelidade if valor_com_fidelidade else (valor_mensal or "0,00"),
+                                "beneficio_total": beneficio_total if beneficio_total else "600,00",
+                                "beneficio_descricao": beneficio_descricao if beneficio_descricao else "Isencao integral da taxa de instalacao, no valor de R$ 600,00 (seiscentos reais).",
+                                "modalidade": modalidade if modalidade else "Contratacao",
+                                "equipamento_adicional_modelo": equip_adicional_modelo if equip_adicional_modelo else "",
                             }
+                            dados_termo = sanitizar_dados_termo(dados_termo)
+                            
+                            st.session_state["dados_temp_termo_principal"] = dados_termo
                             st.session_state["gerando_termo_principal"] = True
                             st.session_state["nome_arquivo_termo_principal"] = f"Termo_Adesao_{nome_completo.replace(' ', '_')}.pdf"
                             st.rerun()
@@ -2591,8 +2572,7 @@ def render_cadastro(clientes_collection):
                     "Integrar com IXC ao salvar",
                     value=True,
                     key=f"integrar_ixc_novo_{st.session_state['form_key']}",
-                    help="Marcado (padrão): envia o cadastro automaticamente para o IXC. "
-                         "Desmarcado: o cadastro é salvo APENAS localmente, sem integração."
+                    help="Marcado (padrão): envia o cadastro automaticamente para o IXC. Desmarcado: salva apenas localmente."
                 )
                 if not integrar_ixc:
                     st.warning("⚠️ O cadastro será salvo **apenas localmente**. Nenhuma chamada ao IXC será feita.")
@@ -2654,9 +2634,6 @@ def render_cadastro(clientes_collection):
                     color: #1a1a1a !important;
                     transform: scale(1.02) !important;
                     box-shadow: 0 4px 12px rgba(245, 166, 35, 0.4) !important;
-                }
-                div[data-testid="stFormSubmitButton"] button:active {
-                    transform: scale(0.98) !important;
                 }
                 </style>
                 """, unsafe_allow_html=True)
@@ -2777,10 +2754,7 @@ def render_cadastro(clientes_collection):
                         "cep": cep_salvo if cep_salvo else None,
                         "ponto_referencia": ponto_ref_salvo if ponto_ref_salvo else None,
                         "tipo_moradia": tipo_moradia if tipo_moradia != "Selecione..." else None,
-                        "tempo_moradia": {
-                            "valor": tempo_moradia_valor,
-                            "unidade": tempo_moradia_unidade
-                        } if tempo_moradia_valor > 0 else None,
+                        "tempo_moradia": {"valor": tempo_moradia_valor, "unidade": tempo_moradia_unidade} if tempo_moradia_valor > 0 else None,
                         "plano_escolhido": plano_escolhido if plano_escolhido != "Selecione..." else None,
                         "profissao": profissao if tipo_cadastro == "Cadastro CRM" else None,
                         "data_vencimento": data_vencimento if tipo_cadastro == "Cadastro CRM" else 1,
@@ -2979,8 +2953,7 @@ def render_cadastro(clientes_collection):
             else:
                 st.warning("⚠️ Nenhum cliente encontrado com esse nome ou telefone.")
 
-
-                    # ================== GERAÇÃO DE PDFs ==================
+    # ================== GERAÇÃO DE PDFs ==================
     for tipo in ["contrato", "comodato", "termo"]:
         for contexto in ["principal", "visualizar", "completar"]:
             estado_gerando = f"gerando_{tipo}_{contexto}"
@@ -2996,7 +2969,13 @@ def render_cadastro(clientes_collection):
                     else:
                         func_gerar = gerar_pdf_comodato
 
-                    pdf_bytes = func_gerar(st.session_state[dados_temp])
+                    dados_para_pdf = st.session_state[dados_temp]
+                    
+                    # ✅ Aplica sanitização final antes de gerar o PDF do termo
+                    if tipo == "termo":
+                        dados_para_pdf = sanitizar_dados_termo(dados_para_pdf)
+
+                    pdf_bytes = func_gerar(dados_para_pdf)
 
                     if pdf_bytes:
                         st.session_state[f"{tipo}_pdf_bytes"] = pdf_bytes
