@@ -34,13 +34,22 @@ CEP: {{ cep or 'Não informado' }}
 Ponto de Referência: {{ ponto_referencia or 'Não informado' }}
 
 ================================================================================
-                              2. DO OBJETO E PLANO CONTRATADO
+                    {{ tipo_tratativa_secao2_titulo }}
 ================================================================================
 
-O presente contrato tem como objeto a prestação, pela CONTRATADA, do Serviço de Comunicação Multimídia (SCM) - Internet, conforme plano detalhado abaixo:
+{{ tipo_tratativa_secao2_texto }}
 
-PLANO CONTRATADO:
-{{ plano_escolhido }}
+PLANO CONTRATADO: {{ plano_escolhido }}
+{% if tem_desconto_promocional %}
+Valor promocional nos 03 primeiros meses: R$ {{ valor_promocional }}/mês
+Valor a partir do 4º mês: R$ {{ valor_mensal }}/mês
+{% endif %}
+
+MODALIDADE: {{ modalidade or 'Contratação' }}
+{% if multa_base == 'beneficio' %}
+Valor sem Prazo de Permanência: R$ {{ valor_sem_fidelidade }} mensais
+Valor com Prazo de Permanência de 12 meses: R$ {{ valor_com_fidelidade }} mensais
+{% endif %}
 
 CARACTERÍSTICAS TÉCNICAS:
 - Tecnologia: {{ tecnologia or 'Fibra Óptica' }}
@@ -54,51 +63,95 @@ CARACTERÍSTICAS TÉCNICAS:
 +-----------------------------------------------------------+------------------+
 | DESCRICAO                                                 | VALOR (R$)       |
 +-----------------------------------------------------------+------------------+
-| Mensalidade                                               | {{ valor_mensal }}|
-| Taxa de Instalacao                                        | {{ valor_instalacao or '600,00' }} |
-| Vencimento                                                | Dia {{ data_vencimento }} de cada mes |
-| Forma de Pagamento                                        | {{ forma_pagamento or 'Boleto Bancario' }} |
+{% if tem_desconto_promocional %}
+| Mensalidade proporcional – 1º ao 3º mês:                  | {{ valor_promocional }} |
+| Mensalidade a partir do 4º mês:                           | {{ valor_mensal }} |
+{% else %}
+| Mensalidade                                               | {{ valor_mensal }} |
+{% endif %}
+| Taxa de Instalação                                        | {{ valor_instalacao or '600,00' }} |
+| Vencimento                                                | Dia {{ data_vencimento }} de cada mês |
+| Forma de Pagamento                                        | {{ forma_pagamento or 'Boleto Bancário' }} |
 +-----------------------------------------------------------+------------------+
 | JUROS E MULTAS:                                           |                  |
-| Juros Moratorios                                          | 1% ao mes        |
+| Juros Moratórios                                          | 1% ao mês        |
 | Multa por Atraso                                          | 2%               |
 | Reajuste Anual                                            | {{ indice_correcao or 'IPCA' }} |
 +-----------------------------------------------------------+------------------+
 
+{% if tem_desconto_promocional %}
+O CONTRATANTE usufruirá do valor promocional de R$ {{ valor_promocional }} mensais durante os 03 (três) primeiros meses de contratação. A partir do 4º (quarto) mês, a mensalidade passará automaticamente para R$ {{ valor_mensal }}, correspondente ao valor regular do plano contratado.
+{% endif %}
+
 ================================================================================
-                              4. SERVICOS DE VALOR ADICIONADO (SVA)
+                              4. SERVIÇOS DE VALOR ADICIONADO (SVA)
 ================================================================================
 
 O CONTRATANTE declara ciência de que Serviços de Valor Adicionado (SVA) podem estar inclusos no plano contratado, conforme descrito na nomenclatura do plano escolhido.
 
-Todos os detalhes, regras e condições dos SVA estão disponíveis no CONTRATO DE PRESTAÇÃO DE SERVIÇOS DE VALOR ADICIONADO - SVA, disponível no site da CONTRATADA, que o CONTRATANTE declara ter tido acesso.
+{% if sva_selecionados %}
+SVA inclusos no plano:
+{% for sva in sva_selecionados %}
+- {{ sva }}
+{% endfor %}
+{% endif %}
 
 ================================================================================
                               5. EQUIPAMENTOS EM COMODATO
 ================================================================================
 
+{% if tem_wifi_adicional %}
+Para a prestação do serviço de internet, o CONTRATANTE possui instalado o seguinte equipamento principal, disponibilizado pela CONTRATADA em regime de comodato:
+
+Roteador principal
+Equipamento: {{ equipamento_descricao or 'Roteador Wi-Fi' }}
+Modelo: {{ equipamento_modelo }}
+Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação e cabo Ethernet' }}
+
+Para viabilizar a prestação do Serviço Wi-Fi Adicional, a CONTRATADA realizará visita técnica, instalação, configuração, integração à rede existente, testes e ativação do seguinte equipamento, disponibilizado em regime de comodato:
+
+Roteador adicional / Ponto Wi-Fi
+Equipamento: Roteador Wi-Fi
+Modelo: {{ equipamento_adicional_modelo }}
+Acessórios: Fonte de alimentação e cabo Ethernet
+
+Ambos os equipamentos serão disponibilizados em regime de comodato, permanecendo de propriedade da CONTRATADA durante toda a relação contratual. O CONTRATANTE compromete-se a conservar os equipamentos e devolvê-los ao término da relação contratual, nas condições em que lhe foram entregues, ressalvado o desgaste natural decorrente do uso regular.
+
+{% elif tem_troca_roteador %}
 A CONTRATADA disponibiliza ao CONTRATANTE, em regime de comodato, o(s) seguinte(s) equipamento(s):
 
 Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
 Modelo: {{ equipamento_modelo }}
-Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação, cabo Ethernet' }}
+Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação e cabo Ethernet' }}
+
+Em razão do upgrade, a CONTRATADA realizará a substituição do roteador Wi-Fi atualmente instalado pelo equipamento acima indicado, disponibilizado em regime de comodato. O CONTRATANTE compromete-se a conservar e devolver o equipamento ao término da relação contratual, nas condições em que lhe foi entregue, ressalvado o desgaste natural de uso.
+
+{% else %}
+A CONTRATADA disponibiliza ao CONTRATANTE, em regime de comodato, o(s) seguinte(s) equipamento(s):
+
+Equipamento(s): {{ equipamento_descricao or 'Roteador Wi-Fi' }}
+Modelo: {{ equipamento_modelo }}
+Acessórios: {{ equipamento_acessorios or 'Fonte de alimentação e cabo Ethernet' }}
 
 O CONTRATANTE declara que recebeu o(s) equipamento(s) acima e se compromete a devolvê-lo(s) no final do contrato nas condições em que lhe foram entregues, salvo desgaste natural.
+{% endif %}
 
 ================================================================================
-                              6. CONTRATO DE PERMANENCIA / FIDELIDADE
+                              6. CONTRATO DE PERMANÊNCIA / FIDELIDADE
 ================================================================================
 
-O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANENCIA / TERMO DE FIDELIDADE e:
+O CONTRATANTE declara que teve conhecimento do CONTRATO DE PERMANÊNCIA / TERMO DE FIDELIDADE e:
 
 {% if optou_fidelidade %}
-( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
-(   ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
+( X ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA (12 meses)
+(   ) NÃO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA
 
 CONDIÇÕES DA FIDELIDADE:
 - Prazo mínimo: 12 meses
-- Benefício Concedido: Isenção integral da taxa de instalação, no valor de R$ 600,00 (seiscentos reais).
-- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa calculada de forma decrescente, conforme a tabela abaixo, tendo como base o valor total dos benefícios concedidos (R$ 600,00).
+- Benefício Concedido: {{ beneficio_descricao }}
+
+{% if multa_base == 'instalacao' %}
+- Multa por Rescisão Antecipada: Em caso de rescisão antes do término do prazo de fidelidade, será cobrada uma multa calculada de forma decrescente, conforme a tabela abaixo, tendo como base o valor total dos benefícios concedidos (R$ {{ beneficio_total }}).
 
 TABELA DE CÁLCULO DO VALOR DA MULTA RESCISÓRIA
 
@@ -109,23 +162,30 @@ O VALOR DA MULTA PELA RESCISÃO DO CONTRATO POR PARTE DO CONTRATANTE SERÁ DECRE
 | CUMPRIMENTO DA      |                                              |                  |
 | FIDELIDADE          |                                              |                  |
 +---------------------+----------------------------------------------+------------------+
-| 12 meses            | 100% do total dos benefícios concedidos.     | R$ 600,00        |
-| 11 meses            | 92% do total dos benefícios concedidos.      | R$ 552,00        |
-| 10 meses            | 83% do total dos benefícios concedidos.      | R$ 498,00        |
-| 9 meses             | 75% do total dos benefícios concedidos.      | R$ 450,00        |
-| 8 meses             | 67% do total dos benefícios concedidos.      | R$ 402,00        |
-| 7 meses             | 58% do total dos benefícios concedidos.      | R$ 348,00        |
-| 6 meses             | 50% do total dos benefícios concedidos.      | R$ 300,00        |
-| 5 meses             | 42% do total dos benefícios concedidos.      | R$ 252,00        |
-| 4 meses             | 33% do total dos benefícios concedidos.      | R$ 198,00        |
-| 3 meses             | 25% do total dos benefícios concedidos.      | R$ 150,00        |
-| 2 meses             | 17% do total dos benefícios concedidos.      | R$ 102,00        |
-| 1 mês               | 8% do total dos benefícios concedidos.       | R$ 48,00         |
+| 12 meses            | 100% do total dos benefícios concedidos.     | R$ {{ beneficio_total }}        |
+| 11 meses            | 92% do total dos benefícios concedidos.      | R$ {{ multa_11 }}        |
+| 10 meses            | 83% do total dos benefícios concedidos.      | R$ {{ multa_10 }}        |
+| 9 meses             | 75% do total dos benefícios concedidos.      | R$ {{ multa_9 }}        |
+| 8 meses             | 67% do total dos benefícios concedidos.      | R$ {{ multa_8 }}        |
+| 7 meses             | 58% do total dos benefícios concedidos.      | R$ {{ multa_7 }}        |
+| 6 meses             | 50% do total dos benefícios concedidos.      | R$ {{ multa_6 }}        |
+| 5 meses             | 42% do total dos benefícios concedidos.      | R$ {{ multa_5 }}        |
+| 4 meses             | 33% do total dos benefícios concedidos.      | R$ {{ multa_4 }}        |
+| 3 meses             | 25% do total dos benefícios concedidos.      | R$ {{ multa_3 }}        |
+| 2 meses             | 17% do total dos benefícios concedidos.      | R$ {{ multa_2 }}        |
+| 1 mês               | 8% do total dos benefícios concedidos.       | R$ {{ multa_1 }}        |
 +---------------------+----------------------------------------------+------------------+
 
 {% else %}
-(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA (12 meses)
-( X ) NAO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANENCIA
+MULTA POR RESCISÃO ANTECIPADA:
+Caso o CONTRATANTE solicite a rescisão antes do término do Prazo de Permanência, será devida multa proporcional ao período restante, limitada ao valor do benefício concedido. O valor máximo inicial da multa será de R$ {{ beneficio_total }}, reduzido proporcionalmente a cada mês completo de permanência cumprido.
+
+Fórmula: Multa = R$ {{ beneficio_total }} x (número de meses restantes do Prazo de Permanência / 12).
+{% endif %}
+
+{% else %}
+(   ) OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA (12 meses)
+( X ) NÃO OPTOU PELA FIDELIDADE / CONTRATO DE PERMANÊNCIA
 
 CONDIÇÕES SEM FIDELIDADE:
 - Contrato por prazo indeterminado
@@ -145,7 +205,7 @@ CONDIÇÕES SEM FIDELIDADE:
 
 - Este Termo de Adesão, juntamente com os CONTRATOS DE PRESTAÇÃO DE SCM E SVA disponíveis no site da CONTRATADA, constituem o acordo integral entre as partes.
 
-- Finalizado o prazo de permanência/fidelidade contratual, o CONTRATANTE declara estar ciente que não ficará mais sujeito ao prazo de permanência/fidelidade dos serviços, e que a concessão de outros benefícios ou mesmo a manutenção dos benefícios antes concedidos (exemplo: abatimento do valor da mensalidade), fica a critério de ambas as partes firmar NOVO CONTRATO DE PERMANÊNCIA/FIDELIDADE. Assim, com o fim da fidelidade, o CONTRATANTE está ciente que o plano voltará a ser cobrado em seu valor integral com correção do valor pela variação positiva do índice IGP-M acumulado dos últimos 12 (doze) meses.
+- Finalizado o prazo de permanência/fidelidade contratual, o CONTRATANTE declara estar ciente que não ficará mais sujeito ao prazo de permanência/fidelidade dos serviços, e que a concessão de outros benefícios ou mesmo a manutenção dos benefícios antes concedidos (exemplo: abatimento do valor da mensalidade), fica a critério de ambas as partes firmar NOVO CONTRATO DE PERMANÊNCIA/FIDELIDADE. Assim, com o fim da fidelidade, o CONTRATANTE está ciente que o plano voltará a ser cobrado em seu valor integral com correção do valor pela variação positiva do índice {{ indice_correcao or 'IPCA' }} acumulado dos últimos 12 (doze) meses.
 
 ================================================================================
                               8. DECLARAÇÃO DE CONCORDÂNCIA
