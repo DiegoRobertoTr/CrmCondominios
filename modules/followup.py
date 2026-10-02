@@ -1,1730 +1,1101 @@
 import streamlit as st
-from datetime import datetime, timedelta, timezone
-import urllib.parse
+from datetime import datetime, timedelta
+import calendar
 import re
 from collections import defaultdict
-import calendar
+import io
 import pandas as pd
-from io import BytesIO, StringIO
+from pymongo import MongoClient
+import urllib.parse
+from bson.objectid import ObjectId
 
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Obter lista de condomínios com cache e contagem
-# ============================================================================
-def get_condominios_com_contagem(clientes_collection, forcar_atualizacao=False):
-    """
-    Retorna lista de condomínios com contagem de clientes, usando cache.
-    """
-    cache_key = "condominios_cache_followup"
-    cache_timestamp_key = "condominios_cache_timestamp_followup"
-    CACHE_EXPIRY_SECONDS = 300  # 5 minutos de validade do cache
-    agora = datetime.now(timezone.utc)
+# ✅ CORREÇÃO: st.set_page_config() DEVE ser a primeira chamada Streamlit
+st.set_page_config(page_title="CRM Eventos", layout="wide")
 
-    # Verifica se precisa atualizar o cache
-    precisa_atualizar = forcar_atualizacao
-
-    if not precisa_atualizar:
-        if cache_key not in st.session_state or cache_timestamp_key not in st.session_state:
-            precisa_atualizar = True
-        else:
-            cache_timestamp = st.session_state.get(cache_timestamp_key, datetime.min.replace(tzinfo=timezone.utc))
-            if (agora - cache_timestamp).total_seconds() > CACHE_EXPIRY_SECONDS:
-                precisa_atualizar = True
-
-    # Atualiza cache se necessário
-    if precisa_atualizar:
-        try:
-            # Busca todos os condomínios únicos com contagem 
-            pipeline = [
-                {
-                    "$match": {
-                        "seguiu_ativacao": { "$ne": "Sim"},
-                        "restritivo": { "$ne": "Sim"},
-                        "status_followup": { "$ne": "removido"},
-                        "condominio_nome": { "$ne": None, "$ne": ""}
-                    }
-                },
-                {
-                    "$group": {
-                        "_id": "$condominio_nome",
-                        "count": { "$sum": 1}
-                    }
-                },
-                { "$sort": { "_id": 1}}
-            ]
-            
-            resultados = list(clientes_collection.aggregate(pipeline))
-            
-            # Formata: "Nome do Condomínio (X clientes)"
-            condominios_formatados = {}
-            for r in resultados:
-                nome = r["_id"]
-                count = r["count"]
-                condominios_formatados[f"{nome} ({count})"] = nome
-            
-            # Ordena por nome
-            condominios_formatados = dict(sorted(condominios_formatados.items()))
-            
-            # Adiciona opção "Todos"
-            opcoes_finais = {"Todos": "Todos"}
-            opcoes_finais.update(condominios_formatados)
-            
-            # Salva no cache
-            st.session_state[cache_key] = opcoes_finais
-            st.session_state[cache_timestamp_key] = agora
-            
-            return opcoes_finais
-            
-        except Exception as e:
-            st.error(f"❌ Erro ao buscar condomínios: {e}")
-            return {"Todos": "Todos"}
-
-    # Retorna do cache
-    return st.session_state.get(cache_key, {"Todos": "Todos"})
-
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Obter lista de vendedoras com contagem
-# ============================================================================
-def get_vendedoras_ativas(clientes_collection):
-    """
-    Retorna lista de vendedoras com contagem de leads, para uso em filtros.
-    """
+# --- Funções de Conexão (Padrão MongoDB) ---
+def get_db_client():
+    """Retorna o cliente MongoDB configurado"""
     try:
-        pipeline = [
-            {
-                "$match": {
-                    "seguiu_ativacao": { "$ne": "Sim"},
-                    "restritivo": { "$ne": "Sim"},
-                    "status_followup": { "$ne": "removido"},
-                    "cadastrado_por": { "$ne": None, "$ne": ""}
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$cadastrado_por",
-                    "count": { "$sum": 1}
-                }
-            },
-            { "$sort": { "_id": 1}}
-        ]
+        username = st.secrets["mongo"]["MONGO_USERNAME"]
+        password = st.secrets["mongo"]["MONGO_PASSWORD"]
+        cluster_url = st.secrets["mongo"]["MONGO_CLUSTER_URL"]
+    except KeyError:
+        username = st.secrets.get("MONGO_USERNAME", "")
+        password = st.secrets.get("MONGO_PASSWORD", "")
+        cluster_url = st.secrets.get("MONGO_CLUSTER_URL", "")
+    
+    u = urllib.parse.quote_plus(username)
+    p = urllib.parse.quote_plus(password)
+    uri = f"mongodb+srv://{u}:{p}@{cluster_url}/?retryWrites=true&w=majority"
+    return MongoClient(uri)
+
+def get_leads_collection():
+    """Retorna coleção de Leads/Eventos"""
+    client = get_db_client()
+    return client.crm_db.leads
+
+def update_lead_status(lead_id, novo_status, convertido=False):
+    try:
+        collection = get_leads_collection()
+        update_data = {"status": novo_status}
+        if convertido:
+            update_data["convertido"] = True
+            update_data["status"] = "✅ Convertido"
         
-        resultados = list(clientes_collection.aggregate(pipeline))
-        
-        # Formata: "Nome da Vendedora (X leads)"
-        vendedoras_formatadas = {}
-        for r in resultados:
-            nome = r["_id"]
-            count = r["count"]
-            vendedoras_formatadas[f"{nome} ({count})"] = nome
-        
-        # Adiciona opção "Todas"
-        opcoes_finais = {"Todas": "Todas"}
-        opcoes_finais.update(vendedoras_formatadas)
-        
-        return opcoes_finais
-        
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)}, 
+            {"$set": update_data}
+        )
+        return result.modified_count > 0
     except Exception as e:
-        st.error(f"❌ Erro ao buscar vendedoras: {e}")
-        return {"Todas": "Todas"}
+        st.error(f"Erro ao atualizar: {e}")
+        return False
 
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Carregar configuração de delegação do banco
-# ============================================================================
-def carregar_config_delegacao(clientes_collection):
-    """Carrega a configuração de delegação do banco de dados"""
-    config_banco = clientes_collection.database["configuracoes"].find_one({"tipo": "modo_delegacao"})
-    
-    if config_banco and config_banco.get("ativo"):
-        return {
-            "ativo": config_banco.get("ativo", False),
-            "atendente": config_banco.get("atendente", "Todos os atendentes")
-        }
-    return {
-        "ativo": False,
-        "atendente": "Todos os atendentes"
-    }
-
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Renderizar configuração de delegação (REUTILIZÁVEL)
-# ============================================================================
-def render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix=""):
-    """
-    Renderiza o painel de configuração do Modo Delegação.
-    Pode ser chamado de qualquer aba.
-    """
-    if not is_admin:
-        return False, False
-    
-    # Carregar configuração atual do banco
-    config_banco = clientes_collection.database["configuracoes"].find_one({"tipo": "modo_delegacao"})
-    
-    # Inicializar session_state se necessário
-    if f"modo_delegacao_ativo_{key_suffix}" not in st.session_state:
-        st.session_state[f"modo_delegacao_ativo_{key_suffix}"] = config_banco.get("ativo", False) if config_banco else False
-        st.session_state[f"atendente_delegado_{key_suffix}"] = config_banco.get("atendente", "Todos os atendentes") if config_banco else "Todos os atendentes"
-    
-    modo_ativo = st.session_state[f"modo_delegacao_ativo_{key_suffix}"]
-    atendente_atual = st.session_state[f"atendente_delegado_{key_suffix}"]
-    
-    # Buscar lista de atendentes
-    todos_atendentes = clientes_collection.distinct("cadastrado_por", {
-        "seguiu_ativacao": { "$ne": "Sim"},
-        "restritivo": { "$ne": "Sim"},
-        "status_followup": { "$ne": "removido"}
-    })
-    todos_atendentes = [a for a in todos_atendentes if a]
-    opcoes_delegacao = ["Todos os atendentes"] + sorted(todos_atendentes)
-    
-    with st.expander("⚙️ Configurar Modo Delegação ", expanded=not modo_ativo):
-        col_del1, col_del2, col_del3 = st.columns([1, 2, 2])
-        
-        with col_del1:
-            modo_delegacao = st.toggle(
-                "🔄 Ativar ",
-                value=modo_ativo,
-                help="Ative para permitir que um atendente específico (ou todos) vejam todos os clientes do follow-up. ",
-                key=f"toggle_delegacao_{key_suffix}"
-            )
-            st.session_state[f"modo_delegacao_ativo_{key_suffix}"] = modo_delegacao
-            modo_ativo = modo_delegacao
-        
-        with col_del2:
-            if modo_delegacao:
-                atendente_delegado = st.selectbox(
-                    "👤 Quem recebe todos os clientes: ",
-                    options=opcoes_delegacao,
-                    index=opcoes_delegacao.index(atendente_atual) if atendente_atual in opcoes_delegacao else 0,
-                    key=f"select_atendente_delegado_{key_suffix}"
-                )
-                st.session_state[f"atendente_delegado_{key_suffix}"] = atendente_delegado
-                atendente_atual = atendente_delegado
-        
-        with col_del3:
-            persistir = st.checkbox(
-                "💾 Salvar configuração (persistente) ",
-                value=bool(config_banco),
-                help="Se marcado, a configuração permanece ativa mesmo após reiniciar o sistema. ",
-                key=f"check_persistir_{key_suffix}"
-            )
-            
-            if modo_delegacao:
-                if atendente_atual == "Todos os atendentes":
-                    st.info("💡 Todos os atendentes logados terão acesso à carteira completa. ")
-                else:
-                    st.info(f"💡 Apenas **{atendente_atual}** terá acesso à carteira completa. ")
-        
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("💾 Aplicar Configuração ", use_container_width=True, type="primary", key=f"aplicar_config_{key_suffix}"):
-                if persistir:
-                    clientes_collection.database["configuracoes"].update_one(
-                        {"tipo": "modo_delegacao"},
-                        {"$set": {
-                            "tipo": "modo_delegacao",
-                            "ativo": modo_ativo,
-                            "atendente": atendente_atual,
-                            "ativado_por": usuario_atual,
-                            "data_ativacao": datetime.now(timezone.utc).isoformat()
-                        }},
-                        upsert=True
-                    )
-                    st.success("✅ Configuração salva no banco de dados! ")
-                else:
-                    clientes_collection.database["configuracoes"].delete_one({"tipo": "modo_delegacao"})
-                    st.info("ℹ️ Configuração aplicada apenas para esta sessão. ")
-                
-                # Sincronizar com outras abas (atualizar session_state global)
-                st.session_state.modo_delegacao_global_ativo = modo_ativo
-                st.session_state.atendente_delegado_global = atendente_atual
-                st.rerun()
-        
-        with col_btn2:
-            if st.button("🗑️ Limpar Configuração do Banco ", use_container_width=True, type="secondary", key=f"limpar_config_{key_suffix}"):
-                clientes_collection.database["configuracoes"].delete_one({"tipo": "modo_delegacao"})
-                st.session_state[f"modo_delegacao_ativo_{key_suffix}"] = False
-                st.session_state[f"atendente_delegado_{key_suffix}"] = "Todos os atendentes"
-                st.session_state.modo_delegacao_global_ativo = False
-                st.session_state.atendente_delegado_global = "Todos os atendentes"
-                st.success("🗑️ Configuração removida do banco! ")
-                st.rerun()
-    
-    # Retornar o estado atual para uso na aba
-    return modo_ativo, atendente_atual
-
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Obter estado do modo delegação (consistente entre abas)
-# ============================================================================
-def get_modo_delegacao_estado(clientes_collection):
-    """
-    Retorna o estado atual do modo delegação, sincronizado entre abas.
-    Prioriza: 1. Session state global | 2. Banco de dados | 3. Padrão
-    """
-    # Verificar se há um estado global sincronizado
-    if "modo_delegacao_global_ativo" in st.session_state:
-        return {
-            "ativo": st.session_state.modo_delegacao_global_ativo,
-            "atendente": st.session_state.get("atendente_delegado_global", "Todos os atendentes")
-        }
-    
-    # Se não, carregar do banco
-    config = carregar_config_delegacao(clientes_collection)
-    
-    # Armazenar no estado global para consistência
-    st.session_state.modo_delegacao_global_ativo = config["ativo"]
-    st.session_state.atendente_delegado_global = config["atendente"]
-    
-    return config
-
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: exibir cliente com touch tracking
-# ============================================================================
-def exibir_cliente_detalhe(cliente, clientes_collection, key_suffix=""):
-    nome = cliente["nome_completo"]
-    _id = str(cliente["_id"])
-    key_base = f"{key_suffix}{_id}"
-    # Obter contagem de touches (padrão: 0)
-    touch_count = cliente.get("touch_count", 0)
-
-    # Definir badge + cor com base no touch_count
-    if touch_count == 0:
-        badge = "🆕 "
-        color_hex = "#d4edda"
-    elif touch_count <= 3:
-        badge = f"🟢 {touch_count} "
-        color_hex = "#d4edda"
-    elif touch_count <= 6:
-        badge = f"🟡 {touch_count} "
-        color_hex = "#fff3cd"
-    elif touch_count <= 10:
-        badge = f"🟠 {touch_count} "
-        color_hex = "#ffeacc"
-    else:
-        badge = f"🔴 {touch_count} "
-        color_hex = "#f8d7da"
-
-    expander_title = f"👤 {nome} — {cliente.get('celular', 'N/A')} {badge} "
-
-    with st.expander(expander_title, expanded=False):
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.write(f"**Origem:** {cliente.get('origem', 'N/A')} ")
-            st.write(f"**Plano:** {cliente.get('plano_escolhido', 'N/A')} ")
-            data_banco = cliente.get('retorno_agendado', '')
-            try:
-                data_exibicao = datetime.strptime(data_banco, "%Y-%m-%d").strftime("%d/%m/%Y") if data_banco else "Não definida "
-            except:
-                data_exibicao = data_banco or "Inválida "
-            st.write(f"**Data Follow-up:** {data_exibicao} ")
-            st.write(f"**Última atualização:** {cliente.get('data_cadastro', 'N/A')} ")
-            st.write(f"**Cadastrado por:** {cliente.get('cadastrado_por', 'N/A')} ")
-            
-            # 🏢 Exibir informações de condomínio
-            if cliente.get("condominio_nome"):
-                st.write(f"**Condomínio:** {cliente.get('condominio_nome', 'N/A')} ")
-            if cliente.get("bloco") or cliente.get("apartamento"):
-                bloco = cliente.get("bloco", " ")
-                apto = cliente.get("apartamento", " ")
-                unidade_texto = []
-                if bloco:
-                    unidade_texto.append(f"Bloco {bloco}")
-                if apto:
-                    unidade_texto.append(f"Apto {apto}")
-                st.write(f"**Unidade:** {' - '.join(unidade_texto)} ")
-            
-            st.caption(f"🎯 Toques registrados: **{touch_count}** ")
-        with col2:
-            if st.button("✏️ Editar Follow-up ", key=f"edit_{key_base}"):
-                st.session_state["editando_followup"] = _id
-                st.session_state["data_banco_original"] = cliente.get("retorno_agendado", " ")
-
-        # Botão de Registrar Touch
-        if st.button("✅ Registrar Touch ", key=f"touch_{key_base}", type="secondary"):
-            novo_count = touch_count + 1
-            nome_usuario = st.session_state.get("nome_usuario", "Anônimo")
-            timestamp = datetime.now(timezone.utc).isoformat()
-            clientes_collection.update_one(
-                {"_id": cliente["_id"]},
-                {
-                    "$set": {"touch_count": novo_count},
-                    "$push": {
-                        "touch_history": {
-                            "timestamp": timestamp,
-                            "by": nome_usuario,
-                            "notes": "Touch registrado via Follow-up "
-                        }
-                    }
-                }
-            )
-            st.success(f"✔️ Touch #{novo_count} registrado por {nome_usuario}! ")
-            st.rerun()
-
-        # Formulário de edição
-        if st.session_state.get("editando_followup") == _id:
-            with st.form(f"form_edit_{key_base}"):
-                data_banco_orig = st.session_state.get("data_banco_original", " ")
-                data_para_exibicao = " "
-                if data_banco_orig:
-                    try:
-                        data_para_exibicao = datetime.strptime(data_banco_orig, "%Y-%m-%d").strftime("%d/%m/%Y")
-                    except:
-                        data_para_exibicao = data_banco_orig
-
-                nova_data_exibicao = st.text_input(
-                    "Nova data de follow-up (DD/MM/AAAA): ",
-                    value=data_para_exibicao,
-                    key=f"input_{key_base}"
-                )
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.form_submit_button("💾 Salvar "):
-                        nova_data_banco = " "
-                        if nova_data_exibicao.strip():
-                            if re.match(r'\d{2}/\d{2}/\d{4}', nova_data_exibicao):
-                                try:
-                                    data_obj = datetime.strptime(nova_data_exibicao, "%d/%m/%Y")
-                                    nova_data_banco = data_obj.strftime("%Y-%m-%d")
-                                except ValueError:
-                                    st.error("❌ Data inválida. ")
-                                    return
-                            else:
-                                st.error("❌ Formato inválido. Use DD/MM/AAAA. ")
-                                return
-
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {"$set": {"retorno_agendado": nova_data_banco}}
-                        )
-                        st.success("✅ Data atualizada! ")
-                        st.session_state.pop("editando_followup", None)
-                        st.session_state.pop("data_banco_original", None)
-                        st.rerun()
-                with col_b:
-                    if st.form_submit_button("❌ Cancelar "):
-                        st.session_state.pop("editando_followup", None)
-                        st.session_state.pop("data_banco_original", None)
-                        st.rerun()
-
-        # Observações
-        st.markdown("### 📝 Observações de Follow-up ")
-        col_obs, col_btns = st.columns([3, 1])
-        with col_obs:
-            obs_atual = cliente.get("observacoes_followup", " ")
-            nova_observacao = st.text_area(
-                " ",
-                value=obs_atual,
-                placeholder="Ex: Cliente quer mais 3 pontos na semana que vem. ",
-                key=f"obs_{key_base}"
-            )
-        with col_btns:
-            if st.button("💾 Salvar ", key=f"salvar_obs_{key_base}"):
-                clientes_collection.update_one(
-                    {"_id": cliente["_id"]},
-                    {"$set": {"observacoes_followup": nova_observacao}}
-                )
-                st.success("✅ Observações salvas! ")
-                st.rerun()
-            if st.button("🚫 Remover da Lista ", key=f"remover_{key_base}", type="secondary"):
-                clientes_collection.update_one(
-                    {"_id": cliente["_id"]},
-                    {"$set": {"status_followup": "removido"}}
-                )
-                st.success(f"✅ {nome} removido da lista de follow-up. ")
-                st.rerun()
-
-        # WhatsApp
-        if st.button("📞 Contatar Agora ", key=f"contato_{key_base}", type="secondary"):
-            celular = cliente.get("celular", " ").replace(" ", " ").replace("-", " ").replace("(", " ").replace(")", " ")
-            if celular:
-                mensagem = f"Olá {nome}, tudo bem? Aqui é da Tracecom. Estamos entrando em contato para acompanhar seu cadastro. Podemos conversar? "
-                whatsapp_url = f"https://wa.me/55{celular}?text={urllib.parse.quote(mensagem)}"
-                st.markdown(f"[📲 Enviar mensagem via WhatsApp]({whatsapp_url})", unsafe_allow_html=True)
-            else:
-                st.warning("Celular não encontrado. ")
-
-# ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Formatar último touch
-# ============================================================================
-def formatar_ultimo_touch(cliente):
-    """Retorna string formatada com data do último touch ou mensagem padrão"""
-    touch_history = cliente.get("touch_history", [])
-    if not touch_history:
-        return "🆕 Nunca contactado"
+def delete_lead(lead_id):
     try:
-        ultimo_ts = max([t.get("timestamp", " ") for t in touch_history])
-        if not ultimo_ts:
-            return "🆕 Nunca contactado "
-        
-        data_ultimo = datetime.fromisoformat(ultimo_ts.replace("Z", "+00:00"))
-        agora = datetime.now(timezone.utc)
-        
-        diff = agora - data_ultimo
-        dias = diff.days
-        horas = diff.seconds // 3600
-        minutos = (diff.seconds % 3600) // 60
-        
-        if dias == 0:
-            if horas == 0:
-                if minutos == 0:
-                    tempo_str = "agora mesmo "
-                else:
-                    tempo_str = f"há {minutos} min "
-            else:
-                tempo_str = f"há {horas}h "
-        elif dias == 1:
-            tempo_str = "ontem "
-        elif dias < 7:
-            tempo_str = f"há {dias} dias "
-        elif dias < 30:
-            semanas = dias // 7
-            tempo_str = f"há {semanas} semana{'s' if semanas > 1 else ''} "
+        collection = get_leads_collection()
+        result = collection.delete_one({"_id": ObjectId(lead_id)})
+        return result.deleted_count > 0
+    except Exception as e:
+        st.error(f"Erro ao excluir: {e}")
+        return False
+
+def update_lead_observacoes(lead_id, novas_observacoes):
+    try:
+        collection = get_leads_collection()
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)},
+            {"$set": {"observacoes": novas_observacoes}}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar observações: {e}")
+        return False
+
+def update_lead_data_proximo_contato(lead_id, nova_data):
+    try:
+        collection = get_leads_collection()
+        if nova_data is None:
+            result = collection.update_one(
+                {"_id": ObjectId(lead_id)},
+                {"$unset": {"data_proximo_contato": ""}}
+            )
         else:
-            tempo_str = data_ultimo.strftime("%d/%m/%Y")
-        
-        if dias == 0:
-            icone = "🟢 "
-        elif dias <= 3:
-            icone = "🟡 "
-        elif dias <= 7:
-            icone = "🟠 "
-        else:
-            icone = "🔴 "
-        
-        return f"{icone} Último touch: {tempo_str} "
+            result = collection.update_one(
+                {"_id": ObjectId(lead_id)},
+                {"$set": {"data_proximo_contato": datetime.combine(nova_data, datetime.min.time())}}
+            )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar data: {e}")
+        return False
 
-    except Exception:
-        return "❓ Data inválida "
+def update_lead_potencial(lead_id, potencial_condominio, qtd_apartamentos, potencial_servicos, obs_potencial):
+    """Atualiza os dados de potencial do condomínio"""
+    try:
+        collection = get_leads_collection()
+        update_data = {
+            "potencial_condominio": potencial_condominio if potencial_condominio != "Não avaliado" else None,
+            "qtd_apartamentos": qtd_apartamentos if qtd_apartamentos and qtd_apartamentos > 0 else None,
+            "potencial_servicos": potencial_servicos if potencial_servicos != "Não avaliado" else None,
+            "obs_potencial": obs_potencial.strip() if obs_potencial else None
+        }
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)},
+            {"$set": update_data}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar potencial: {e}")
+        return False
+
+def get_eventos_existentes():
+    try:
+        collection = get_leads_collection()
+        pipeline = [
+            {"$group": {"_id": "$evento"}},
+            {"$sort": {"_id": 1}},
+            {"$limit": 100}
+        ]
+        resultados = list(collection.aggregate(pipeline))
+        eventos = [r["_id"] for r in resultados if r["_id"]]
+        return sorted(eventos)
+    except Exception as e:
+        st.warning(f"⚠️ Não foi possível carregar eventos anteriores: {e}")
+        return []
 
 # ============================================================================
-# ✅ FUNÇÃO AUXILIAR: Formatar data de cadastro
+# ✅ NOVO: FUNÇÃO AUXILIAR - Retorna leads agrupados por data de próximo contato
 # ============================================================================
-def formatar_data_cadastro(data_cad):
-    """Converte data de cadastro para string formatada de forma segura"""
-    if data_cad is None:
-        return "N/A"
-    if isinstance(data_cad, str):
-        return data_cad[:10] if len(data_cad) > 10 else data_cad
-    if isinstance(data_cad, datetime):
-        return data_cad.strftime("%Y-%m-%d")
-    return str(data_cad)[:10]
-
-# ============================================================================
-# ✅ FUNÇÃO: Painel de Ligações (ATUALIZADO COM FILTRO DE VENDEDORA)
-# ============================================================================
-def render_painel_ligacoes(clientes_collection, is_admin, usuario_atual, modo_delegacao_ativo, atendente_delegado):
-    """Renderiza o painel de ligações telefônicas com visualização e exportação"""
-    st.subheader("📞 Painel de Ligações - Modo Call Center ")
-
-    # Mensagem de status do modo delegação
-    if modo_delegacao_ativo:
-        if atendente_delegado == "Todos os atendentes":
-            st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
-        elif atendente_delegado == usuario_atual:
-            st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! ")
-        elif is_admin:
-            st.warning(f"🚨 **Modo Delegação Ativo** - Apenas **{atendente_delegado}** está vendo TODOS os clientes! ")
-
-    # === FILTROS AVANÇADOS ===
-    st.markdown("### 🔍 Filtros Avançados de Ligação ")
-
-    col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 2])
-
-    with col_f1:
-        filtro_touch_tipo = st.selectbox(
-            "Quantidade de ligações: ",
-            options=["Todos ", "Nunca ligado (0) ", "1-3 ligações ", "4-6 ligações ", "7-10 ligações ", "Mais de 10 ", "Personalizado "],
-            index=0,
-            key="filtro_touch_tipo"
-        )
-
-    with col_f2:
-        if filtro_touch_tipo == "Personalizado ":
-            touch_min = st.number_input("Mínimo: ", min_value=0, value=0, key="touch_min")
-            touch_max = st.number_input("Máximo: ", min_value=0, value=999, key="touch_max")
-        else:
-            st.caption("Selecione 'Personalizado' para definir range")
-            touch_min, touch_max = 0, 999
-
-    with col_f3:
-        filtro_periodo = st.selectbox(
-            "Último contato: ",
-            options=["Qualquer período ", "Hoje ", "Ontem ", "Últimos 3 dias ", "Última semana ", "Últimos 15 dias ", "Último mês ", "Mais de 1 mês ", "Nunca contactado "],
-            index=0,
-            key="filtro_periodo"
-        )
-
-    with col_f4:
-        filtro_nao_perturbar = st.checkbox(
-            "☑️ Incluir 'Não Perturbar' ",
-            value=False,
-            help="Se marcado, mostra também clientes em período de não perturbar ",
-            key="filtro_nao_perturbar"
-        )
-
-    # Botão de ações rápidas em lote
-    st.markdown("#### ⚡ Ações em Lote Selecionados ")
-    col_acoes1, col_acoes2, col_acoes3, col_acoes4 = st.columns([1, 1, 1, 2])
-
-    with col_acoes1:
-        st.caption("Após selecionar clientes: ")
-    with col_acoes2:
-        if st.button("📅 Tentar em 3 dias ", key="acao_3dias", use_container_width=True):
-            st.session_state.acao_lote = "tentar_3_dias"
-    with col_acoes3:
-        if st.button("🚫 Não perturbar 6m ", key="acao_6meses", use_container_width=True):
-            st.session_state.acao_lote = "nao_perturbar_6m"
-    with col_acoes4:
-        if st.button("❌ Remover da lista ", key="acao_remover", use_container_width=True, type="secondary"):
-            st.session_state.acao_lote = "remover"
-
-    st.divider()
-
-    # Filtros específicos do painel - LINHA 1 (ATUALIZADO COM FILTRO DE VENDEDORA)
-    col1, col2, col3 = st.columns([2, 2, 2])
-
-    # Obter lista de vendedoras com contagem
-    vendedoras_opcoes = get_vendedoras_ativas(clientes_collection)
-    opcoes_display_vendedoras = list(vendedoras_opcoes.keys())
-
-    usuario_pode_ver_todos = is_admin or (
-        modo_delegacao_ativo and (
-            atendente_delegado == "Todos os atendentes" or 
-            atendente_delegado == usuario_atual
-        )
-    )
-
-    with col1:
-        # ✅ FILTRO DE VENDEDORA COM CONTAGEM
-        filtro_vendedora = st.selectbox(
-            "👤 Filtrar por vendedora: ",
-            options=opcoes_display_vendedoras,
-            index=0,
-            key="painel_filtro_vendedora"
-        )
-
-    with col2:
-        ordenacao = st.selectbox(
-            "Ordenar por: ",
-            options=["Data de cadastro (mais recente) ", "Data de cadastro (mais antiga) ", "Nome (A-Z) ", "Touch count (mais touches primeiro) ", "Touch count (menos touches primeiro) ", "Último touch (mais recente) ", "Último touch (mais antigo) "],
-            index=0,
-            key="painel_ordenacao"
-        )
-
-    with col3:
-        limite = st.number_input(
-            "Quantidade por página: ",
-            min_value=10,
-            max_value=200,
-            value=50,
-            step=10,
-            key="painel_limite"
-        )
-
-    # 🏢 FILTRO DE CONDOMÍNIO - LINHA 2 (ABAIXO DOS OUTROS FILTROS)
-    st.markdown("")  # Espaçamento
-    col_condominio = st.columns(1)
+def get_leads_para_calendario(collection, ano, mes, filtros=None):
+    """
+    Retorna dict { 'YYYY-MM-DD': [leads] } para o mês/ano especificado.
+    Considera 'data_proximo_contato' (datetime) OU 'data_evento' como fallback.
+    """
+    filtros = filtros or {}
     
-    with col_condominio[0]:
-        # Botão para atualizar cache
-        if st.button("🔄 Atualizar Lista de Condomínios ", key="btn_atualizar_cond_painel", help="Atualiza a lista de condomínios"):
-            if "condominios_cache_followup" in st.session_state:
-                del st.session_state["condominios_cache_followup"]
-            if "condominios_cache_timestamp_followup" in st.session_state:
-                del st.session_state["condominios_cache_timestamp_followup"]
-            st.rerun()
-        
-        condominios_opcoes = get_condominios_com_contagem(clientes_collection)
-        opcoes_display = list(condominios_opcoes.keys())
-        
-        filtro_condominio_painel = st.multiselect(
-            "Condomínio: ",
-            options=opcoes_display,
-            default=[],
-            key="painel_filtro_condominio"
-        )
-
-    # Montagem da query
-    query = {
-        "seguiu_ativacao": { "$ne": "Sim"},
-        "restritivo": { "$ne": "Sim"},
-        "status_followup": { "$ne": "removido"}
+    # Intervalo do mês
+    inicio_mes = datetime(ano, mes, 1)
+    fim_mes = datetime(ano, mes, calendar.monthrange(ano, mes)[1], 23, 59, 59)
+    
+    # Query base: pega leads com data_proximo_contato OU data_evento no mês
+    query_base = {
+        "$or": [
+            {"data_proximo_contato": {"$gte": inicio_mes, "$lte": fim_mes}},
+            {"data_evento": {"$gte": inicio_mes, "$lte": fim_mes}}
+        ]
     }
-
-    # ✅ Lógica de filtro por vendedora (NOVO)
-    vendedora_selecionada = vendedoras_opcoes.get(filtro_vendedora, "Todas")
-    if vendedora_selecionada != "Todas":
-        query["cadastrado_por"] = vendedora_selecionada
-    elif not usuario_pode_ver_todos:
-        # Se não está em modo delegação e não selecionou vendedora específica
-        query["cadastrado_por"] = usuario_atual
-
-    # 🏢 APLICAR FILTRO DE CONDOMÍNIO
-    if filtro_condominio_painel and "Todos" not in filtro_condominio_painel:
-        condominios_selecionados = []
-        for opcao in filtro_condominio_painel:
-            nome_real = condominios_opcoes.get(opcao, opcao)
-            if nome_real != "Todos":
-                condominios_selecionados.append(nome_real)
+    
+    # Aplicar filtros extras (status, potencial, evento)
+    if filtros:
+        query_base = {"$and": [query_base, filtros]}
+    
+    try:
+        leads = list(collection.find(query_base))
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar leads para calendário: {e}")
+        return {}
+    
+    agenda = defaultdict(list)
+    
+    for lead in leads:
+        # Priorizar data_proximo_contato; se não tiver, usa data_evento
+        data_ref = lead.get("data_proximo_contato") or lead.get("data_evento")
         
-        if condominios_selecionados:
-            query["condominio_nome"] = { "$in": condominios_selecionados}
-
-    # === FILTROS DE TOUCH ===
-    if filtro_touch_tipo == "Nunca ligado (0) ":
-        query["touch_count"] = { "$eq": 0}
-    elif filtro_touch_tipo == "1-3 ligações ":
-        query["touch_count"] = { "$gte": 1, "$lte": 3}
-    elif filtro_touch_tipo == "4-6 ligações ":
-        query["touch_count"] = { "$gte": 4, "$lte": 6}
-    elif filtro_touch_tipo == "7-10 ligações ":
-        query["touch_count"] = { "$gte": 7, "$lte": 10}
-    elif filtro_touch_tipo == "Mais de 10 ":
-        query["touch_count"] = { "$gt": 10}
-    elif filtro_touch_tipo == "Personalizado ":
-        query["touch_count"] = { "$gte": touch_min, "$lte": touch_max}
-
-    # === FILTRO DE NÃO PERTURBAR ===
-    hoje = datetime.now(timezone.utc)
-    hoje_str = hoje.strftime("%Y-%m-%d")
-
-    if not filtro_nao_perturbar:
-        query["$or"] = [
-            {"retorno_agendado": { "$exists": False}},
-            {"retorno_agendado": ""},
-            {"retorno_agendado": { "$lte": hoje_str}}
-        ]
-
-    # === FILTRO DE PERÍODO DO ÚLTIMO CONTATO ===
-    if filtro_periodo != "Qualquer período " and filtro_periodo != "Nunca contactado ":
-        if filtro_periodo == "Hoje ":
-            data_limite = hoje.replace(hour=0, minute=0, second=0)
-        elif filtro_periodo == "Ontem ":
-            data_limite = hoje - timedelta(days=1)
-            data_limite = data_limite.replace(hour=0, minute=0, second=0)
-        elif filtro_periodo == "Últimos 3 dias ":
-            data_limite = hoje - timedelta(days=3)
-        elif filtro_periodo == "Última semana ":
-            data_limite = hoje - timedelta(days=7)
-        elif filtro_periodo == "Últimos 15 dias ":
-            data_limite = hoje - timedelta(days=15)
-        elif filtro_periodo == "Último mês ":
-            data_limite = hoje - timedelta(days=30)
-        elif filtro_periodo == "Mais de 1 mês ":
-            data_limite = hoje - timedelta(days=30)
-            pass
+        if not data_ref:
+            continue
         
-        if filtro_periodo != "Mais de 1 mês ":
-            query["touch_history.timestamp"] = { "$gte": data_limite.isoformat()}
+        if isinstance(data_ref, datetime):
+            data_key = data_ref.strftime("%Y-%m-%d")
+        elif isinstance(data_ref, str) and len(data_ref) >= 10:
+            data_key = data_ref[:10]
+        else:
+            continue
+        
+        agenda[data_key].append(lead)
+    
+    return agenda
 
-    elif filtro_periodo == "Nunca contactado ":
-        query["$or"] = [
-            {"touch_history": { "$exists": False}},
-            {"touch_history": { "$size": 0}}
-        ]
+# --- Módulo de Registro de Leads ---
+def render_registro_lead():
+    st.title("🤝 Captura de Leads & Eventos")
+    st.markdown("Registro de contatos realizados em feiras, eventos e visitas.")
+    
+    PRODUTOS = [
+        "Conecta e Protege (Câmeras + Internet + Bônus)",
+        "Câmeras de Segurança",
+        "Recarga de Carros Elétricos",
+        "Conectividade (Internet)",
+        "Automação Residencial",
+        "Automação Predial"
+    ]
 
-    # Ordenação
-    sort_field = "data_cadastro"
-    sort_direction = -1
+    eventos_existentes = get_eventos_existentes()
 
-    if ordenacao == "Data de cadastro (mais antiga) ":
-        sort_direction = 1
-    elif ordenacao == "Nome (A-Z) ":
-        sort_field = "nome_completo"
-        sort_direction = 1
-    elif ordenacao == "Touch count (mais touches primeiro) ":
-        sort_field = "touch_count"
-        sort_direction = -1
-    elif ordenacao == "Touch count (menos touches primeiro) ":
-        sort_field = "touch_count"
-        sort_direction = 1
-    elif ordenacao == "Último touch (mais recente) ":
-        sort_field = "touch_history.timestamp"
-        sort_direction = -1
-    elif ordenacao == "Último touch (mais antigo) ":
-        sort_field = "touch_history.timestamp"
-        sort_direction = 1
-
-    # Busca os clientes
-    clientes = list(clientes_collection.find(query).sort(sort_field, sort_direction).limit(limite))
-
-    # Pós-processamento para filtro "Mais de 1 mês "
-    if filtro_periodo == "Mais de 1 mês ":
-        data_limite = hoje - timedelta(days=30)
-        clientes_filtrados = []
-        for c in clientes:
-            touch_history = c.get("touch_history", [])
-            if touch_history:
-                ultimo_touch = max([t.get("timestamp", " ") for t in touch_history])
-                if ultimo_touch:
-                    try:
-                        data_ultimo = datetime.fromisoformat(ultimo_touch.replace("Z", "+00:00"))
-                        if data_ultimo < data_limite:
-                            clientes_filtrados.append(c)
-                    except:
-                        pass
+    with st.form("form_lead_evento", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📋 Dados do Contato")
+            tipo_contato = st.selectbox("Tipo de Contato *", ["Síndico / Cliente", "Parceiro Comercial", "Outros"])
+            nome_contato = st.text_input("Nome do Contato *", max_chars=100)
+            
+            nome_condominio = st.text_input("🏢 Nome do Condomínio (Se houver)", max_chars=100, 
+                                          help="Preencha apenas se for um condomínio residencial")
+            
+            nome_empresa = st.text_input("🏭 Nome da Empresa (Se houver)", max_chars=100,
+                                       help="Preencha apenas se for uma empresa parceira/comercial")
+            
+            telefone = st.text_input("Telefone / WhatsApp *", max_chars=20, placeholder="(00) 00000-0000")
+            email = st.text_input("E-mail", max_chars=100)
+            
+        with col2:
+            st.subheader("📅 Dados do Evento & Agenda")
+            
+            st.markdown("**Nome do Evento / Origem ***")
+            st.caption("💡 Comece a digitar para ver sugestões de eventos já cadastrados")
+            
+            if eventos_existentes:
+                opcoes_evento = ["✨ Novo Evento..."] + eventos_existentes
+                nome_evento_selecionado = st.selectbox(
+                    "Selecione ou digite o evento:",
+                    opcoes_evento,
+                    index=0,
+                    key="selectbox_evento"
+                )
+                
+                if nome_evento_selecionado == "✨ Novo Evento...":
+                    nome_evento = st.text_input(
+                        "Digite o nome do novo evento:",
+                        max_chars=100,
+                        placeholder="Ex: Conferência de Síndicos RJ",
+                        key="novo_evento_input"
+                    )
+                else:
+                    nome_evento = nome_evento_selecionado
             else:
-                clientes_filtrados.append(c)
-        clientes = clientes_filtrados[:limite]
+                nome_evento = st.text_input(
+                    "Nome do Evento / Origem *",
+                    value="Feira de Condomínios",
+                    max_chars=100,
+                    key="fallback_evento"
+                )
+            
+            data_evento = st.date_input("Data do Contato", value=datetime.now())
+            
+            st.markdown("**📅 Data para Próximo Contato (Touch)**")
+            st.caption("💡 Deixe em branco se não houver necessidade de contato imediato (ex: parceiros)")
+            
+            usar_data_proximo = st.checkbox("Definir data para próximo contato", value=True)
+            
+            if usar_data_proximo:
+                data_proximo_contato = st.date_input(
+                    "Selecione a data:", 
+                    value=datetime.now(),
+                    key="data_proximo_input"
+                )
+            else:
+                data_proximo_contato = None
+            
+            nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "Morno", "❄️ Frio"])
+            status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
+        
+        # ✅ Bloco de Potencial do Condomínio (só aparece para Síndico/Cliente)
+        potencial_condominio = None
+        qtd_apartamentos = None
+        potencial_servicos = None
+        obs_potencial = None
+        
+        if tipo_contato == "Síndico / Cliente":
+            st.subheader("🏢 Potencial do Condomínio")
+            st.caption("Avalie a capacidade de exploração comercial deste condomínio.")
+            
+            col_pot1, col_pot2, col_pot3 = st.columns(3)
+            
+            with col_pot1:
+                potencial_condominio = st.selectbox(
+                    "Potencial do Condomínio",
+                    ["Alto", "Médio", "Baixo", "Não avaliado"],
+                    index=3,
+                    help="Avaliação geral do potencial comercial do condomínio"
+                )
+            
+            with col_pot2:
+                qtd_apartamentos = st.number_input(
+                    "Qtd. média de apartamentos",
+                    min_value=0,
+                    max_value=10000,
+                    value=0,
+                    step=10,
+                    help="Quantidade estimada de unidades. Deixe 0 se não souber."
+                )
+            
+            with col_pot3:
+                potencial_servicos = st.selectbox(
+                    "Potencial de Serviços",
+                    ["Alto", "Médio", "Baixo", "Não avaliado"],
+                    index=3,
+                    help="Capacidade de exploração: automação, internet, carregador, etc."
+                )
+            
+            obs_potencial = st.text_input(
+                "Observação sobre o potencial (opcional)",
+                max_chars=200,
+                placeholder="Ex: Condomínio novo, síndico aberto a propostas, 3 torres..."
+            )
+        
+        st.subheader("🛒 Interesse em Produtos")
+        produtos_interesse = st.multiselect(
+            "Quais produtos despertaram interesse?", 
+            PRODUTOS,
+            help="Selecione um ou mais produtos discutidos"
+        )
+        
+        st.subheader("📝 Observações da Conversa")
+        observacoes = st.text_area(
+            "Detalhes da evolução da conversa", 
+            height=100, 
+            placeholder="Ex: Síndico reclamou da internet atual. Quer orçamento para 10 câmeras. Decisão até dia 30..."
+        )
+        
+        col_submit, col_novo = st.columns([1, 1])
+        
+        with col_submit:
+            submitted = st.form_submit_button("💾 Salvar Lead", type="primary", use_container_width=True)
+        
+        with col_novo:
+            novo_cadastro = st.form_submit_button("🔄 Novo Cadastro", use_container_width=True)
+        
+        if submitted:
+            if not all([nome_contato, telefone, nome_evento]):
+                st.error("⚠️ Preencha os campos obrigatórios (Nome, Telefone e Evento)!")
+            else:
+                lead_data = {
+                    "tipo_contato": tipo_contato,
+                    "nome_contato": nome_contato.strip().upper(),
+                    "nome_condominio": nome_condominio.strip().upper() if nome_condominio else None,
+                    "nome_empresa": nome_empresa.strip().upper() if nome_empresa else None,
+                    "telefone": telefone.strip(),
+                    "email": email.strip() if email else None,
+                    "evento": nome_evento.strip(),
+                    "data_evento": datetime.combine(data_evento, datetime.min.time()),
+                    "data_proximo_contato": datetime.combine(data_proximo_contato, datetime.min.time()) if data_proximo_contato else None,
+                    "nivel_interesse": nivel_interesse,
+                    "status": status_lead,
+                    "potencial_condominio": potencial_condominio if potencial_condominio != "Não avaliado" else None,
+                    "qtd_apartamentos": qtd_apartamentos if qtd_apartamentos and qtd_apartamentos > 0 else None,
+                    "potencial_servicos": potencial_servicos if potencial_servicos != "Não avaliado" else None,
+                    "obs_potencial": obs_potencial.strip() if obs_potencial else None,
+                    "produtos_interesse": produtos_interesse,
+                    "observacoes": observacoes.strip(),
+                    "data_cadastro": datetime.now(),
+                    "ativo": True,
+                    "convertido": False
+                }
+                
+                try:
+                    collection = get_leads_collection()
+                    result = collection.insert_one(lead_data)
+                    st.success(f"✅ Lead '{nome_contato}' registrado com sucesso! ID: {result.inserted_id}")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"❌ Erro ao salvar: {e}")
+        
+        if novo_cadastro:
+            st.info("🔄 Formulário limpo para novo cadastro!")
+            st.rerun()
 
-    if not clientes:
-        st.warning("📭 Nenhum cliente encontrado para ligação com os filtros selecionados. ")
+# --- Visualização e Gestão de Leads (Agenda) ---
+def render_agenda_leads():
+    st.title("📋 Agenda & Acompanhamento de Leads")
+    st.markdown("Pesquise e gerencie seus contatos. Use os filtros abaixo para encontrar leads específicos.")
+
+    try:
+        collection = get_leads_collection()
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
         return
 
-    # Mensagem informativa
-    if modo_delegacao_ativo and not is_admin:
-        if atendente_delegado == usuario_atual:
-            st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo {len(clientes)} cliente(s) de TODOS os atendentes. ")
-        else:
-            st.info(f"✅ {len(clientes)} cliente(s) encontrado(s) para ligação. ")
-    else:
-        st.success(f"✅ {len(clientes)} cliente(s) encontrado(s) para ligação! ")
-
-    # === EXPORTAÇÃO (ATUALIZADO COM INFORMAÇÕES COMPLETAS) ===
-    st.markdown("---")
-    col_exp1, col_exp2 = st.columns([1, 3])
-
-    with col_exp1:
-        st.markdown("### 📥 Exportar para Impressão ")
-
-    with col_exp2:
-        dados_export = []
-        for c in clientes:
-            touch_history = c.get("touch_history", [])
-            ultimo_contato = "Nunca "
-            if touch_history:
-                ultimo_ts = max([t.get("timestamp", " ") for t in touch_history])
-                try:
-                    ultimo_dt = datetime.fromisoformat(ultimo_ts.replace("Z", "+00:00"))
-                    ultimo_contato = ultimo_dt.strftime("%d/%m/%Y %H:%M")
-                except:
-                    ultimo_contato = ultimo_ts
-            
-            # 🏢 Informações de condomínio
-            condominio_info = " "
-            if c.get("condominio_nome"):
-                condominio_info = c.get("condominio_nome", " ")
-            if c.get("bloco") or c.get("apartamento"):
-                bloco = c.get("bloco", " ")
-                apto = c.get("apartamento", " ")
-                if bloco:
-                    condominio_info += f" - Bloco {bloco}" if condominio_info else f"Bloco {bloco}"
-                if apto:
-                    condominio_info += f" - Apto {apto}"
-            
-            # ✅ ADICIONAR: Histórico de touches completo
-            touch_history_list = []
-            for touch in touch_history:
-                ts = touch.get("timestamp", "")
-                by = touch.get("by", "")
-                notes = touch.get("notes", "")
-                if ts:
-                    try:
-                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                        ts_formatado = dt.strftime("%d/%m/%Y %H:%M")
-                    except:
-                        ts_formatado = ts
-                    touch_history_list.append(f"{ts_formatado} - {by}: {notes[:50]}")
-            
-            dados_export.append({
-                "Data Cadastro": formatar_data_cadastro(c.get("data_cadastro")),
-                "Cadastrado Por": c.get("cadastrado_por", "N/A"),
-                "Nome Completo": c.get("nome_completo", "N/A"),
-                "Telefone": c.get("celular", "N/A"),
-                "Condomínio/Unidade": condominio_info if condominio_info else "N/A",
-                "Bloco": c.get("bloco", "N/A"),
-                "Apartamento": c.get("apartamento", "N/A"),
-                "Observações": c.get("observacoes_followup", " ").replace("\n", " "),
-                "Toques": c.get("touch_count", 0),
-                "Último Contato": ultimo_contato,
-                "Histórico de Toques": " | ".join(touch_history_list[-5:]) if touch_history_list else "Nenhum",
-                "Retorno Agendado": c.get("retorno_agendado", "Imediato"),
-                "Origem": c.get("origem", "N/A"),
-                "Plano": c.get("plano_escolhido", "N/A"),
-                "Status": "Ativo",
-                "Média de Toques": f"{c.get('touch_count', 0) / max(len(touch_history), 1):.1f}"
-            })
+    with st.expander("🔍 Opções de Busca Avançada", expanded=True):
+        col_search1, col_search2 = st.columns(2)
         
-        df = pd.DataFrame(dados_export)
+        with col_search1:
+            search_nome = st.text_input("👤 Nome do Contato", placeholder="Digite parte do nome...")
+            search_condo_emp = st.text_input("🏢 Condomínio ou Empresa", placeholder="Ex: Residencial Sol, Tech Solutions...")
         
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
-        csv_data = csv_buffer.getvalue().encode('utf-8-sig')
+        with col_search2:
+            search_telefone = st.text_input("📞 Telefone", placeholder="Ex: 99999-0000")
+            search_evento = st.text_input("📅 Evento/Origem", placeholder="Ex: Feira de Síndicos...")
         
-        col_csv, col_txt = st.columns(2)
+        col_filtro1, col_filtro2 = st.columns(2)
         
-        with col_csv:
-            st.download_button(
-                label="📊 Excel/CSV (.csv) ",
-                data=csv_data,
-                file_name=f"ligacoes_followup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-                help="Abre diretamente no Excel. Formato CSV com suporte a acentos. "
+        with col_filtro1:
+            filtro_potencial = st.multiselect(
+                "🏢 Filtrar por Potencial do Condomínio:",
+                options=["Alto", "Médio", "Baixo"],
+                default=[]
             )
         
-        with col_txt:
-            texto_impressao = "📞 LISTA DE LIGAÇÕES - FOLLOW UP\n"
-            texto_impressao += f"Gerado em: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')}\n"
-            texto_impressao += f"Filtros: {filtro_touch_tipo} | {filtro_periodo}\n"
-            texto_impressao += f"Vendedora: {filtro_vendedora if filtro_vendedora != 'Todas' else 'Todas'}\n"
-            if modo_delegacao_ativo:
-                texto_impressao += f"⚠️ MODO DELEGAÇÃO: {atendente_delegado}\n"
-            texto_impressao += "=" * 80 + "\n\n"
-            
-            for i, c in enumerate(dados_export, 1):
-                texto_impressao += f"{i}. {c['Nome Completo']} (Toques: {c['Toques']})\n"
-                texto_impressao += f"   📱 {c['Telefone']}\n"
-                texto_impressao += f"   👤 Vendedora: {c['Cadastrado Por']}\n"
-                if c['Condomínio/Unidade'] != "N/A":
-                    texto_impressao += f"   🏢 {c['Condomínio/Unidade']}\n"
-                texto_impressao += f"   📅 Cadastro: {c['Data Cadastro']} | Último contato: {c['Último Contato']}\n"
-                texto_impressao += f"   🔄 Retorno agendado: {c['Retorno Agendado']}\n"
-                texto_impressao += f"   📝 Obs: {c['Observações'][:80]}{'...' if len(c['Observações']) > 80 else ''}\n"
-                texto_impressao += "-" * 80 + "\n"
-            
-            st.download_button(
-                label="📝 Texto (.txt) ",
-                data=texto_impressao,
-                file_name=f"ligacoes_followup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.txt",
-                mime="text/plain",
-                use_container_width=True,
-                help="Formato texto para impressão rápida. "
-            )
-
-    st.markdown("---")
-
-    # === PAINEL DE LIGAÇÕES COM AÇÕES AVANÇADAS ===
-    st.markdown("### 🎯 Painel de Ligações ")
-    st.caption("Use os botões para registrar touch, adicionar observações ou agendar retorno. ")
-
-    st.markdown("""
-        <style>
-        .painel-card {
-            background-color: #f8f9fa;
-            border-radius: 10px;
-            padding: 15px;
-            margin-bottom: 10px;
-            border-left: 5px solid #007bff;
-        }
-        .painel-card:hover {
-            background-color: #e9ecef;
-        }
-        .telefone-destaque {
-            font-size: 1.3em;
-            font-weight: bold;
-            color: #28a745;
-        }
-        .nao-perturbar {
-            border-left: 5px solid #dc3545 !important;   
-            background-color: #f8d7da !important;
-        }
-        .data-cadastro {
-            font-size: 0.85em;
-            color: #6c757d;
-        }
-        .ultimo-touch {
-            font-size: 0.8em;
-            font-weight: 500;
-            margin-top: 2px;
-        }
-        .condominio-info {
-            font-size: 0.85em;
-            color: #17a2b8;
-            font-weight: 500;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    selecionados = []
-
-    for idx, cliente in enumerate(clientes, 1):
-        nome = cliente.get("nome_completo", "N/A")
-        telefone = cliente.get("celular", "N/A")
-        data_cad = cliente.get("data_cadastro", "N/A")
-        cadastrado_por = cliente.get("cadastrado_por", "N/A")
-        obs = cliente.get("observacoes_followup", " ")
-        touch_count = cliente.get("touch_count", 0)
-        origem = cliente.get("origem", "N/A")
-        retorno_agendado = cliente.get("retorno_agendado", " ")
-        _id = str(cliente["_id"])
-        
-        info_ultimo_touch = formatar_ultimo_touch(cliente)
-        data_cad_str = formatar_data_cadastro(data_cad)
-        
-        # 🏢 Informações de condomínio
-        condominio_nome = cliente.get("condominio_nome", " ")
-        bloco = cliente.get("bloco", " ")
-        apartamento = cliente.get("apartamento", " ")
-        condominio_display = " "
-        if condominio_nome:
-            condominio_display = f"🏢 {condominio_nome}"
-            if bloco or apartamento:
-                unidade_parts = []
-                if bloco:
-                    unidade_parts.append(f"Bloco {bloco}")
-                if apartamento:
-                    unidade_parts.append(f"Apto {apartamento}")
-                condominio_display += f" - {' / '.join(unidade_parts)}"
-        
-        em_nao_perturbar = retorno_agendado and retorno_agendado > hoje_str
-        
-        if touch_count == 0:
-            badge_touch = "🆕 "
-        elif touch_count <= 3:
-            badge_touch = f"🟢 {touch_count} "
-        elif touch_count <= 6:
-            badge_touch = f"🟡 {touch_count} "
-        elif touch_count <= 10:
-            badge_touch = f"🟠 {touch_count} "
-        else:
-            badge_touch = f"🔴 {touch_count} "
-        
-        css_class = "painel-card" if not em_nao_perturbar else "painel-card nao-perturbar"
-        
-        with st.container():
-            col_check, cols_dados = st.columns([0.3, 9.7])
-            
-            with col_check:
-                selecionado = st.checkbox(" ", key=f"sel_{_id}", label_visibility="collapsed")
-                if selecionado:
-                    selecionados.append(_id)
-            
-            with cols_dados:
-                cols = st.columns([0.5, 2, 1.5, 1.5, 2, 1.5])
-                
-                with cols[0]:
-                    st.markdown(f"**#{idx}** ")
-                
-                with cols[1]:
-                    st.markdown(f"**{nome}** ")
-                    st.caption(f"Origem: {origem} ")
-                    if condominio_display:
-                        st.caption(f"<span class='condominio-info'>{condominio_display}</span>", unsafe_allow_html=True)
-                    if em_nao_perturbar:
-                        st.caption(f"🔕 Retorno: {datetime.strptime(retorno_agendado, '%Y-%m-%d').strftime('%d/%m/%Y')} ")
-                
-                with cols[2]:
-                    st.markdown(f"<span class='telefone-destaque'>{telefone}</span>", unsafe_allow_html=True)
-                    st.caption(f"Toques: {badge_touch} ")
-                
-                with cols[3]:
-                    st.markdown(f"<span class='data-cadastro'>📅 Cad: {data_cad_str}</span>", unsafe_allow_html=True)
-                    st.markdown(f"<span class='ultimo-touch'>{info_ultimo_touch}</span>", unsafe_allow_html=True)
-                    st.caption(f"👤 {cadastrado_por} ")
-                
-                with cols[4]:
-                    if obs:
-                        st.caption(f"📝 {obs[:40]}{'...' if len(obs) > 40 else ''} ")
-                    else:
-                        st.caption("_Sem observações_ ")
-                
-                with cols[5]:
-                    if st.button("✋ Touch ", key=f"painel_touch_{_id}", use_container_width=True, type="primary"):
-                        novo_count = touch_count + 1
-                        nome_usuario = st.session_state.get("nome_usuario", "Anônimo")
-                        timestamp = datetime.now(timezone.utc).isoformat()
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {
-                                "$set": {"touch_count": novo_count},
-                                "$push": {
-                                    "touch_history": {
-                                        "timestamp": timestamp,
-                                        "by": nome_usuario,
-                                        "notes": "Touch registrado via Painel de Ligações "
-                                    }
-                                }
-                            }
-                        )
-                        st.success("✔️ Touch registrado! ", icon="✅")
-                        st.rerun()
-                    
-                    if st.button("⚙️ Ações ", key=f"painel_acoes_{_id}", use_container_width=True, type="secondary"):
-                        st.session_state[f"mostrar_acoes_{_id}"] = True
-
-        if st.session_state.get(f"mostrar_acoes_{_id}", False):
-            with st.form(key=f"form_acoes_painel_{_id}"):
-                st.markdown("**Ações Rápidas:** ")
-                
-                col_ac1, col_ac2, col_ac3, col_ac4 = st.columns(4)
-                
-                with col_ac1:
-                    acao_obs = st.text_area(
-                        "Observação: ",
-                        value=obs,
-                        height=80,
-                        key=f"obs_acao_{_id}"
-                    )
-                
-                with col_ac2:
-                    st.markdown(" &nbsp; ")
-                    if st.form_submit_button("💾 Salvar Obs ", use_container_width=True):
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {"$set": {"observacoes_followup": acao_obs}}
-                        )
-                        st.success("✅ Observação salva! ")
-                        st.session_state[f"mostrar_acoes_{_id}"] = False
-                        st.rerun()
-                
-                with col_ac3:
-                    st.markdown("**Agendar Retorno:** ")
-                    dias_retorno = st.selectbox(
-                        "Daqui a: ",
-                        options=[3, 7, 15, 30, 180],
-                        format_func=lambda x: f"{x} dias" if x < 30 else f"{x//30} meses" if x == 180 else f"{x} dias",
-                        key=f"dias_retorno_{_id}"
-                    )
-                    if st.form_submit_button("📅 Agendar ", use_container_width=True, type="primary"):
-                        data_retorno = (hoje + timedelta(days=dias_retorno)).strftime("%Y-%m-%d")
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {"$set": {"retorno_agendado": data_retorno}}
-                        )
-                        st.success(f"✅ Retorno agendado para {data_retorno}! ")
-                        st.session_state[f"mostrar_acoes_{_id}"] = False
-                        st.rerun()
-                
-                with col_ac4:
-                    st.markdown("**Outras Ações:** ")
-                    if st.form_submit_button("🚫 Não Perturbar 6m ", use_container_width=True, type="secondary"):
-                        data_retorno = (hoje + timedelta(days=180)).strftime("%Y-%m-%d")
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {
-                                "$set": {
-                                    "retorno_agendado": data_retorno,
-                                    "observacoes_followup": f"{obs}\n[NÃO PERTURBAR até {data_retorno}]"
-                                }
-                            }
-                        )
-                        st.success("✅ Não perturbar por 6 meses! ")
-                        st.session_state[f"mostrar_acoes_{_id}"] = False
-                        st.rerun()
-                    
-                    if st.form_submit_button("❌ Remover ", use_container_width=True, type="secondary"):
-                        clientes_collection.update_one(
-                            {"_id": cliente["_id"]},
-                            {"$set": {"status_followup": "removido"}}
-                        )
-                        st.success("✅ Cliente removido da lista! ")
-                        st.session_state[f"mostrar_acoes_{_id}"] = False
-                        st.rerun()
-
-    st.divider()
-
-    if selecionados:
-        st.markdown("---")
-        st.warning(f"🎯 **{len(selecionados)} cliente(s) selecionado(s)** ")
-        
-        col_lote1, col_lote2, col_lote3, col_lote4 = st.columns([2, 2, 2, 4])
-        
-        with col_lote1:
-            if st.button("📅 Agendar retorno em 3 dias (Lote) ", use_container_width=True):
-                data_retorno = (hoje + timedelta(days=3)).strftime("%Y-%m-%d")
-                for cid in selecionados:
-                    clientes_collection.update_one(
-                        {"_id": cid},
-                        {"$set": {"retorno_agendado": data_retorno}}
-                    )
-                st.success(f"✅ {len(selecionados)} clientes agendados para daqui 3 dias! ")
-                st.rerun()
-        
-        with col_lote2:
-            if st.button("🚫 Não Perturbar 6 meses (Lote) ", use_container_width=True):
-                data_retorno = (hoje + timedelta(days=180)).strftime("%Y-%m-%d")
-                for cid in selecionados:
-                    obs_atual = clientes_collection.find_one({"_id": cid}).get("observacoes_followup", " ")
-                    clientes_collection.update_one(
-                        {"_id": cid},
-                        {
-                            "$set": {
-                                "retorno_agendado": data_retorno,
-                                "observacoes_followup": f"{obs_atual}\n[NÃO PERTURBAR até {data_retorno}]"
-                            }
-                        }
-                    )
-                st.success(f"✅ {len(selecionados)} clientes marcados como Não Perturbar! ")
-                st.rerun()
-        
-        with col_lote3:
-            if st.button("❌ Remover da lista (Lote) ", use_container_width=True, type="secondary"):
-                for cid in selecionados:
-                    clientes_collection.update_one(
-                        {"_id": cid},
-                        {"$set": {"status_followup": "removido"}}
-                    )
-                st.success(f"✅ {len(selecionados)} clientes removidos da lista! ")
-                st.rerun()
-
-# ============================================================================
-# ✅ FUNÇÃO PRINCIPAL: render_followup (ATUALIZADO COM FILTRO DE VENDEDORA E AGRUPAMENTO POR DATA)
-# ============================================================================
-def render_followup(clientes_collection):
-    """Renderiza o módulo de Follow-up com tracking de touches"""
-    st.title("📅 Follow-up de Clientes")
-    st.info("Aqui você gerencia o acompanhamento dos clientes que ainda não seguiram para ativação e não são restritivos.")
-    
-    usuario_atual = st.session_state.get("nome_usuario", " ")
-    is_admin = (usuario_atual == "Diego Roberto")
-    
-    # =============== CARREGAR ESTADO DO MODO DELEGAÇÃO (CONSISTENTE) ===============
-    estado_delegacao = get_modo_delegacao_estado(clientes_collection)
-    modo_delegacao_ativo = estado_delegacao["ativo"]
-    atendente_delegado = estado_delegacao["atendente"]
-    
-    # Calcular se o usuário atual pode ver todos os clientes
-    usuario_pode_ver_todos = is_admin or (
-        modo_delegacao_ativo and (
-            atendente_delegado == "Todos os atendentes" or 
-            atendente_delegado == usuario_atual
-        )
-    )
-    
-    # Criar as abas
-    tab1, tab2, tab3 = st.tabs(["📋 Lista de Follow-up ", "🗓️ Calendário Mensal ", "📞 Painel de Ligações "])
-    
-    # =============== TAB 1: LISTA TRADICIONAL ===============
-    with tab1:
-        # ✅ CONFIGURAÇÃO DE DELEGAÇÃO NA TAB 1 (Só para admin)
-        if is_admin:
-            modo_ativo, atendente_atual = render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix="tab1")
-            # Atualizar estado global se houver mudança
-            if modo_ativo != modo_delegacao_ativo or atendente_atual != atendente_delegado:
-                modo_delegacao_ativo = modo_ativo
-                atendente_delegado = atendente_atual
-                usuario_pode_ver_todos = is_admin or (
-                    modo_delegacao_ativo and (
-                        atendente_delegado == "Todos os atendentes" or 
-                        atendente_delegado == usuario_atual
-                    )
-                )
-            st.divider()
-        
-        # Mostrar status do modo delegação
-        if modo_delegacao_ativo:
-            if atendente_delegado == "Todos os atendentes":
-                st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
-            elif usuario_pode_ver_todos:
-                st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! (Delegado para: {atendente_delegado}) ")
-        
-        col_busca, col_tipo = st.columns([3, 1])
-        with col_tipo:
-            tipo_busca = st.selectbox(
-                "Buscar por: ",
-                options=["Telefone ", "Nome "],
-                index=0,
-                key="followup_tipo_busca"
-            )
-        with col_busca:
-            placeholder = "Ex: 11999999999 " if tipo_busca == "Telefone " else "Ex: João Silva "
-            busca_texto = st.text_input(
-                f"🔍 Digite para buscar por {tipo_busca.lower()}: ",
-                placeholder=placeholder,
-                key="followup_busca"
-            ).strip()
-
-        # 🏢 LINHA 1: Filtros de Vendedora, Data e Origem (ATUALIZADO)
-        col_vendedora, col_data, col_origem = st.columns([2, 2, 2])
-        
-        with col_vendedora:
-            # ✅ FILTRO DE VENDEDORA COM CONTAGEM
-            vendedoras_opcoes_tab1 = get_vendedoras_ativas(clientes_collection)
-            opcoes_display_vendedoras_tab1 = list(vendedoras_opcoes_tab1.keys())
-            
-            filtro_vendedora_tab1 = st.selectbox(
-                "👤 Vendedora: ",
-                options=opcoes_display_vendedoras_tab1,
-                index=0,
-                key="followup_filtro_vendedora"
-            )
-        
-        with col_data:
-            filtro_data = st.selectbox(
-                "Filtrar por data de follow-up: ",
-                ["Todos ", "Com data definida ", "Sem data definida ", "Vencidas ", "Hoje ", "Próximos 7 dias "],
-                index=0
-            )
-            # ✅ NOVO: Opção de ordenação por data de cadastro
-            ordenacao_tab1 = st.selectbox(
-                "Ordenar por: ",
-                ["Data de cadastro (mais recente) ", "Data de cadastro (mais antiga) ", "Nome (A-Z) "],
-                index=0,
-                key="followup_ordenacao_tab1"
-            )
-        
-        with col_origem:
-            filtro_origem = st.multiselect(
-                "Filtrar por origem: ",
-                ["Opa Suite ", "Whatsapp ", "Indicação ", "Loja "],
+        with col_filtro2:
+            filtro_potencial_servicos = st.multiselect(
+                "🛠️ Filtrar por Potencial de Serviços:",
+                options=["Alto", "Médio", "Baixo"],
                 default=[]
             )
 
-        # 🏢 LINHA 2: Filtro de Condomínio (ABAIXO DOS OUTROS FILTROS)
-        st.markdown("")  # Espaçamento
-        col_condominio = st.columns(1)
+    filtro_status = st.multiselect(
+        "Filtrar por Status:", 
+        options=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
+        default=["Novo", "Em Negociação", "Aguardando Retorno"]
+    )
+
+    query = {}
+    
+    if filtro_status:
+        query["status"] = {"$in": filtro_status}
+
+    if search_nome:
+        query["nome_contato"] = {"$regex": search_nome, "$options": "i"}
+    
+    if search_telefone:
+        query["telefone"] = {"$regex": search_telefone, "$options": "i"}
         
-        with col_condominio[0]:
-            # Botão para atualizar cache
-            if st.button("🔄 Atualizar Lista de Condomínios ", key="btn_atualizar_cond_tab1", help="Atualiza a lista de condomínios"):
-                if "condominios_cache_followup" in st.session_state:
-                    del st.session_state["condominios_cache_followup"]
-                if "condominios_cache_timestamp_followup" in st.session_state:
-                    del st.session_state["condominios_cache_timestamp_followup"]
+    if search_evento:
+        query["evento"] = {"$regex": search_evento, "$options": "i"}
+        
+    if search_condo_emp:
+        or_condition = [
+            {"nome_condominio": {"$regex": search_condo_emp, "$options": "i"}},
+            {"nome_empresa": {"$regex": search_condo_emp, "$options": "i"}}
+        ]
+        
+        if query:
+            query = {"$and": [query, {"$or": or_condition}]}
+        else:
+            query["$or"] = or_condition
+    
+    if filtro_potencial:
+        if "$and" in query:
+            query["$and"].append({"potencial_condominio": {"$in": filtro_potencial}})
+        else:
+            and_list = [query] if query else []
+            and_list.append({"potencial_condominio": {"$in": filtro_potencial}})
+            query = {"$and": and_list}
+    
+    if filtro_potencial_servicos:
+        if "$and" in query:
+            query["$and"].append({"potencial_servicos": {"$in": filtro_potencial_servicos}})
+        else:
+            and_list = [query] if query else []
+            and_list.append({"potencial_servicos": {"$in": filtro_potencial_servicos}})
+            query = {"$and": and_list}
+
+    try:
+        leads_cursor = collection.find(query).sort([
+            ("data_proximo_contato", 1), 
+            ("nome_contato", 1)
+        ]).limit(100)
+        
+        leads = list(leads_cursor)
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar leads: {e}")
+        st.write(f"Detalhe do erro (possível conflito de query): {e}")
+        return
+
+    if not leads:
+        st.warning("⚠️ Nenhum lead encontrado com os critérios selecionados.")
+    else:
+        st.info(f"🔎 Encontrados {len(leads)} registro(s).")
+        
+        leads_com_data = []
+        leads_sem_data = []
+        
+        for lead in leads:
+            if lead.get("data_proximo_contato"):
+                leads_com_data.append(lead)
+            else:
+                leads_sem_data.append(lead)
+        
+        if leads_com_data:
+            st.subheader("📅 Agenda - Próximos Contatos")
+            for lead in leads_com_data:
+                display_lead_card(lead, collection)
+        
+        if leads_sem_data:
+            st.subheader("🗄️ Pool - Leads Sem Data Agendada")
+            st.caption("Contatos que não possuem follow-up agendado.")
+            for lead in leads_sem_data:
+                display_lead_card(lead, collection, is_pool=True)
+
+def display_lead_card(lead, collection, is_pool=False):
+    data_contato = lead.get("data_proximo_contato")
+    if data_contato:
+        data_str = data_contato.strftime("%d/%m/%Y")
+        hoje = datetime.now().date()
+        icono_data = "📅" if data_contato.date() >= hoje else "⏰"
+        urgency_badge = " ⚠️ URGENTE" if data_contato.date() < hoje else ""
+    else:
+        data_str = "Sem data agendada"
+        icono_data = "⚪"
+        urgency_badge = ""
+    
+    data_evento = lead.get("data_evento")
+    if data_evento:
+        data_evento_str = data_evento.strftime("%d/%m/%Y")
+    else:
+        data_evento_str = "N/A"
+
+    label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')}) {urgency_badge}"
+
+    with st.expander(label_expander):
+        col_info, col_actions = st.columns([2, 1])
+        
+        with col_info:
+            st.write(f"**📞 Telefone:** {lead.get('telefone')}")
+            
+            if lead.get('nome_condominio'):
+                st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio')}")
+            if lead.get('nome_empresa'):
+                st.write(f"**🏭 Empresa:** {lead.get('nome_empresa')}")
+            if not lead.get('nome_condominio') and not lead.get('nome_empresa'):
+                st.write(f"**🏢 Organização:** N/A")
+            
+            st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+            
+            if lead.get('potencial_condominio') or lead.get('qtd_apartamentos') or lead.get('potencial_servicos'):
+                st.markdown("**🏢 Potencial do Condomínio:**")
+                
+                col_p1, col_p2, col_p3 = st.columns(3)
+                
+                with col_p1:
+                    pot = lead.get('potencial_condominio', 'N/A')
+                    emoji_pot = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot, "⚪")
+                    st.metric("Potencial", f"{emoji_pot} {pot}")
+                
+                with col_p2:
+                    qtd = lead.get('qtd_apartamentos')
+                    st.metric("Apartamentos", qtd if qtd else "N/A")
+                
+                with col_p3:
+                    pot_serv = lead.get('potencial_servicos', 'N/A')
+                    emoji_serv = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot_serv, "⚪")
+                    st.metric("Potencial Serviços", f"{emoji_serv} {pot_serv}")
+                
+                if lead.get('obs_potencial'):
+                    st.caption(f"💬 {lead.get('obs_potencial')}")
+                
+                st.divider()
+            
+            st.write("**📝 Observações:**")
+            observacoes_atuais = lead.get('observacoes', 'Sem observações')
+            
+            with st.form(key=f"form_obs_{lead['_id']}"):
+                novas_observacoes = st.text_area(
+                    "Editar observações:",
+                    value=observacoes_atuais,
+                    height=80,
+                    key=f"obs_textarea_{lead['_id']}"
+                )
+                
+                col_upd, col_del = st.columns([1, 1])
+                
+                with col_upd:
+                    submit_obs = st.form_submit_button("🔄 Atualizar Obs", use_container_width=True)
+                    
+                    if submit_obs:
+                        if update_lead_observacoes(lead['_id'], novas_observacoes.strip()):
+                            st.success("✅ Observações atualizadas!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Falha ao atualizar observações.")
+                
+                with col_del:
+                    pass
+            
+            st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
+            st.write(f"**🔄 Status Atual:** {lead.get('status')}")
+            if lead.get('convertido'):
+                st.success("**🏆 CLIENTE CONVERTIDO**")
+
+        with col_actions:
+            st.markdown("### Ações")
+            
+            if not lead.get('data_proximo_contato'):
+                if st.button("📅 Definir Data de Contato", key=f"set_date_{lead['_id']}", use_container_width=True):
+                    if "editing_date_lead" not in st.session_state:
+                        st.session_state.editing_date_lead = str(lead['_id'])
+                    st.rerun()
+            else:
+                col_edit, col_remove = st.columns([1, 1])
+                with col_edit:
+                    if st.button("✏️ Editar", key=f"edit_date_{lead['_id']}", use_container_width=True):
+                        if "editing_date_lead" not in st.session_state:
+                            st.session_state.editing_date_lead = str(lead['_id'])
+                        st.rerun()
+                
+                with col_remove:
+                    if st.button("🚫 Remover Data", key=f"remove_date_{lead['_id']}", use_container_width=True, type="secondary"):
+                        if update_lead_data_proximo_contato(lead['_id'], None):
+                            st.success("✅ Data removida! Lead movido para o Pool.")
+                            st.rerun()
+                        else:
+                            st.error("❌ Falha ao remover data.")
+            
+            if "editing_date_lead" in st.session_state and st.session_state.editing_date_lead == str(lead['_id']):
+                with st.form(key=f"form_date_{lead['_id']}"):
+                    nova_data = st.date_input(
+                        "Nova data para contato:",
+                        value=lead.get('data_proximo_contato', datetime.now()).date() if lead.get('data_proximo_contato') else datetime.now(),
+                        key=f"date_input_{lead['_id']}"
+                    )
+                    
+                    col_save, col_cancel = st.columns([1, 1])
+                    with col_save:
+                        if st.form_submit_button("💾 Salvar Data", use_container_width=True):
+                            if update_lead_data_proximo_contato(lead['_id'], nova_data):
+                                st.success("✅ Data atualizada!")
+                                del st.session_state.editing_date_lead
+                                st.rerun()
+                            else:
+                                st.error("❌ Falha ao atualizar data.")
+                    
+                    with col_cancel:
+                        if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                            del st.session_state.editing_date_lead
+                            st.rerun()
+            
+            if st.button("🏢 Editar Potencial", key=f"edit_pot_{lead['_id']}", use_container_width=True):
+                if "editing_potencial_lead" not in st.session_state:
+                    st.session_state.editing_potencial_lead = str(lead['_id'])
                 st.rerun()
             
-            condominios_opcoes = get_condominios_com_contagem(clientes_collection)
-            opcoes_display = list(condominios_opcoes.keys())
-            
-            filtro_condominio = st.multiselect(
-                "Condomínio: ",
-                options=opcoes_display,
-                default=[],
-                key="followup_filtro_condominio"
-            )
-
-        # Montagem da query base
-        query = {
-            "seguiu_ativacao": { "$ne": "Sim"},
-            "restritivo": { "$ne": "Sim"},
-            "status_followup": { "$ne": "removido"}
-        }
-
-        # Aplicar filtro de busca
-        if busca_texto:
-            if tipo_busca == "Nome ":
-                query["nome_completo"] = { "$regex": re.escape(busca_texto), "$options": "i"}
-            else:
-                celular_limpo = re.sub(r"[^\d]", "", busca_texto)
-                if len(celular_limpo) > 10 and celular_limpo.startswith("55"):
-                    celular_limpo = celular_limpo[2:]
-                if celular_limpo:
-                    query["celular"] = { "$regex": celular_limpo, "$options": "i"}
-
-        # ✅ Lógica de filtro por vendedora (NOVO)
-        vendedora_selecionada_tab1 = vendedoras_opcoes_tab1.get(filtro_vendedora_tab1, "Todas")
-        if vendedora_selecionada_tab1 != "Todas":
-            query["cadastrado_por"] = vendedora_selecionada_tab1
-        elif not usuario_pode_ver_todos:
-            query["cadastrado_por"] = usuario_atual
-
-        # Aplica filtros de data
-        hoje = datetime.now(timezone.utc)
-        hoje_str = hoje.strftime("%Y-%m-%d")
-        if filtro_data == "Com data definida ":
-            query["retorno_agendado"] = { "$ne": "", "$exists": True}
-        elif filtro_data == "Sem data definida ":
-            query["retorno_agendado"] = ""
-        elif filtro_data == "Vencidas ":
-            query["retorno_agendado"] = { "$lt": hoje_str, "$ne": ""}
-        elif filtro_data == "Hoje ":
-            query["retorno_agendado"] = hoje_str
-        elif filtro_data == "Próximos 7 dias ":
-            proximos_7 = [(hoje + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
-            query["retorno_agendado"] = { "$in": proximos_7}
-
-        if filtro_origem:
-            query["origem"] = { "$in": filtro_origem}
-
-        # 🏢 APLICAR FILTRO DE CONDOMÍNIO
-        if filtro_condominio and "Todos" not in filtro_condominio:
-            condominios_selecionados = []
-            for opcao in filtro_condominio:
-                nome_real = condominios_opcoes.get(opcao, opcao)
-                if nome_real != "Todos":
-                    condominios_selecionados.append(nome_real)
-            
-            if condominios_selecionados:
-                query["condominio_nome"] = { "$in": condominios_selecionados}
-
-        # ✅ NOVO: Lógica de ordenação dinâmica
-        if ordenacao_tab1 == "Data de cadastro (mais recente) ":
-            sort_field = "data_cadastro"
-            sort_direction = -1
-        elif ordenacao_tab1 == "Data de cadastro (mais antiga) ":
-            sort_field = "data_cadastro"
-            sort_direction = 1
-        elif ordenacao_tab1 == "Nome (A-Z) ":
-            sort_field = "nome_completo"
-            sort_direction = 1
-        else:
-            sort_field = "retorno_agendado"
-            sort_direction = 1
-
-        clientes_followup = list(clientes_collection.find(query).sort(sort_field, sort_direction))
-
-        if not clientes_followup:
-            st.warning("📭 Nenhum cliente encontrado com os filtros selecionados. ")
-        else:
-            st.success(f"✅ {len(clientes_followup)} cliente(s) para follow-up! ")
-            
-            # ✅ NOVO: Agrupar clientes por data de cadastro
-            clientes_por_data = defaultdict(list)
-            for cliente in clientes_followup:
-                # Pega a data de cadastro e formata para YYYY-MM-DD (para ordenar)
-                data_cad = cliente.get("data_cadastro")
-                if isinstance(data_cad, datetime):
-                    data_key = data_cad.strftime("%Y-%m-%d")
-                elif isinstance(data_cad, str) and len(data_cad) >= 10:
-                    data_key = data_cad[:10]
-                else:
-                    data_key = "Data Desconhecida"
-                
-                clientes_por_data[data_key].append(cliente)
-            
-            # Ordenar as datas (mais recente primeiro, se a ordenação for por data)
-            if ordenacao_tab1 == "Data de cadastro (mais antiga) ":
-                datas_ordenadas = sorted(clientes_por_data.keys(), reverse=False)
-            else:
-                datas_ordenadas = sorted(clientes_por_data.keys(), reverse=True)
-            
-            # Exibir agrupado
-            for data_key in datas_ordenadas:
-                # Formatar o cabeçalho da data
-                if data_key == "Data Desconhecida":
-                    header_data = "📅 Data Desconhecida"
-                else:
-                    try:
-                        dt_obj = datetime.strptime(data_key, "%Y-%m-%d")
-                        header_data = f"📅 {dt_obj.strftime('%d/%m/%Y')}"
-                    except:
-                        header_data = f"📅 {data_key}"
-                
-                st.markdown(f"### {header_data}")
-                st.markdown("---")
-                
-                for cliente in clientes_por_data[data_key]:
-                    exibir_cliente_detalhe(cliente, clientes_collection, key_suffix="tab1")
-                
-                st.markdown("") # Espaçamento entre grupos
-            
-            # ✅ NOVO: EXPORTAÇÃO COMPLETA NA TAB 1
-            st.markdown("---")
-            st.markdown("### 📥 Exportar Lista Completa")
-            
-            col_exp1, col_exp2 = st.columns(2)
-            
-            with col_exp1:
-                # Preparar dados para exportação
-                dados_export_tab1 = []
-                for c in clientes_followup:
-                    # Calcular último touch
-                    touch_history = c.get("touch_history", [])
-                    ultimo_contato = "Nunca"
-                    if touch_history:
-                        ultimo_ts = max([t.get("timestamp", "") for t in touch_history])
-                        try:
-                            ultimo_dt = datetime.fromisoformat(ultimo_ts.replace("Z", "+00:00"))
-                            ultimo_contato = ultimo_dt.strftime("%d/%m/%Y %H:%M")
-                        except:
-                            ultimo_contato = ultimo_ts
+            if "editing_potencial_lead" in st.session_state and st.session_state.editing_potencial_lead == str(lead['_id']):
+                with st.form(key=f"form_pot_{lead['_id']}"):
+                    st.markdown("**🏢 Editar Potencial do Condomínio**")
                     
-                    # Histórico de touches
-                    touch_history_list = []
-                    for touch in touch_history:
-                        ts = touch.get("timestamp", "")
-                        by = touch.get("by", "")
-                        notes = touch.get("notes", "")
-                        if ts:
-                            try:
-                                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                                ts_formatado = dt.strftime("%d/%m/%Y %H:%M")
-                            except:
-                                ts_formatado = ts
-                            touch_history_list.append(f"{ts_formatado} - {by}: {notes[:50]}")
+                    pot_atual = lead.get('potencial_condominio') or "Não avaliado"
+                    pot_serv_atual = lead.get('potencial_servicos') or "Não avaliado"
                     
-                    dados_export_tab1.append({
-                        "Nome": c.get("nome_completo", "N/A"),
-                        "Telefone": c.get("celular", "N/A"),
-                        "Vendedora": c.get("cadastrado_por", "N/A"),
-                        "Data Cadastro": formatar_data_cadastro(c.get("data_cadastro")),
-                        "Origem": c.get("origem", "N/A"),
-                        "Plano": c.get("plano_escolhido", "N/A"),
-                        "Condomínio": c.get("condominio_nome", "N/A"),
-                        "Bloco": c.get("bloco", "N/A"),
-                        "Apartamento": c.get("apartamento", "N/A"),
-                        "Toques": c.get("touch_count", 0),
-                        "Último Contato": ultimo_contato,
-                        "Data Retorno": c.get("retorno_agendado", "N/A"),
-                        "Observações": c.get("observacoes_followup", "").replace("\n", " ")
-                    })
-                
-                df_tab1 = pd.DataFrame(dados_export_tab1)
-                
-                csv_buffer_tab1 = StringIO()
-                df_tab1.to_csv(csv_buffer_tab1, index=False, encoding='utf-8-sig')
-                csv_data_tab1 = csv_buffer_tab1.getvalue().encode('utf-8-sig')
-                
-                st.download_button(
-                    label="📊 Exportar para Excel/CSV (.csv)",
-                    data=csv_data_tab1,
-                    file_name=f"followup_completo_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    help="Exporta todos os dados com informações de vendedora, condomínio, toques, etc."
-                )
-            
-            with col_exp2:
-                # Exportar em formato texto para impressão
-                texto_export_tab1 = "📋 LISTA COMPLETA DE FOLLOW-UP\n"
-                texto_export_tab1 += f"Gerado em: {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')}\n"
-                texto_export_tab1 += f"Total: {len(clientes_followup)} clientes\n"
-                if filtro_vendedora_tab1 != "Todas":
-                    texto_export_tab1 += f"Filtro: Vendedora {filtro_vendedora_tab1}\n"
-                texto_export_tab1 += "=" * 80 + "\n\n"
-                
-                for i, c in enumerate(clientes_followup, 1):
-                    texto_export_tab1 += f"{i}. {c.get('nome_completo', 'N/A')} - {c.get('cadastrado_por', 'N/A')}\n"
-                    texto_export_tab1 += f"   📱 {c.get('celular', 'N/A')}\n"
-                    if c.get("condominio_nome"):
-                        texto_export_tab1 += f"   🏢 {c.get('condominio_nome', 'N/A')}"
-                        if c.get("bloco") or c.get("apartamento"):
-                            unidade = []
-                            if c.get("bloco"):
-                                unidade.append(f"Bloco {c.get('bloco')}")
-                            if c.get("apartamento"):
-                                unidade.append(f"Apto {c.get('apartamento')}")
-                            texto_export_tab1 += f" - {' / '.join(unidade)}"
-                        texto_export_tab1 += "\n"
-                    texto_export_tab1 += f"   📅 Cadastro: {formatar_data_cadastro(c.get('data_cadastro'))} | Origem: {c.get('origem', 'N/A')}\n"
-                    texto_export_tab1 += f"   🔄 Retorno: {c.get('retorno_agendado', 'N/A')} | Toques: {c.get('touch_count', 0)}\n"
-                    texto_export_tab1 += f"   📝 Obs: {c.get('observacoes_followup', 'N/A')[:80]}{'...' if len(c.get('observacoes_followup', '')) > 80 else ''}\n"
-                    texto_export_tab1 += "-" * 80 + "\n"
-                
-                st.download_button(
-                    label="📝 Exportar para Texto (.txt)",
-                    data=texto_export_tab1,
-                    file_name=f"followup_texto_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                    help="Formato texto com todas as informações para impressão."
-                )
-
-    # =============== TAB 2: CALENDÁRIO MENSAL (ATUALIZADO COM FILTRO DE VENDEDORA) ===============
-    with tab2:
-        # ✅ CONFIGURAÇÃO DE DELEGAÇÃO NA TAB 2 (Só para admin)
-        if is_admin:
-            modo_ativo, atendente_atual = render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix="tab2")
-            # Atualizar estado global se houver mudança
-            if modo_ativo != modo_delegacao_ativo or atendente_atual != atendente_delegado:
-                modo_delegacao_ativo = modo_ativo
-                atendente_delegado = atendente_atual
-                usuario_pode_ver_todos = is_admin or (
-                    modo_delegacao_ativo and (
-                        atendente_delegado == "Todos os atendentes" or 
-                        atendente_delegado == usuario_atual
+                    opcoes_pot = ["Alto", "Médio", "Baixo", "Não avaliado"]
+                    
+                    novo_pot = st.selectbox(
+                        "Potencial do Condomínio",
+                        opcoes_pot,
+                        index=opcoes_pot.index(pot_atual) if pot_atual in opcoes_pot else 3,
+                        key=f"pot_input_{lead['_id']}"
                     )
-                )
+                    
+                    nova_qtd = st.number_input(
+                        "Qtd. média de apartamentos",
+                        min_value=0,
+                        max_value=10000,
+                        value=lead.get('qtd_apartamentos') or 0,
+                        step=10,
+                        key=f"qtd_input_{lead['_id']}"
+                    )
+                    
+                    novo_pot_serv = st.selectbox(
+                        "Potencial de Serviços",
+                        opcoes_pot,
+                        index=opcoes_pot.index(pot_serv_atual) if pot_serv_atual in opcoes_pot else 3,
+                        key=f"pot_serv_input_{lead['_id']}"
+                    )
+                    
+                    nova_obs_pot = st.text_input(
+                        "Observação sobre o potencial",
+                        value=lead.get('obs_potencial') or "",
+                        max_chars=200,
+                        key=f"obs_pot_input_{lead['_id']}"
+                    )
+                    
+                    col_save_pot, col_cancel_pot = st.columns([1, 1])
+                    with col_save_pot:
+                        if st.form_submit_button("💾 Salvar Potencial", use_container_width=True):
+                            if update_lead_potencial(lead['_id'], novo_pot, nova_qtd, novo_pot_serv, nova_obs_pot):
+                                st.success("✅ Potencial atualizado!")
+                                del st.session_state.editing_potencial_lead
+                                st.rerun()
+                            else:
+                                st.error("❌ Falha ao atualizar potencial.")
+                    
+                    with col_cancel_pot:
+                        if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                            del st.session_state.editing_potencial_lead
+                            st.rerun()
+            
+            if st.button("🗑️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
+                if delete_lead(lead['_id']):
+                    st.success("✅ Lead excluído com sucesso!")
+                    st.rerun()
+                else:
+                    st.error("❌ Falha ao excluir lead.")
+            
             st.divider()
-        
-        # Mostrar status do modo delegação
-        if modo_delegacao_ativo:
-            if atendente_delegado == "Todos os atendentes":
-                st.info("🔄 **Modo Delegação Ativo** - Todos os atendentes estão vendo TODOS os clientes! ")
-            elif usuario_pode_ver_todos:
-                st.success(f"🔄 **Modo Delegação Ativo** - Você está vendo clientes de TODOS os atendentes! (Delegado para: {atendente_delegado}) ")
-        
-        st.subheader("🗓️ Calendário Mensal de Follow-up ")
-
-        # ✅ ADICIONAR FILTRO DE VENDEDORA NO CALENDÁRIO
-        col_filtro_vendedora, col_placeholder = st.columns([2, 4])
-
-        with col_filtro_vendedora:
-            vendedoras_opcoes_cal = get_vendedoras_ativas(clientes_collection)
-            opcoes_display_vendedoras_cal = list(vendedoras_opcoes_cal.keys())
             
-            filtro_vendedora_cal = st.selectbox(
-                "👤 Vendedora: ",
-                options=opcoes_display_vendedoras_cal,
-                index=0,
-                key="calendario_filtro_vendedora"
-            )
-
-        query_agenda = {
-            "seguiu_ativacao": { "$ne": "Sim"},
-            "restritivo": { "$ne": "Sim"},
-            "status_followup": { "$ne": "removido"},
-            "retorno_agendado": { "$ne": "", "$exists": True}
-        }
-
-        # ✅ Aplicar filtro de vendedora no calendário
-        vendedora_selecionada_cal = vendedoras_opcoes_cal.get(filtro_vendedora_cal, "Todas")
-        if vendedora_selecionada_cal != "Todas":
-            query_agenda["cadastrado_por"] = vendedora_selecionada_cal
-        elif not usuario_pode_ver_todos:
-            query_agenda["cadastrado_por"] = usuario_atual
-
-        clientes_agenda = list(clientes_collection.find(query_agenda))
-        agenda_por_dia = defaultdict(list)
-        for cliente in clientes_agenda:
-            agenda_por_dia[cliente["retorno_agendado"]].append(cliente)
-
-        if "mes_visualizado_followup" not in st.session_state:
-            st.session_state.mes_visualizado_followup = datetime.now(timezone.utc).replace(day=1).date()
-
-        mes_atual = st.session_state.mes_visualizado_followup
-        ano = mes_atual.year
-        mes = mes_atual.month
-
-        col_prev, col_title, col_next = st.columns([1, 3, 1])
-        with col_prev:
-            if st.button("<< Mês Anterior "):
-                novo_mes = mes_atual.replace(day=1) - timedelta(days=1)
-                st.session_state.mes_visualizado_followup = novo_mes.replace(day=1)
-                st.rerun()
-        with col_title:
-            st.markdown(f"### {calendar.month_name[mes].capitalize()} {ano} ")
-        with col_next:
-            if st.button("Mês Próximo >> "):
-                proximo = mes_atual.replace(day=28) + timedelta(days=4)
-                st.session_state.mes_visualizado_followup = proximo.replace(day=1)
-                st.rerun()
-
-        st.caption(
-            "🎨 Legendas: "
-            "⚪ Sem follow-up | "
-            "🟢 ≤2 | "
-            "🟡 3–5 | "
-            "🟠 6–10 | "
-            "🔴 ≥11 | "
-            "❗ Dias vencidos com follow-up pendente "
-        )
-
-        cal = calendar.monthcalendar(ano, mes)
-        dias_da_semana = ["Seg ", "Ter ", "Qua ", "Qui ", "Sex ", "Sáb ", "Dom "]
-
-        cols_header = st.columns(7)
-        for i, dia in enumerate(dias_da_semana):
-            cols_header[i].markdown(f"**{dia}** ")
-
-        hoje_date = datetime.now(timezone.utc).date()
-        for semana in cal:
-            cols = st.columns(7)
-            for i, dia_num in enumerate(semana):
-                if dia_num == 0:
-                    cols[i].write(" ")
-                else:
-                    data = datetime(ano, mes, dia_num).date()
-                    data_str = data.strftime("%Y-%m-%d")
-                    qtd = len(agenda_por_dia.get(data_str, []))
-
-                    if qtd > 0:
-                        touches_totais = sum(cli.get("touch_count", 0) for cli in agenda_por_dia[data_str])
-                        media_touches = touches_totais / qtd
-                    else:
-                        media_touches = 0
-
-                    if qtd == 0:
-                        cor = "#f8f9fa"
-                        texto = str(dia_num)
-                    elif media_touches <= 2:
-                        cor = "#d4edda"
-                        texto = f"{dia_num}<br/>({qtd})<br/><small>avg: {media_touches:.1f}</small>"
-                    elif media_touches <= 5:
-                        cor = "#fff3cd"
-                        texto = f"{dia_num}<br/>({qtd})<br/><small>avg: {media_touches:.1f}</small>"
-                    elif media_touches <= 10:
-                        cor = "#ffeacc"
-                        texto = f"{dia_num}<br/>({qtd})<br/><small>avg: {media_touches:.1f}</small>"
-                    else:
-                        cor = "#f8d7da"
-                        texto = f"{dia_num}<br/>({qtd})<br/><small>avg: {media_touches:.1f}</small>"
-
-                    borda = " "
-                    icone = " "
-                    if data < hoje_date and qtd > 0:
-                        borda = "border: 2px solid #e74c3c; "
-                        icone = "❗ "
-
-                    estilo = (
-                        f"background-color:{cor}; "
-                        f"padding:10px; "
-                        f"border-radius:6px; "
-                        f"text-align:center; "
-                        f"font-weight:bold; "
-                        f"font-size:0.9em; "
-                        f"{borda}"
-                    )
-                    html = f"<div style='{estilo}'>{icone}{texto}</div>"
-                    cols[i].markdown(html, unsafe_allow_html=True)
-
-                    if qtd > 0:
-                        if cols[i].button("👁️ ", key=f"ver_dia_{data_str}", use_container_width=True):
-                            st.session_state[f"expandir_dia_{data_str}"] = True
-
-        st.markdown("---")
-
-        data_selecionada = st.date_input(
-            "Selecione um dia para ver os follow-ups: ",
-            value=datetime.now(timezone.utc),
-            min_value=datetime(2020, 1, 1),
-            key="followup_seleciona_dia"
-        )
-        data_str = data_selecionada.strftime("%Y-%m-%d")
-        clientes_do_dia = agenda_por_dia.get(data_str, [])
-
-        if clientes_do_dia:
-            st.markdown(f"### 👥 Follow-ups em {data_selecionada.strftime('%d/%m/%Y')} ")
-
-            texto_export = " "
-            for cliente in clientes_do_dia:
-                nome = cliente.get("nome_completo", "N/A")
-                tel = cliente.get("celular", "N/A")
-                plano = cliente.get("plano_escolhido", "N/A")
-                origem = cliente.get("origem", "N/A")
-                cad_por = cliente.get("cadastrado_por", "N/A")
-                obs = cliente.get("observacoes_followup", " ").strip() or "Sem observação "
-                touch_ct = cliente.get("touch_count", 0)
-                # 🏢 Incluir condomínio na exportação
-                condominio = cliente.get("condominio_nome", " ")
-                bloco = cliente.get("bloco", " ")
-                apto = cliente.get("apartamento", " ")
-                condominio_info = " "
-                if condominio:
-                    condominio_info = f" | 🏢 {condominio}"
-                    if bloco or apto:
-                        unidade = []
-                        if bloco:
-                            unidade.append(f"Bloco {bloco}")
-                        if apto:
-                            unidade.append(f"Apto {apto}")
-                        condominio_info += f" ({' / '.join(unidade)})"
+            with st.form(key=f"form_update_{lead['_id']}"):
+                is_convertido = st.checkbox("✅ Cliente Convertido", value=lead.get('convertido', False))
                 
-                texto_export += (
-                    f"📞 {nome} (toques: {touch_ct}){condominio_info}\n"
-                    f"📱 {tel}\n"
-                    f"👤 Vendedora: {cad_por}\n"
-                    f"🎯 Origem: {origem}\n"
-                    f"📋 Plano: {plano}\n"
-                    f"📝 Obs: {obs}\n"
-                    f"---\n"
+                status_options = ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"]
+                current_status = lead.get('status', 'Novo')
+                
+                try:
+                    status_index = status_options.index(current_status)
+                except ValueError:
+                    status_index = 0
+                
+                novo_status = st.selectbox(
+                    "Alterar Status",
+                    status_options,
+                    index=status_index
                 )
+                
+                submit_update = st.form_submit_button("Atualizar Status", use_container_width=True)
+                
+                if submit_update:
+                    status_final = novo_status
+                    flag_convertido = is_convertido
+                    if is_convertido:
+                        status_final = "✅ Convertido"
+                    
+                    if update_lead_status(lead['_id'], status_final, flag_convertido):
+                        st.success("✅ Status atualizado!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Falha ao atualizar status.")
 
-            st.download_button(
-                label="📋 Copiar todos os follow-ups do dia ",
-                data=texto_export,
-                file_name=f"followups_{data_selecionada.strftime('%Y-%m-%d')}.txt",
-                mime="text/plain"
-            )
-
-            for cliente in clientes_do_dia:
-                exibir_cliente_detalhe(cliente, clientes_collection, key_suffix="calendario")
-
-        else:
-            st.info("📭 Nenhum follow-up agendado para este dia. ")
-
-    # =============== TAB 3: PAINEL DE LIGAÇÕES ===============
-    with tab3:
-        # ✅ CONFIGURAÇÃO DE DELEGAÇÃO NA TAB 3 (Só para admin)
-        if is_admin:
-            modo_ativo, atendente_atual = render_config_delegacao(clientes_collection, is_admin, usuario_atual, key_suffix="tab3")
-            # Atualizar estado global se houver mudança
-            if modo_ativo != modo_delegacao_ativo or atendente_atual != atendente_delegado:
-                modo_delegacao_ativo = modo_ativo
-                atendente_delegado = atendente_atual
-                usuario_pode_ver_todos = is_admin or (
-                    modo_delegacao_ativo and (
-                        atendente_delegado == "Todos os atendentes" or 
-                        atendente_delegado == usuario_atual
-                    )
-                )
+# ============================================================================
+# ✅ NOVA FUNÇÃO: render_calendario_leads - Calendário Mensal de Leads
+# ============================================================================
+def render_calendario_leads():
+    """Exibe calendário mensal dos leads baseado em data_proximo_contato / data_evento"""
+    st.title("📅 Calendário Mensal de Leads")
+    st.markdown("Visualize seus leads distribuídos ao longo do mês. Clique em 👁️ para ver os detalhes de um dia.")
+    
+    try:
+        collection = get_leads_collection()
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
+        return
+    
+    # --- Estado do mês visualizado ---
+    if "mes_visualizado_leads" not in st.session_state:
+        st.session_state.mes_visualizado_leads = datetime.now().replace(day=1).date()
+    
+    mes_atual = st.session_state.mes_visualizado_leads
+    ano = mes_atual.year
+    mes = mes_atual.month
+    
+    # --- Navegação entre meses ---
+    col_prev, col_title, col_next = st.columns([1, 3, 1])
+    with col_prev:
+        if st.button("<< Mês Anterior", key="prev_mes_leads"):
+            novo_mes = mes_atual.replace(day=1) - timedelta(days=1)
+            st.session_state.mes_visualizado_leads = novo_mes.replace(day=1)
+            st.rerun()
+    
+    with col_title:
+        st.markdown(f"### {calendar.month_name[mes].capitalize()} {ano}")
+    
+    with col_next:
+        if st.button("Mês Próximo >>", key="prox_mes_leads"):
+            proximo = mes_atual.replace(day=28) + timedelta(days=4)
+            st.session_state.mes_visualizado_leads = proximo.replace(day=1)
+            st.rerun()
+    
+    st.caption(
+        "🎨 Legenda: "
+        "⚪ Sem leads | "
+        "🟢 1–2 | "
+        "🟡 3–5 | "
+        "🟠 6–10 | "
+        "🔴 ≥11 | "
+        "❗ Dias vencidos com leads pendentes | "
+        "🔥 Quente | ⚪ Morno | ❄️ Frio"
+    )
+    
+    # --- Filtros ---
+    with st.expander("🔍 Filtros do Calendário", expanded=False):
+        col_f1, col_f2, col_f3 = st.columns(3)
         
-        render_painel_ligacoes(clientes_collection, is_admin, usuario_atual, modo_delegacao_ativo, atendente_delegado)
+        with col_f1:
+            filtro_status_cal = st.multiselect(
+                "Filtrar por Status:",
+                options=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
+                default=[],
+                key="cal_leads_status"
+            )
+        
+        with col_f2:
+            filtro_interesse_cal = st.multiselect(
+                "Filtrar por Nível de Interesse:",
+                options=["🔥 Quente", "Morno", "❄️ Frio"],
+                default=[],
+                key="cal_leads_interesse"
+            )
+        
+        with col_f3:
+            filtro_potencial_cal = st.multiselect(
+                "Filtrar por Potencial:",
+                options=["Alto", "Médio", "Baixo"],
+                default=[],
+                key="cal_leads_potencial"
+            )
+        
+        search_evento_cal = st.text_input(
+            "📅 Filtrar por Evento/Origem (opcional):",
+            placeholder="Ex: Feira de Síndicos...",
+            key="cal_leads_evento"
+        )
+    
+    # --- Montar filtros para a query ---
+    filtros_query = {}
+    
+    if filtro_status_cal:
+        filtros_query["status"] = {"$in": filtro_status_cal}
+    
+    if filtro_interesse_cal:
+        filtros_query["nivel_interesse"] = {"$in": filtro_interesse_cal}
+    
+    if filtro_potencial_cal:
+        filtros_query["potencial_condominio"] = {"$in": filtro_potencial_cal}
+    
+    if search_evento_cal:
+        filtros_query["evento"] = {"$regex": search_evento_cal, "$options": "i"}
+    
+    # --- Buscar leads do mês ---
+    with st.spinner("Carregando leads do mês..."):
+        agenda_por_dia = get_leads_para_calendario(collection, ano, mes, filtros_query)
+    
+    # --- Estatísticas do mês ---
+    total_leads_mes = sum(len(v) for v in agenda_por_dia.values())
+    
+    if total_leads_mes > 0:
+        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+        
+        with col_stat1:
+            st.metric("📊 Total de Leads", total_leads_mes)
+        
+        with col_stat2:
+            quentes = sum(1 for leads in agenda_por_dia.values() for l in leads if l.get("nivel_interesse") == "🔥 Quente")
+            st.metric("🔥 Quentes", quentes)
+        
+        with col_stat3:
+            alto_pot = sum(1 for leads in agenda_por_dia.values() for l in leads if l.get("potencial_condominio") == "Alto")
+            st.metric("🟢 Alto Potencial", alto_pot)
+        
+        with col_stat4:
+            convertidos = sum(1 for leads in agenda_por_dia.values() for l in leads if l.get("convertido"))
+            st.metric("🏆 Convertidos", convertidos)
+    
+    # --- Renderizar calendário ---
+    cal = calendar.monthcalendar(ano, mes)
+    dias_da_semana = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    
+    cols_header = st.columns(7)
+    for i, dia in enumerate(dias_da_semana):
+        cols_header[i].markdown(
+            f"<div style='font-weight: bold; text-align: center; padding: 8px;'>{dia}</div>",
+            unsafe_allow_html=True
+        )
+    
+    hoje_date = datetime.now().date()
+    
+    for semana in cal:
+        cols = st.columns(7)
+        for i, dia_num in enumerate(semana):
+            if dia_num == 0:
+                cols[i].markdown("<div style='height: 70px;'></div>", unsafe_allow_html=True)
+                continue
+            
+            data = datetime(ano, mes, dia_num).date()
+            data_str = data.strftime("%Y-%m-%d")
+            leads_do_dia = agenda_por_dia.get(data_str, [])
+            qtd = len(leads_do_dia)
+            
+            # Definir cor pela quantidade
+            if qtd == 0:
+                cor = "#f8f9fa"
+                texto = str(dia_num)
+            elif qtd <= 2:
+                cor = "#d4edda"
+                texto = f"{dia_num}<br/>({qtd})"
+            elif qtd <= 5:
+                cor = "#fff3cd"
+                texto = f"{dia_num}<br/>({qtd})"
+            elif qtd <= 10:
+                cor = "#ffeacc"
+                texto = f"{dia_num}<br/>({qtd})"
+            else:
+                cor = "#f8d7da"
+                texto = f"{dia_num}<br/>({qtd})"
+            
+            borda = ""
+            icone = ""
+            if data < hoje_date and qtd > 0:
+                borda = "border: 2px solid #e74c3c;"
+                icone = "❗ "
+            
+            estilo = (
+                f"background-color: {cor};  "
+                f"padding: 12px 6px;  "
+                f"border-radius: 8px;  "
+                f"text-align: center;  "
+                f"font-weight: bold;  "
+                f"font-size: 15px;  "
+                f"box-shadow: 0 2px 4px rgba(0,0,0,0.06);  "
+                f"{borda}"
+            )
+            html_celula = f"<div style='{estilo}'>{icone}{texto}</div>"
+            cols[i].markdown(html_celula, unsafe_allow_html=True)
+            
+            if qtd > 0:
+                if cols[i].button("👁️", key=f"olho_lead_{data_str}", use_container_width=True):
+                    st.session_state["data_selecionada_lead"] = data
+                    st.rerun()
+    
+    st.markdown("---")
+    
+    # --- Seleção de data + detalhes ---
+    data_selecionada = st.date_input(
+        "Selecione um dia para ver os leads:",
+        value=st.session_state.get("data_selecionada_lead", datetime.now().date()),
+        min_value=datetime(2020, 1, 1),
+        key="data_selecionada_lead"
+    )
+    data_str = data_selecionada.strftime("%Y-%m-%d")
+    leads_do_dia = agenda_por_dia.get(data_str, [])
+    
+    if leads_do_dia:
+        st.markdown(f"### 👥 Leads em {data_selecionada.strftime('%d/%m/%Y')}")
+        st.info(f"📊 {len(leads_do_dia)} lead(s) agendado(s) para este dia.")
+        
+        # --- Exportação ---
+        col_exp1, col_exp2 = st.columns(2)
+        
+        # Preparar dados para exportação
+        dados_excel = []
+        texto_txt = ""
+        
+        for lead in leads_do_dia:
+            # Dados para Excel
+            dados_excel.append({
+                "Nome": lead.get("nome_contato", ""),
+                "Telefone": lead.get("telefone", ""),
+                "Condomínio": lead.get("nome_condominio", "") or "",
+                "Empresa": lead.get("nome_empresa", "") or "",
+                "Evento": lead.get("evento", ""),
+                "Nível Interesse": lead.get("nivel_interesse", ""),
+                "Status": lead.get("status", ""),
+                "Potencial": lead.get("potencial_condominio", "") or "",
+                "Qtd. Aptos": lead.get("qtd_apartamentos", "") or "",
+                "Potencial Serviços": lead.get("potencial_servicos", "") or "",
+                "Produtos": ", ".join(lead.get("produtos_interesse", [])),
+                "Observações": lead.get("observacoes", "")
+            })
+            
+            # Dados para TXT
+            texto_txt += f"📞 {lead.get('nome_contato', 'N/A')} | {lead.get('nivel_interesse', '')}\n"
+            texto_txt += f"📱 {lead.get('telefone', 'N/A')}\n"
+            if lead.get('nome_condominio'):
+                texto_txt += f"🏢 Condomínio: {lead.get('nome_condominio')}\n"
+            if lead.get('nome_empresa'):
+                texto_txt += f"🏭 Empresa: {lead.get('nome_empresa')}\n"
+            texto_txt += f"📅 Evento: {lead.get('evento', 'N/A')}\n"
+            texto_txt += f"🔄 Status: {lead.get('status', 'N/A')}\n"
+            if lead.get('potencial_condominio'):
+                texto_txt += f"🟢 Potencial: {lead.get('potencial_condominio')}\n"
+            if lead.get('qtd_apartamentos'):
+                texto_txt += f"🏠 Qtd. Apartamentos: {lead.get('qtd_apartamentos')}\n"
+            if lead.get('produtos_interesse'):
+                texto_txt += f"🛒 Produtos: {', '.join(lead.get('produtos_interesse', []))}\n"
+            if lead.get('observacoes'):
+                texto_txt += f"📝 Obs: {lead.get('observacoes')}\n"
+            texto_txt += "---\n"
+        
+        df = pd.DataFrame(dados_excel)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Leads do Dia')
+            worksheet = writer.sheets['Leads do Dia']
+            column_widths = [25, 15, 25, 20, 20, 15, 15, 12, 10, 15, 30, 40]
+            for i, width in enumerate(column_widths):
+                if i < 26:
+                    col_letter = chr(65 + i)
+                    worksheet.column_dimensions[col_letter].width = width
+        output.seek(0)
+        
+        with col_exp1:
+            st.download_button(
+                label="📋 Exportar TXT",
+                data=texto_txt,
+                file_name=f"leads_{data_selecionada.strftime('%Y-%m-%d')}.txt",
+                mime="text/plain",
+                key=f"copiar_leads_{data_str}",
+                use_container_width=True
+            )
+        
+        with col_exp2:
+            st.download_button(
+                label="📊 Exportar Excel (.xlsx)",
+                data=output.getvalue(),
+                file_name=f"leads_{data_selecionada.strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"excel_leads_{data_str}",
+                use_container_width=True
+            )
+        
+        st.markdown("---")
+        
+        # --- Exibir leads do dia ---
+        for lead in leads_do_dia:
+            nivel = lead.get("nivel_interesse", "")
+            emoji_nivel = {"🔥 Quente": "🔥", "Morno": "⚪", "❄️ Frio": "❄️"}.get(nivel, "⚪")
+            
+            pot = lead.get("potencial_condominio", "")
+            emoji_pot = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot, "")
+            
+            titulo = f"{emoji_nivel} {lead.get('nome_contato', 'N/A')} - {lead.get('telefone', '')}"
+            if emoji_pot:
+                titulo += f" {emoji_pot} {pot}"
+            
+            with st.expander(titulo, expanded=False):
+                col_info, col_actions = st.columns([2, 1])
+                
+                with col_info:
+                    st.write(f"**📞 Telefone:** {lead.get('telefone', 'N/A')}")
+                    
+                    if lead.get('nome_condominio'):
+                        st.info(f"🏢 **Condomínio:** {lead.get('nome_condominio')}")
+                    if lead.get('nome_empresa'):
+                        st.info(f"🏭 **Empresa:** {lead.get('nome_empresa')}")
+                    
+                    st.write(f"**📅 Evento:** {lead.get('evento', 'N/A')}")
+                    st.write(f"**🔄 Status:** {lead.get('status', 'N/A')}")
+                    st.write(f"**🌡️ Nível de Interesse:** {lead.get('nivel_interesse', 'N/A')}")
+                    
+                    if lead.get('potencial_condominio'):
+                        st.write(f"**🏢 Potencial:** {emoji_pot} {lead.get('potencial_condominio')}")
+                    if lead.get('qtd_apartamentos'):
+                        st.write(f"**🏠 Qtd. Apartamentos:** {lead.get('qtd_apartamentos')}")
+                    if lead.get('potencial_servicos'):
+                        pot_serv = lead.get('potencial_servicos')
+                        emoji_serv = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot_serv, "")
+                        st.write(f"**🛠️ Potencial Serviços:** {emoji_serv} {pot_serv}")
+                    
+                    if lead.get('produtos_interesse'):
+                        st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+                    
+                    if lead.get('observacoes'):
+                        st.write(f"**📝 Observações:** {lead.get('observacoes')}")
+                    
+                    if lead.get('convertido'):
+                        st.success("**🏆 CLIENTE CONVERTIDO**")
+                
+                with col_actions:
+                    st.markdown("### Ações Rápidas")
+                    
+                    # Botão de atualizar data de próximo contato
+                    if st.button("📅 Alterar Data", key=f"cal_edit_date_{lead['_id']}", use_container_width=True):
+                        st.session_state[f"cal_editing_date_{lead['_id']}"] = True
+                        st.rerun()
+                    
+                    if st.session_state.get(f"cal_editing_date_{lead['_id']}", False):
+                        with st.form(key=f"cal_form_date_{lead['_id']}"):
+                            nova_data_cal = st.date_input(
+                                "Nova data:",
+                                value=lead.get('data_proximo_contato', datetime.now()).date() if lead.get('data_proximo_contato') else datetime.now(),
+                                key=f"cal_date_input_{lead['_id']}"
+                            )
+                            col_s, col_c = st.columns([1, 1])
+                            with col_s:
+                                if st.form_submit_button("💾 Salvar", use_container_width=True):
+                                    if update_lead_data_proximo_contato(lead['_id'], nova_data_cal):
+                                        st.success("✅ Data atualizada!")
+                                        del st.session_state[f"cal_editing_date_{lead['_id']}"]
+                                        st.rerun()
+                            with col_c:
+                                if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                                    del st.session_state[f"cal_editing_date_{lead['_id']}"]
+                                    st.rerun()
+    
+    else:
+        st.info(f"📭 Nenhum lead para {data_selecionada.strftime('%d/%m/%Y')}.")
+
+# --- Execução Principal ---
+if __name__ == "__main__":
+    # Criação de Abas
+    tab1, tab2, tab3 = st.tabs([
+        "📝 Cadastro de Leads",
+        "📋 Agenda & Lista",
+        "📅 Calendário Mensal"
+    ])
+    
+    with tab1:
+        render_registro_lead()
+        
+    with tab2:
+        render_agenda_leads()
+    
+    with tab3:
+        render_calendario_leads()
