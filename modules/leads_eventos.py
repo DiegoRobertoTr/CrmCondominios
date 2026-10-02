@@ -92,6 +92,25 @@ def update_lead_data_proximo_contato(lead_id, nova_data):
         st.error(f"Erro ao atualizar data: {e}")
         return False
 
+def update_lead_potencial(lead_id, potencial_condominio, qtd_apartamentos, potencial_servicos, obs_potencial):
+    """Atualiza os dados de potencial do condomínio"""
+    try:
+        collection = get_leads_collection()
+        update_data = {
+            "potencial_condominio": potencial_condominio if potencial_condominio != "Não avaliado" else None,
+            "qtd_apartamentos": qtd_apartamentos if qtd_apartamentos and qtd_apartamentos > 0 else None,
+            "potencial_servicos": potencial_servicos if potencial_servicos != "Não avaliado" else None,
+            "obs_potencial": obs_potencial.strip() if obs_potencial else None
+        }
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)},
+            {"$set": update_data}
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"Erro ao atualizar potencial: {e}")
+        return False
+
 def get_eventos_existentes():
     """Busca todos os nomes de eventos já cadastrados no banco"""
     try:
@@ -135,21 +154,21 @@ def render_registro_lead():
             tipo_contato = st.selectbox("Tipo de Contato *", ["Síndico / Cliente", "Parceiro Comercial", "Outros"])
             nome_contato = st.text_input("Nome do Contato *", max_chars=100)
             
-            # ✅ NOVO: Campo específico para Condomínio
-            nome_condominio = st.text_input(" Nome do Condomínio (Se houver)", max_chars=100, 
+            # ✅ Campo específico para Condomínio
+            nome_condominio = st.text_input("🏢 Nome do Condomínio (Se houver)", max_chars=100, 
                                           help="Preencha apenas se for um condomínio residencial")
             
-            # ✅ NOVO: Campo específico para Empresa
-            nome_empresa = st.text_input("🏢 Nome da Empresa (Se houver)", max_chars=100,
+            # ✅ Campo específico para Empresa
+            nome_empresa = st.text_input("🏭 Nome da Empresa (Se houver)", max_chars=100,
                                        help="Preencha apenas se for uma empresa parceira/comercial")
             
             telefone = st.text_input("Telefone / WhatsApp *", max_chars=20, placeholder="(00) 00000-0000")
             email = st.text_input("E-mail", max_chars=100)
             
         with col2:
-            st.subheader(" Dados do Evento & Agenda")
+            st.subheader("📅 Dados do Evento & Agenda")
             
-            # ✅ NOVO: Campo de evento com autocomplete/sugestão
+            # ✅ Campo de evento com autocomplete/sugestão
             st.markdown("**Nome do Evento / Origem ***")
             st.caption("💡 Comece a digitar para ver sugestões de eventos já cadastrados")
             
@@ -183,9 +202,9 @@ def render_registro_lead():
             
             data_evento = st.date_input("Data do Contato", value=datetime.now())
             
-            # ✅ ALTERADO: Data para Próximo Contato agora é OPCIONAL
+            # ✅ Data para Próximo Contato agora é OPCIONAL
             st.markdown("**📅 Data para Próximo Contato (Touch)**")
-            st.caption("️ Deixe em branco se não houver necessidade de contato imediato (ex: parceiros)")
+            st.caption("💡 Deixe em branco se não houver necessidade de contato imediato (ex: parceiros)")
             
             usar_data_proximo = st.checkbox("Definir data para próximo contato", value=True)
             
@@ -200,6 +219,50 @@ def render_registro_lead():
             
             nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
+        
+        # ✅ NOVO: Bloco de Potencial do Condomínio (só aparece para Síndico/Cliente)
+        potencial_condominio = None
+        qtd_apartamentos = None
+        potencial_servicos = None
+        obs_potencial = None
+        
+        if tipo_contato == "Síndico / Cliente":
+            st.subheader("🏢 Potencial do Condomínio")
+            st.caption("Avalie a capacidade de exploração comercial deste condomínio.")
+            
+            col_pot1, col_pot2, col_pot3 = st.columns(3)
+            
+            with col_pot1:
+                potencial_condominio = st.selectbox(
+                    "Potencial do Condomínio",
+                    ["Alto", "Médio", "Baixo", "Não avaliado"],
+                    index=3,
+                    help="Avaliação geral do potencial comercial do condomínio"
+                )
+            
+            with col_pot2:
+                qtd_apartamentos = st.number_input(
+                    "Qtd. média de apartamentos",
+                    min_value=0,
+                    max_value=10000,
+                    value=0,
+                    step=10,
+                    help="Quantidade estimada de unidades. Deixe 0 se não souber."
+                )
+            
+            with col_pot3:
+                potencial_servicos = st.selectbox(
+                    "Potencial de Serviços",
+                    ["Alto", "Médio", "Baixo", "Não avaliado"],
+                    index=3,
+                    help="Capacidade de exploração: automação, internet, carregador, etc."
+                )
+            
+            obs_potencial = st.text_input(
+                "Observação sobre o potencial (opcional)",
+                max_chars=200,
+                placeholder="Ex: Condomínio novo, síndico aberto a propostas, 3 torres..."
+            )
         
         st.subheader("🛒 Interesse em Produtos")
         produtos_interesse = st.multiselect(
@@ -221,7 +284,7 @@ def render_registro_lead():
             submitted = st.form_submit_button("💾 Salvar Lead", type="primary", use_container_width=True)
         
         with col_novo:
-            novo_cadastro = st.form_submit_button(" Novo Cadastro", use_container_width=True)
+            novo_cadastro = st.form_submit_button("🔄 Novo Cadastro", use_container_width=True)
         
         if submitted:
             # Validação simples
@@ -240,6 +303,11 @@ def render_registro_lead():
                     "data_proximo_contato": datetime.combine(data_proximo_contato, datetime.min.time()) if data_proximo_contato else None,
                     "nivel_interesse": nivel_interesse,
                     "status": status_lead,
+                    # ✅ NOVOS CAMPOS DE POTENCIAL
+                    "potencial_condominio": potencial_condominio if potencial_condominio != "Não avaliado" else None,
+                    "qtd_apartamentos": qtd_apartamentos if qtd_apartamentos and qtd_apartamentos > 0 else None,
+                    "potencial_servicos": potencial_servicos if potencial_servicos != "Não avaliado" else None,
+                    "obs_potencial": obs_potencial.strip() if obs_potencial else None,
                     "produtos_interesse": produtos_interesse,
                     "observacoes": observacoes.strip(),
                     "data_cadastro": datetime.now(),
@@ -271,7 +339,7 @@ def render_agenda_leads():
         st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
         return
 
-    # --- NOVO: Barra de Pesquisa ---
+    # --- Barra de Pesquisa ---
     with st.expander("🔍 Opções de Busca Avançada", expanded=True):
         col_search1, col_search2 = st.columns(2)
         
@@ -280,8 +348,25 @@ def render_agenda_leads():
             search_condo_emp = st.text_input("🏢 Condomínio ou Empresa", placeholder="Ex: Residencial Sol, Tech Solutions...")
         
         with col_search2:
-            search_telefone = st.text_input(" Telefone", placeholder="Ex: 99999-0000")
+            search_telefone = st.text_input("📞 Telefone", placeholder="Ex: 99999-0000")
             search_evento = st.text_input("📅 Evento/Origem", placeholder="Ex: Feira de Síndicos...")
+        
+        # ✅ NOVO: Filtro por Potencial do Condomínio
+        col_filtro1, col_filtro2 = st.columns(2)
+        
+        with col_filtro1:
+            filtro_potencial = st.multiselect(
+                "🏢 Filtrar por Potencial do Condomínio:",
+                options=["Alto", "Médio", "Baixo"],
+                default=[]
+            )
+        
+        with col_filtro2:
+            filtro_potencial_servicos = st.multiselect(
+                "🛠️ Filtrar por Potencial de Serviços:",
+                options=["Alto", "Médio", "Baixo"],
+                default=[]
+            )
 
     # Filtro de Status (Mantido)
     filtro_status = st.multiselect(
@@ -298,7 +383,6 @@ def render_agenda_leads():
         query["status"] = {"$in": filtro_status}
 
     # 2. Filtros de Texto (Regex case-insensitive)
-    # Nota: MongoDB usa regex. Se o campo for None, ignoramos o filtro nesse campo.
     if search_nome:
         query["nome_contato"] = {"$regex": search_nome, "$options": "i"}
     
@@ -320,10 +404,27 @@ def render_agenda_leads():
             query = {"$and": [query, {"$or": or_condition}]}
         else:
             query["$or"] = or_condition
+    
+    # ✅ NOVO: Filtro por Potencial do Condomínio
+    if filtro_potencial:
+        if "$and" in query:
+            query["$and"].append({"potencial_condominio": {"$in": filtro_potencial}})
+        else:
+            and_list = [query] if query else []
+            and_list.append({"potencial_condominio": {"$in": filtro_potencial}})
+            query = {"$and": and_list}
+    
+    # ✅ NOVO: Filtro por Potencial de Serviços
+    if filtro_potencial_servicos:
+        if "$and" in query:
+            query["$and"].append({"potencial_servicos": {"$in": filtro_potencial_servicos}})
+        else:
+            and_list = [query] if query else []
+            and_list.append({"potencial_servicos": {"$in": filtro_potencial_servicos}})
+            query = {"$and": and_list}
 
     try:
         # Ordenação: Data primeiro (ascendente), depois Nome
-        # Limitado a 100 resultados para performance na busca
         leads_cursor = collection.find(query).sort([
             ("data_proximo_contato", 1), 
             ("nome_contato", 1)
@@ -337,7 +438,7 @@ def render_agenda_leads():
         return
 
     if not leads:
-        st.warning("️ Nenhum lead encontrado com os critérios selecionados.")
+        st.warning("⚠️ Nenhum lead encontrado com os critérios selecionados.")
     else:
         st.info(f"🔎 Encontrados {len(leads)} registro(s).")
         
@@ -353,7 +454,7 @@ def render_agenda_leads():
         
         # Exibir leads com data primeiro
         if leads_com_data:
-            st.subheader(" Agenda - Próximos Contatos")
+            st.subheader("📅 Agenda - Próximos Contatos")
             for lead in leads_com_data:
                 display_lead_card(lead, collection)
         
@@ -372,7 +473,7 @@ def display_lead_card(lead, collection, is_pool=False):
         data_str = data_contato.strftime("%d/%m/%Y")
         hoje = datetime.now().date()
         icono_data = "📅" if data_contato.date() >= hoje else "⏰"
-        urgency_badge = " ️ URGENTE" if data_contato.date() < hoje else ""
+        urgency_badge = " ⚠️ URGENTE" if data_contato.date() < hoje else ""
     else:
         data_str = "Sem data agendada"
         icono_data = "⚪"
@@ -393,7 +494,7 @@ def display_lead_card(lead, collection, is_pool=False):
         with col_info:
             st.write(f"**📞 Telefone:** {lead.get('telefone')}")
             
-            # ✅ NOVO: Exibir Condomínio ou Empresa conforme o caso
+            # ✅ Exibir Condomínio ou Empresa conforme o caso
             if lead.get('nome_condominio'):
                 st.write(f"**🏢 Condomínio:** {lead.get('nome_condominio')}")
             if lead.get('nome_empresa'):
@@ -401,9 +502,34 @@ def display_lead_card(lead, collection, is_pool=False):
             if not lead.get('nome_condominio') and not lead.get('nome_empresa'):
                 st.write(f"**🏢 Organização:** N/A")
             
-            st.write(f"** Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+            st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
             
-            # ✅ NOVO: Campo de observações editável
+            # ✅ NOVO: Exibir Potencial do Condomínio
+            if lead.get('potencial_condominio') or lead.get('qtd_apartamentos') or lead.get('potencial_servicos'):
+                st.markdown("**🏢 Potencial do Condomínio:**")
+                
+                col_p1, col_p2, col_p3 = st.columns(3)
+                
+                with col_p1:
+                    pot = lead.get('potencial_condominio', 'N/A')
+                    emoji_pot = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot, "⚪")
+                    st.metric("Potencial", f"{emoji_pot} {pot}")
+                
+                with col_p2:
+                    qtd = lead.get('qtd_apartamentos')
+                    st.metric("Apartamentos", qtd if qtd else "N/A")
+                
+                with col_p3:
+                    pot_serv = lead.get('potencial_servicos', 'N/A')
+                    emoji_serv = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot_serv, "⚪")
+                    st.metric("Potencial Serviços", f"{emoji_serv} {pot_serv}")
+                
+                if lead.get('obs_potencial'):
+                    st.caption(f"💬 {lead.get('obs_potencial')}")
+                
+                st.divider()
+            
+            # ✅ Campo de observações editável
             st.write("**📝 Observações:**")
             observacoes_atuais = lead.get('observacoes', 'Sem observações')
             
@@ -433,15 +559,14 @@ def display_lead_card(lead, collection, is_pool=False):
             st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
             st.write(f"**🔄 Status Atual:** {lead.get('status')}")
             if lead.get('convertido'):
-                st.success("** CLIENTE CONVERTIDO**")
+                st.success("**🏆 CLIENTE CONVERTIDO**")
 
         with col_actions:
             st.markdown("### Ações")
             
-            # ✅ NOVO: Botão para definir/editar/remover data de próximo contato
+            # ✅ Botão para definir/editar/remover data de próximo contato
             if not lead.get('data_proximo_contato'):
                 if st.button("📅 Definir Data de Contato", key=f"set_date_{lead['_id']}", use_container_width=True):
-                    # Usar session_state de forma segura
                     if "editing_date_lead" not in st.session_state:
                         st.session_state.editing_date_lead = str(lead['_id'])
                     st.rerun()
@@ -449,7 +574,6 @@ def display_lead_card(lead, collection, is_pool=False):
                 col_edit, col_remove = st.columns([1, 1])
                 with col_edit:
                     if st.button("✏️ Editar", key=f"edit_date_{lead['_id']}", use_container_width=True):
-                        # Usar session_state de forma segura
                         if "editing_date_lead" not in st.session_state:
                             st.session_state.editing_date_lead = str(lead['_id'])
                         st.rerun()
@@ -476,7 +600,6 @@ def display_lead_card(lead, collection, is_pool=False):
                         if st.form_submit_button("💾 Salvar Data", use_container_width=True):
                             if update_lead_data_proximo_contato(lead['_id'], nova_data):
                                 st.success("✅ Data atualizada!")
-                                # Limpar o estado de edição
                                 del st.session_state.editing_date_lead
                                 st.rerun()
                             else:
@@ -484,12 +607,72 @@ def display_lead_card(lead, collection, is_pool=False):
                     
                     with col_cancel:
                         if st.form_submit_button("❌ Cancelar", use_container_width=True):
-                            # Limpar o estado de edição
                             del st.session_state.editing_date_lead
                             st.rerun()
-             
-            # ✅ NOVO: Botão de exclusão
-            if st.button("️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
+            
+            # ✅ NOVO: Botão para editar Potencial do Condomínio
+            if st.button("🏢 Editar Potencial", key=f"edit_pot_{lead['_id']}", use_container_width=True):
+                if "editing_potencial_lead" not in st.session_state:
+                    st.session_state.editing_potencial_lead = str(lead['_id'])
+                st.rerun()
+            
+            # Editor de Potencial
+            if "editing_potencial_lead" in st.session_state and st.session_state.editing_potencial_lead == str(lead['_id']):
+                with st.form(key=f"form_pot_{lead['_id']}"):
+                    st.markdown("**🏢 Editar Potencial do Condomínio**")
+                    
+                    pot_atual = lead.get('potencial_condominio') or "Não avaliado"
+                    pot_serv_atual = lead.get('potencial_servicos') or "Não avaliado"
+                    
+                    opcoes_pot = ["Alto", "Médio", "Baixo", "Não avaliado"]
+                    
+                    novo_pot = st.selectbox(
+                        "Potencial do Condomínio",
+                        opcoes_pot,
+                        index=opcoes_pot.index(pot_atual) if pot_atual in opcoes_pot else 3,
+                        key=f"pot_input_{lead['_id']}"
+                    )
+                    
+                    nova_qtd = st.number_input(
+                        "Qtd. média de apartamentos",
+                        min_value=0,
+                        max_value=10000,
+                        value=lead.get('qtd_apartamentos') or 0,
+                        step=10,
+                        key=f"qtd_input_{lead['_id']}"
+                    )
+                    
+                    novo_pot_serv = st.selectbox(
+                        "Potencial de Serviços",
+                        opcoes_pot,
+                        index=opcoes_pot.index(pot_serv_atual) if pot_serv_atual in opcoes_pot else 3,
+                        key=f"pot_serv_input_{lead['_id']}"
+                    )
+                    
+                    nova_obs_pot = st.text_input(
+                        "Observação sobre o potencial",
+                        value=lead.get('obs_potencial') or "",
+                        max_chars=200,
+                        key=f"obs_pot_input_{lead['_id']}"
+                    )
+                    
+                    col_save_pot, col_cancel_pot = st.columns([1, 1])
+                    with col_save_pot:
+                        if st.form_submit_button("💾 Salvar Potencial", use_container_width=True):
+                            if update_lead_potencial(lead['_id'], novo_pot, nova_qtd, novo_pot_serv, nova_obs_pot):
+                                st.success("✅ Potencial atualizado!")
+                                del st.session_state.editing_potencial_lead
+                                st.rerun()
+                            else:
+                                st.error("❌ Falha ao atualizar potencial.")
+                    
+                    with col_cancel_pot:
+                        if st.form_submit_button("❌ Cancelar", use_container_width=True):
+                            del st.session_state.editing_potencial_lead
+                            st.rerun()
+            
+            # ✅ Botão de exclusão
+            if st.button("🗑️ Excluir Lead", key=f"delete_{lead['_id']}", use_container_width=True, type="secondary"):
                 if delete_lead(lead['_id']):
                     st.success("✅ Lead excluído com sucesso!")
                     st.rerun()
@@ -533,7 +716,7 @@ def display_lead_card(lead, collection, is_pool=False):
 # --- Execução Principal ---
 if __name__ == "__main__":
     # Criação de Abas
-    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", " Agenda & Lista"])
+    tab1, tab2 = st.tabs(["📝 Cadastro de Leads", "📋 Agenda & Lista"])
     
     with tab1:
         render_registro_lead()
