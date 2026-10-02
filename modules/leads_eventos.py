@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import calendar
 import re
 from collections import defaultdict
@@ -91,7 +91,6 @@ def update_lead_data_proximo_contato(lead_id, nova_data):
         return False
 
 def update_lead_potencial(lead_id, potencial_condominio, qtd_apartamentos, potencial_servicos, obs_potencial):
-    """Atualiza os dados de potencial do condomínio"""
     try:
         collection = get_leads_collection()
         update_data = {
@@ -109,6 +108,105 @@ def update_lead_potencial(lead_id, potencial_condominio, qtd_apartamentos, poten
         st.error(f"Erro ao atualizar potencial: {e}")
         return False
 
+# ============================================================================
+# ✅ NOVA FUNÇÃO: Registrar Touch em um Lead
+# ============================================================================
+def registrar_touch_lead(lead_id, notas="Touch registrado via Painel de Ligações"):
+    """Registra um novo touch em um lead e incrementa o contador"""
+    try:
+        collection = get_leads_collection()
+        lead = collection.find_one({"_id": ObjectId(lead_id)})
+        if not lead:
+            return False
+        
+        touch_count = lead.get("touch_count", 0) + 1
+        nome_usuario = st.session_state.get("nome_usuario", "Anônimo")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        
+        result = collection.update_one(
+            {"_id": ObjectId(lead_id)},
+            {
+                "$set": {"touch_count": touch_count},
+                "$push": {
+                    "touch_history": {
+                        "timestamp": timestamp,
+                        "by": nome_usuario,
+                        "notes": notas
+                    }
+                }
+            }
+        )
+        return result.modified_count > 0
+    except Exception as e:
+        st.error(f"❌ Erro ao registrar touch: {e}")
+        return False
+
+# ============================================================================
+# ✅ NOVA FUNÇÃO: Formatar último touch (humanizado)
+# ============================================================================
+def formatar_ultimo_touch(lead):
+    """Retorna string formatada com data do último touch ou mensagem padrão"""
+    touch_history = lead.get("touch_history", [])
+    if not touch_history:
+        return "🆕 Nunca contactado"
+    
+    try:
+        ultimo_ts = max([t.get("timestamp", "") for t in touch_history])
+        if not ultimo_ts:
+            return "🆕 Nunca contactado"
+        
+        data_ultimo = datetime.fromisoformat(ultimo_ts.replace("Z", "+00:00"))
+        agora = datetime.now(timezone.utc)
+        
+        diff = agora - data_ultimo
+        dias = diff.days
+        horas = diff.seconds // 3600
+        minutos = (diff.seconds % 3600) // 60
+        
+        if dias == 0:
+            if horas == 0:
+                tempo_str = "agora mesmo" if minutos == 0 else f"há {minutos} min"
+            else:
+                tempo_str = f"há {horas}h"
+        elif dias == 1:
+            tempo_str = "ontem"
+        elif dias < 7:
+            tempo_str = f"há {dias} dias"
+        elif dias < 30:
+            semanas = dias // 7
+            tempo_str = f"há {semanas} semana{'s' if semanas > 1 else ''}"
+        else:
+            tempo_str = data_ultimo.strftime("%d/%m/%Y")
+        
+        if dias == 0:
+            icone = "🟢"
+        elif dias <= 3:
+            icone = "🟡"
+        elif dias <= 7:
+            icone = "🟠"
+        else:
+            icone = "🔴"
+        
+        return f"{icone} Último touch: {tempo_str}"
+    except Exception:
+        return "❓ Data inválida"
+
+# ============================================================================
+# ✅ NOVA FUNÇÃO: Badge visual do touch_count
+# ============================================================================
+def get_touch_badge(touch_count):
+    """Retorna o badge emoji + cor para exibir ao lado do nome"""
+    if touch_count == 0:
+        return "🆕", "#d4edda"  # Novo
+    elif touch_count <= 3:
+        return f"🟢 {touch_count}", "#d4edda"
+    elif touch_count <= 6:
+        return f"🟡 {touch_count}", "#fff3cd"
+    elif touch_count <= 10:
+        return f"🟠 {touch_count}", "#ffeacc"
+    else:
+        return f"🔴 {touch_count}", "#f8d7da"
+
 def get_eventos_existentes():
     try:
         collection = get_leads_collection()
@@ -125,20 +223,14 @@ def get_eventos_existentes():
         return []
 
 # ============================================================================
-# ✅ NOVO: FUNÇÃO AUXILIAR - Retorna leads agrupados por data de próximo contato
+# ✅ FUNÇÃO AUXILIAR: Retorna leads agrupados por data de próximo contato
 # ============================================================================
 def get_leads_para_calendario(collection, ano, mes, filtros=None):
-    """
-    Retorna dict { 'YYYY-MM-DD': [leads] } para o mês/ano especificado.
-    Considera 'data_proximo_contato' (datetime) OU 'data_evento' como fallback.
-    """
     filtros = filtros or {}
     
-    # Intervalo do mês
     inicio_mes = datetime(ano, mes, 1)
     fim_mes = datetime(ano, mes, calendar.monthrange(ano, mes)[1], 23, 59, 59)
     
-    # Query base: pega leads com data_proximo_contato OU data_evento no mês
     query_base = {
         "$or": [
             {"data_proximo_contato": {"$gte": inicio_mes, "$lte": fim_mes}},
@@ -146,7 +238,6 @@ def get_leads_para_calendario(collection, ano, mes, filtros=None):
         ]
     }
     
-    # Aplicar filtros extras (status, potencial, evento)
     if filtros:
         query_base = {"$and": [query_base, filtros]}
     
@@ -159,7 +250,6 @@ def get_leads_para_calendario(collection, ano, mes, filtros=None):
     agenda = defaultdict(list)
     
     for lead in leads:
-        # Priorizar data_proximo_contato; se não tiver, usa data_evento
         data_ref = lead.get("data_proximo_contato") or lead.get("data_evento")
         
         if not data_ref:
@@ -260,7 +350,6 @@ def render_registro_lead():
             nivel_interesse = st.selectbox("Nível de Interesse", ["🔥 Quente", "Morno", "❄️ Frio"])
             status_lead = st.selectbox("Status Inicial", ["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"])
         
-        # ✅ Bloco de Potencial do Condomínio (só aparece para Síndico/Cliente)
         potencial_condominio = None
         qtd_apartamentos = None
         potencial_servicos = None
@@ -276,8 +365,7 @@ def render_registro_lead():
                 potencial_condominio = st.selectbox(
                     "Potencial do Condomínio",
                     ["Alto", "Médio", "Baixo", "Não avaliado"],
-                    index=3,
-                    help="Avaliação geral do potencial comercial do condomínio"
+                    index=3
                 )
             
             with col_pot2:
@@ -286,36 +374,31 @@ def render_registro_lead():
                     min_value=0,
                     max_value=10000,
                     value=0,
-                    step=10,
-                    help="Quantidade estimada de unidades. Deixe 0 se não souber."
+                    step=10
                 )
             
             with col_pot3:
                 potencial_servicos = st.selectbox(
                     "Potencial de Serviços",
                     ["Alto", "Médio", "Baixo", "Não avaliado"],
-                    index=3,
-                    help="Capacidade de exploração: automação, internet, carregador, etc."
+                    index=3
                 )
             
             obs_potencial = st.text_input(
                 "Observação sobre o potencial (opcional)",
-                max_chars=200,
-                placeholder="Ex: Condomínio novo, síndico aberto a propostas, 3 torres..."
+                max_chars=200
             )
         
         st.subheader("🛒 Interesse em Produtos")
         produtos_interesse = st.multiselect(
             "Quais produtos despertaram interesse?", 
-            PRODUTOS,
-            help="Selecione um ou mais produtos discutidos"
+            PRODUTOS
         )
         
         st.subheader("📝 Observações da Conversa")
         observacoes = st.text_area(
             "Detalhes da evolução da conversa", 
-            height=100, 
-            placeholder="Ex: Síndico reclamou da internet atual. Quer orçamento para 10 câmeras. Decisão até dia 30..."
+            height=100
         )
         
         col_submit, col_novo = st.columns([1, 1])
@@ -350,7 +433,10 @@ def render_registro_lead():
                     "observacoes": observacoes.strip(),
                     "data_cadastro": datetime.now(),
                     "ativo": True,
-                    "convertido": False
+                    "convertido": False,
+                    # ✅ NOVOS CAMPOS DE TOUCH
+                    "touch_count": 0,
+                    "touch_history": []
                 }
                 
                 try:
@@ -506,7 +592,12 @@ def display_lead_card(lead, collection, is_pool=False):
     else:
         data_evento_str = "N/A"
 
-    label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')}) {urgency_badge}"
+    # ✅ NOVO: Badge de touch_count
+    touch_count = lead.get("touch_count", 0)
+    badge_touch, _ = get_touch_badge(touch_count)
+    info_ultimo_touch = formatar_ultimo_touch(lead)
+
+    label_expander = f"{icono_data} {lead['nome_contato']} - {data_str} ({lead.get('nivel_interesse', '')}) {badge_touch} {urgency_badge}"
 
     with st.expander(label_expander):
         col_info, col_actions = st.columns([2, 1])
@@ -522,6 +613,9 @@ def display_lead_card(lead, collection, is_pool=False):
                 st.write(f"**🏢 Organização:** N/A")
             
             st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
+            
+            # ✅ NOVO: Exibir info de touches
+            st.caption(f"🎯 Toques: **{touch_count}** | {info_ultimo_touch}")
             
             if lead.get('potencial_condominio') or lead.get('qtd_apartamentos') or lead.get('potencial_servicos'):
                 st.markdown("**🏢 Potencial do Condomínio:**")
@@ -569,9 +663,6 @@ def display_lead_card(lead, collection, is_pool=False):
                             st.rerun()
                         else:
                             st.error("❌ Falha ao atualizar observações.")
-                
-                with col_del:
-                    pass
             
             st.write(f"**📅 Evento:** {lead.get('evento')} em {data_evento_str}")
             st.write(f"**🔄 Status Atual:** {lead.get('status')}")
@@ -580,6 +671,14 @@ def display_lead_card(lead, collection, is_pool=False):
 
         with col_actions:
             st.markdown("### Ações")
+            
+            # ✅ NOVO: Botão de Touch
+            if st.button("✋ Registrar Touch", key=f"touch_{lead['_id']}", use_container_width=True, type="primary"):
+                if registrar_touch_lead(lead['_id'], "Touch registrado via card de lead"):
+                    st.success(f"✔️ Touch #{touch_count + 1} registrado!")
+                    st.rerun()
+                else:
+                    st.error("❌ Falha ao registrar touch.")
             
             if not lead.get('data_proximo_contato'):
                 if st.button("📅 Definir Data de Contato", key=f"set_date_{lead['_id']}", use_container_width=True):
@@ -725,10 +824,10 @@ def display_lead_card(lead, collection, is_pool=False):
                         st.error("❌ Falha ao atualizar status.")
 
 # ============================================================================
-# ✅ NOVA FUNÇÃO: render_calendario_leads - Calendário Mensal de Leads
+# ✅ NOVA FUNÇÃO: render_calendario_leads
 # ============================================================================
 def render_calendario_leads():
-    """Exibe calendário mensal dos leads baseado em data_proximo_contato / data_evento"""
+    """Exibe calendário mensal dos leads com info de touches"""
     st.title("📅 Calendário Mensal de Leads")
     st.markdown("Visualize seus leads distribuídos ao longo do mês. Clique em 👁️ para ver os detalhes de um dia.")
     
@@ -738,7 +837,6 @@ def render_calendario_leads():
         st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
         return
     
-    # --- Estado do mês visualizado ---
     if "mes_visualizado_leads" not in st.session_state:
         st.session_state.mes_visualizado_leads = datetime.now().replace(day=1).date()
     
@@ -746,7 +844,6 @@ def render_calendario_leads():
     ano = mes_atual.year
     mes = mes_atual.month
     
-    # --- Navegação entre meses ---
     col_prev, col_title, col_next = st.columns([1, 3, 1])
     with col_prev:
         if st.button("<< Mês Anterior", key="prev_mes_leads"):
@@ -766,15 +863,13 @@ def render_calendario_leads():
     st.caption(
         "🎨 Legenda: "
         "⚪ Sem leads | "
-        "🟢 1–2 | "
+        "🟢 ≤2 | "
         "🟡 3–5 | "
         "🟠 6–10 | "
         "🔴 ≥11 | "
-        "❗ Dias vencidos com leads pendentes | "
-        "🔥 Quente | ⚪ Morno | ❄️ Frio"
+        "❗ Dias vencidos com leads pendentes"
     )
     
-    # --- Filtros ---
     with st.expander("🔍 Filtros do Calendário", expanded=False):
         col_f1, col_f2, col_f3 = st.columns(3)
         
@@ -808,7 +903,6 @@ def render_calendario_leads():
             key="cal_leads_evento"
         )
     
-    # --- Montar filtros para a query ---
     filtros_query = {}
     
     if filtro_status_cal:
@@ -823,11 +917,9 @@ def render_calendario_leads():
     if search_evento_cal:
         filtros_query["evento"] = {"$regex": search_evento_cal, "$options": "i"}
     
-    # --- Buscar leads do mês ---
     with st.spinner("Carregando leads do mês..."):
         agenda_por_dia = get_leads_para_calendario(collection, ano, mes, filtros_query)
     
-    # --- Estatísticas do mês ---
     total_leads_mes = sum(len(v) for v in agenda_por_dia.values())
     
     if total_leads_mes > 0:
@@ -848,7 +940,6 @@ def render_calendario_leads():
             convertidos = sum(1 for leads in agenda_por_dia.values() for l in leads if l.get("convertido"))
             st.metric("🏆 Convertidos", convertidos)
     
-    # --- Renderizar calendário ---
     cal = calendar.monthcalendar(ano, mes)
     dias_da_semana = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
     
@@ -873,7 +964,6 @@ def render_calendario_leads():
             leads_do_dia = agenda_por_dia.get(data_str, [])
             qtd = len(leads_do_dia)
             
-            # Definir cor pela quantidade
             if qtd == 0:
                 cor = "#f8f9fa"
                 texto = str(dia_num)
@@ -916,7 +1006,6 @@ def render_calendario_leads():
     
     st.markdown("---")
     
-    # --- Seleção de data + detalhes ---
     data_selecionada = st.date_input(
         "Selecione um dia para ver os leads:",
         value=st.session_state.get("data_selecionada_lead", datetime.now().date()),
@@ -930,15 +1019,14 @@ def render_calendario_leads():
         st.markdown(f"### 👥 Leads em {data_selecionada.strftime('%d/%m/%Y')}")
         st.info(f"📊 {len(leads_do_dia)} lead(s) agendado(s) para este dia.")
         
-        # --- Exportação ---
         col_exp1, col_exp2 = st.columns(2)
         
-        # Preparar dados para exportação
         dados_excel = []
         texto_txt = ""
         
         for lead in leads_do_dia:
-            # Dados para Excel
+            touch_count = lead.get("touch_count", 0)
+            
             dados_excel.append({
                 "Nome": lead.get("nome_contato", ""),
                 "Telefone": lead.get("telefone", ""),
@@ -947,15 +1035,14 @@ def render_calendario_leads():
                 "Evento": lead.get("evento", ""),
                 "Nível Interesse": lead.get("nivel_interesse", ""),
                 "Status": lead.get("status", ""),
+                "Toques": touch_count,
                 "Potencial": lead.get("potencial_condominio", "") or "",
                 "Qtd. Aptos": lead.get("qtd_apartamentos", "") or "",
-                "Potencial Serviços": lead.get("potencial_servicos", "") or "",
                 "Produtos": ", ".join(lead.get("produtos_interesse", [])),
                 "Observações": lead.get("observacoes", "")
             })
             
-            # Dados para TXT
-            texto_txt += f"📞 {lead.get('nome_contato', 'N/A')} | {lead.get('nivel_interesse', '')}\n"
+            texto_txt += f"📞 {lead.get('nome_contato', 'N/A')} | {lead.get('nivel_interesse', '')} | Toques: {touch_count}\n"
             texto_txt += f"📱 {lead.get('telefone', 'N/A')}\n"
             if lead.get('nome_condominio'):
                 texto_txt += f"🏢 Condomínio: {lead.get('nome_condominio')}\n"
@@ -963,12 +1050,6 @@ def render_calendario_leads():
                 texto_txt += f"🏭 Empresa: {lead.get('nome_empresa')}\n"
             texto_txt += f"📅 Evento: {lead.get('evento', 'N/A')}\n"
             texto_txt += f"🔄 Status: {lead.get('status', 'N/A')}\n"
-            if lead.get('potencial_condominio'):
-                texto_txt += f"🟢 Potencial: {lead.get('potencial_condominio')}\n"
-            if lead.get('qtd_apartamentos'):
-                texto_txt += f"🏠 Qtd. Apartamentos: {lead.get('qtd_apartamentos')}\n"
-            if lead.get('produtos_interesse'):
-                texto_txt += f"🛒 Produtos: {', '.join(lead.get('produtos_interesse', []))}\n"
             if lead.get('observacoes'):
                 texto_txt += f"📝 Obs: {lead.get('observacoes')}\n"
             texto_txt += "---\n"
@@ -978,7 +1059,7 @@ def render_calendario_leads():
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Leads do Dia')
             worksheet = writer.sheets['Leads do Dia']
-            column_widths = [25, 15, 25, 20, 20, 15, 15, 12, 10, 15, 30, 40]
+            column_widths = [25, 15, 25, 20, 20, 15, 15, 10, 12, 10, 30, 40]
             for i, width in enumerate(column_widths):
                 if i < 26:
                     col_letter = chr(65 + i)
@@ -1007,7 +1088,6 @@ def render_calendario_leads():
         
         st.markdown("---")
         
-        # --- Exibir leads do dia ---
         for lead in leads_do_dia:
             nivel = lead.get("nivel_interesse", "")
             emoji_nivel = {"🔥 Quente": "🔥", "Morno": "⚪", "❄️ Frio": "❄️"}.get(nivel, "⚪")
@@ -1015,7 +1095,11 @@ def render_calendario_leads():
             pot = lead.get("potencial_condominio", "")
             emoji_pot = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot, "")
             
-            titulo = f"{emoji_nivel} {lead.get('nome_contato', 'N/A')} - {lead.get('telefone', '')}"
+            touch_count = lead.get("touch_count", 0)
+            badge_touch, _ = get_touch_badge(touch_count)
+            info_ultimo_touch = formatar_ultimo_touch(lead)
+            
+            titulo = f"{emoji_nivel} {lead.get('nome_contato', 'N/A')} - {lead.get('telefone', '')} {badge_touch}"
             if emoji_pot:
                 titulo += f" {emoji_pot} {pot}"
             
@@ -1033,18 +1117,12 @@ def render_calendario_leads():
                     st.write(f"**📅 Evento:** {lead.get('evento', 'N/A')}")
                     st.write(f"**🔄 Status:** {lead.get('status', 'N/A')}")
                     st.write(f"**🌡️ Nível de Interesse:** {lead.get('nivel_interesse', 'N/A')}")
+                    st.caption(f"🎯 Toques: **{touch_count}** | {info_ultimo_touch}")
                     
                     if lead.get('potencial_condominio'):
                         st.write(f"**🏢 Potencial:** {emoji_pot} {lead.get('potencial_condominio')}")
                     if lead.get('qtd_apartamentos'):
                         st.write(f"**🏠 Qtd. Apartamentos:** {lead.get('qtd_apartamentos')}")
-                    if lead.get('potencial_servicos'):
-                        pot_serv = lead.get('potencial_servicos')
-                        emoji_serv = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(pot_serv, "")
-                        st.write(f"**🛠️ Potencial Serviços:** {emoji_serv} {pot_serv}")
-                    
-                    if lead.get('produtos_interesse'):
-                        st.write(f"**🛒 Produtos:** {', '.join(lead.get('produtos_interesse', []))}")
                     
                     if lead.get('observacoes'):
                         st.write(f"**📝 Observações:** {lead.get('observacoes')}")
@@ -1055,7 +1133,14 @@ def render_calendario_leads():
                 with col_actions:
                     st.markdown("### Ações Rápidas")
                     
-                    # Botão de atualizar data de próximo contato
+                    # ✅ Botão de Touch
+                    if st.button("✋ Touch", key=f"cal_touch_{lead['_id']}", use_container_width=True, type="primary"):
+                        if registrar_touch_lead(lead['_id'], "Touch registrado via calendário"):
+                            st.success(f"✔️ Touch #{touch_count + 1} registrado!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Falha ao registrar touch.")
+                    
                     if st.button("📅 Alterar Data", key=f"cal_edit_date_{lead['_id']}", use_container_width=True):
                         st.session_state[f"cal_editing_date_{lead['_id']}"] = True
                         st.rerun()
@@ -1082,13 +1167,494 @@ def render_calendario_leads():
     else:
         st.info(f"📭 Nenhum lead para {data_selecionada.strftime('%d/%m/%Y')}.")
 
+# ============================================================================
+# ✅ NOVA FUNÇÃO: render_painel_ligacoes_leads
+# Painel de ligações estilo call center para leads de eventos
+# ============================================================================
+def render_painel_ligacoes_leads():
+    """Renderiza o painel de ligações para leads de eventos"""
+    st.title("📞 Painel de Ligações - Leads de Eventos")
+    st.markdown("Visualize, filtre e registre touches em seus leads de forma rápida e eficiente.")
+    
+    try:
+        collection = get_leads_collection()
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar ao MongoDB: {e}")
+        return
+    
+    # === FILTROS ===
+    st.markdown("### 🔍 Filtros Avançados")
+    
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    
+    with col_f1:
+        filtro_touch_tipo = st.selectbox(
+            "Quantidade de toques:",
+            options=[
+                "Todos",
+                "Nunca contatado (0)",
+                "1-3 toques",
+                "4-6 toques",
+                "7-10 toques",
+                "Mais de 10",
+                "Personalizado"
+            ],
+            index=0,
+            key="painel_leads_touch_tipo"
+        )
+    
+    with col_f2:
+        if filtro_touch_tipo == "Personalizado":
+            touch_min = st.number_input("Mínimo:", min_value=0, value=0, key="painel_leads_touch_min")
+            touch_max = st.number_input("Máximo:", min_value=0, value=999, key="painel_leads_touch_max")
+        else:
+            touch_min, touch_max = 0, 999
+            st.caption("Use 'Personalizado' para range")
+    
+    with col_f3:
+        filtro_periodo = st.selectbox(
+            "Último contato:",
+            options=[
+                "Qualquer período",
+                "Hoje",
+                "Ontem",
+                "Últimos 3 dias",
+                "Última semana",
+                "Últimos 15 dias",
+                "Último mês",
+                "Mais de 1 mês",
+                "Nunca contactado"
+            ],
+            index=0,
+            key="painel_leads_periodo"
+        )
+    
+    with col_f4:
+        filtro_status_painel = st.multiselect(
+            "Status:",
+            options=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria", "✅ Convertido"],
+            default=["Novo", "Em Negociação", "Aguardando Retorno", "Parceria"],
+            key="painel_leads_status"
+        )
+    
+    # Linha 2 de filtros
+    col_f5, col_f6, col_f7, col_f8 = st.columns(4)
+    
+    with col_f5:
+        filtro_interesse = st.multiselect(
+            "Nível de Interesse:",
+            options=["🔥 Quente", "Morno", "❄️ Frio"],
+            default=[],
+            key="painel_leads_interesse"
+        )
+    
+    with col_f6:
+        filtro_potencial_painel = st.multiselect(
+            "Potencial:",
+            options=["Alto", "Médio", "Baixo"],
+            default=[],
+            key="painel_leads_potencial"
+        )
+    
+    with col_f7:
+        search_evento_painel = st.text_input(
+            "Evento (busca):",
+            placeholder="Ex: Feira...",
+            key="painel_leads_evento"
+        )
+    
+    with col_f8:
+        search_nome_painel = st.text_input(
+            "Nome (busca):",
+            placeholder="Ex: João...",
+            key="painel_leads_nome"
+        )
+    
+    col_ord, col_lim = st.columns([3, 1])
+    
+    with col_ord:
+        ordenacao_painel = st.selectbox(
+            "Ordenar por:",
+            options=[
+                "Data próximo contato (mais próxima)",
+                "Data próximo contato (mais distante)",
+                "Touch count (mais touches primeiro)",
+                "Touch count (menos touches primeiro)",
+                "Último touch (mais recente)",
+                "Último touch (mais antigo)",
+                "Nome (A-Z)",
+                "Data cadastro (mais recente)"
+            ],
+            index=0,
+            key="painel_leads_ordenacao"
+        )
+    
+    with col_lim:
+        limite = st.number_input(
+            "Limite:",
+            min_value=10,
+            max_value=500,
+            value=50,
+            step=10,
+            key="painel_leads_limite"
+        )
+    
+    st.divider()
+    
+    # === MONTAGEM DA QUERY ===
+    query = {}
+    
+    if filtro_status_painel:
+        query["status"] = {"$in": filtro_status_painel}
+    
+    if filtro_interesse:
+        query["nivel_interesse"] = {"$in": filtro_interesse}
+    
+    if filtro_potencial_painel:
+        query["potencial_condominio"] = {"$in": filtro_potencial_painel}
+    
+    if search_evento_painel:
+        query["evento"] = {"$regex": search_evento_painel, "$options": "i"}
+    
+    if search_nome_painel:
+        query["nome_contato"] = {"$regex": search_nome_painel, "$options": "i"}
+    
+    # Filtros de touch
+    if filtro_touch_tipo == "Nunca contatado (0)":
+        query["$or"] = [
+            {"touch_count": {"$exists": False}},
+            {"touch_count": 0}
+        ]
+    elif filtro_touch_tipo == "1-3 toques":
+        query["touch_count"] = {"$gte": 1, "$lte": 3}
+    elif filtro_touch_tipo == "4-6 toques":
+        query["touch_count"] = {"$gte": 4, "$lte": 6}
+    elif filtro_touch_tipo == "7-10 toques":
+        query["touch_count"] = {"$gte": 7, "$lte": 10}
+    elif filtro_touch_tipo == "Mais de 10":
+        query["touch_count"] = {"$gt": 10}
+    elif filtro_touch_tipo == "Personalizado":
+        query["touch_count"] = {"$gte": touch_min, "$lte": touch_max}
+    
+    # Filtro de período
+    hoje = datetime.now(timezone.utc)
+    
+    if filtro_periodo != "Qualquer período" and filtro_periodo != "Nunca contactado":
+        if filtro_periodo == "Hoje":
+            data_limite = hoje.replace(hour=0, minute=0, second=0)
+        elif filtro_periodo == "Ontem":
+            data_limite = (hoje - timedelta(days=1)).replace(hour=0, minute=0, second=0)
+        elif filtro_periodo == "Últimos 3 dias":
+            data_limite = hoje - timedelta(days=3)
+        elif filtro_periodo == "Última semana":
+            data_limite = hoje - timedelta(days=7)
+        elif filtro_periodo == "Últimos 15 dias":
+            data_limite = hoje - timedelta(days=15)
+        elif filtro_periodo == "Último mês":
+            data_limite = hoje - timedelta(days=30)
+        elif filtro_periodo == "Mais de 1 mês":
+            data_limite = hoje - timedelta(days=30)
+        
+        if filtro_periodo != "Mais de 1 mês":
+            if "$or" in query:
+                # Combina com o $or existente
+                query["$and"] = [{"$or": query.pop("$or")}, {"touch_history.timestamp": {"$gte": data_limite.isoformat()}}]
+            else:
+                query["touch_history.timestamp"] = {"$gte": data_limite.isoformat()}
+    
+    elif filtro_periodo == "Nunca contactado":
+        cond_nunca = {
+            "$or": [
+                {"touch_history": {"$exists": False}},
+                {"touch_history": {"$size": 0}}
+            ]
+        }
+        if query:
+            query = {"$and": [query, cond_nunca]}
+        else:
+            query = cond_nunca
+    
+    # === ORDENAÇÃO ===
+    sort_field = "data_proximo_contato"
+    sort_direction = 1
+    
+    if ordenacao_painel == "Data próximo contato (mais distante)":
+        sort_direction = -1
+    elif ordenacao_painel == "Touch count (mais touches primeiro)":
+        sort_field = "touch_count"
+        sort_direction = -1
+    elif ordenacao_painel == "Touch count (menos touches primeiro)":
+        sort_field = "touch_count"
+        sort_direction = 1
+    elif ordenacao_painel == "Último touch (mais recente)":
+        sort_field = "touch_history.timestamp"
+        sort_direction = -1
+    elif ordenacao_painel == "Último touch (mais antigo)":
+        sort_field = "touch_history.timestamp"
+        sort_direction = 1
+    elif ordenacao_painel == "Nome (A-Z)":
+        sort_field = "nome_contato"
+        sort_direction = 1
+    elif ordenacao_painel == "Data cadastro (mais recente)":
+        sort_field = "data_cadastro"
+        sort_direction = -1
+    
+    # === BUSCA ===
+    try:
+        leads = list(collection.find(query).sort(sort_field, sort_direction).limit(limite))
+    except Exception as e:
+        st.error(f"❌ Erro ao buscar leads: {e}")
+        return
+    
+    # Pós-processamento para "Mais de 1 mês"
+    if filtro_periodo == "Mais de 1 mês":
+        data_limite = hoje - timedelta(days=30)
+        leads_filtrados = []
+        for l in leads:
+            touch_history = l.get("touch_history", [])
+            if touch_history:
+                ultimo_ts = max([t.get("timestamp", "") for t in touch_history])
+                if ultimo_ts:
+                    try:
+                        data_ultimo = datetime.fromisoformat(ultimo_ts.replace("Z", "+00:00"))
+                        if data_ultimo < data_limite:
+                            leads_filtrados.append(l)
+                    except:
+                        pass
+            else:
+                leads_filtrados.append(l)
+        leads = leads_filtrados[:limite]
+    
+    if not leads:
+        st.warning("📭 Nenhum lead encontrado com os filtros selecionados.")
+        return
+    
+    st.success(f"✅ {len(leads)} lead(s) encontrado(s) para ligação!")
+    
+    # === ESTATÍSTICAS RÁPIDAS ===
+    total_touches = sum(l.get("touch_count", 0) for l in leads)
+    media_touches = total_touches / len(leads) if leads else 0
+    nunca_contatados = sum(1 for l in leads if l.get("touch_count", 0) == 0)
+    alto_potencial = sum(1 for l in leads if l.get("potencial_condominio") == "Alto")
+    
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        st.metric("📊 Total", len(leads))
+    with col_s2:
+        st.metric("✋ Média de Toques", f"{media_touches:.1f}")
+    with col_s3:
+        st.metric("🆕 Nunca contatados", nunca_contatados)
+    with col_s4:
+        st.metric("🟢 Alto Potencial", alto_potencial)
+    
+    st.markdown("---")
+    
+    # === PAINEL DE CARDS ===
+    st.markdown("### 🎯 Lista de Ligações")
+    st.caption("Clique em 'Touch' para registrar uma ligação. Use 'Ações' para agendar retorno ou editar observações.")
+    
+    # CSS customizado
+    st.markdown("""
+        <style>
+        .lead-card-painel {
+            background-color: #f8f9fa;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-left: 5px solid #007bff;
+        }
+        .lead-card-painel:hover {
+            background-color: #e9ecef;
+        }
+        .telefone-destaque-lead {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #28a745;
+        }
+        .quente-badge {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .touch-badge-painel {
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    selecionados = []
+    
+    for idx, lead in enumerate(leads, 1):
+        _id = str(lead["_id"])
+        nome = lead.get("nome_contato", "N/A")
+        telefone = lead.get("telefone", "N/A")
+        evento = lead.get("evento", "N/A")
+        status = lead.get("status", "N/A")
+        nivel = lead.get("nivel_interesse", "")
+        potencial = lead.get("potencial_condominio", "")
+        touch_count = lead.get("touch_count", 0)
+        info_ultimo_touch = formatar_ultimo_touch(lead)
+        obs = lead.get("observacoes", "")
+        
+        # Badge de touch
+        badge_touch, cor_touch = get_touch_badge(touch_count)
+        
+        # Emoji de nível de interesse
+        emoji_nivel = {"🔥 Quente": "🔥", "Morno": "⚪", "❄️ Frio": "❄️"}.get(nivel, "⚪")
+        
+        # Emoji de potencial
+        emoji_pot = {"Alto": "🟢", "Médio": "🟡", "Baixo": "🔴"}.get(potencial, "")
+        
+        # Condomínio/Empresa
+        org = ""
+        if lead.get("nome_condominio"):
+            org = f"🏢 {lead.get('nome_condominio')}"
+        elif lead.get("nome_empresa"):
+            org = f"🏭 {lead.get('nome_empresa')}"
+        
+        with st.container():
+            col_check, cols_dados = st.columns([0.3, 9.7])
+            
+            with col_check:
+                selecionado = st.checkbox(" ", key=f"painel_lead_sel_{_id}", label_visibility="collapsed")
+                if selecionado:
+                    selecionados.append(_id)
+            
+            with cols_dados:
+                cols = st.columns([0.4, 2.5, 1.5, 1.8, 1.8, 1])
+                
+                with cols[0]:
+                    st.markdown(f"**#{idx}**")
+                
+                with cols[1]:
+                    st.markdown(f"**{emoji_nivel} {nome}** {badge_touch}")
+                    st.caption(f"📅 {evento}")
+                    if org:
+                        st.caption(org)
+                
+                with cols[2]:
+                    st.markdown(f"<span class='telefone-destaque-lead'>{telefone}</span>", unsafe_allow_html=True)
+                    if emoji_pot:
+                        st.caption(f"{emoji_pot} Potencial: {potencial}")
+                
+                with cols[3]:
+                    st.caption(f"🔄 Status: {status}")
+                    st.caption(f"🎯 Toques: **{touch_count}**")
+                
+                with cols[4]:
+                    st.caption(info_ultimo_touch)
+                    if obs:
+                        st.caption(f"📝 {obs[:40]}{'...' if len(obs) > 40 else ''}")
+                
+                with cols[5]:
+                    if st.button("✋ Touch", key=f"painel_lead_touch_{_id}", use_container_width=True, type="primary"):
+                        if registrar_touch_lead(_id, "Touch registrado via Painel de Ligações"):
+                            st.success("✔️ Touch registrado!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Erro ao registrar.")
+                    
+                    if st.button("⚙️", key=f"painel_lead_acoes_{_id}", use_container_width=True, type="secondary"):
+                        st.session_state[f"painel_lead_mostrar_acoes_{_id}"] = True
+        
+        # Ações expandidas
+        if st.session_state.get(f"painel_lead_mostrar_acoes_{_id}", False):
+            with st.form(key=f"painel_lead_form_acoes_{_id}"):
+                st.markdown("**Ações Rápidas:**")
+                
+                col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+                
+                with col_a1:
+                    nova_obs = st.text_area(
+                        "Observação:",
+                        value=obs,
+                        height=80,
+                        key=f"painel_lead_obs_{_id}"
+                    )
+                
+                with col_a2:
+                    st.markdown("&nbsp;")
+                    if st.form_submit_button("💾 Salvar Obs", use_container_width=True):
+                        if update_lead_observacoes(_id, nova_obs):
+                            st.success("✅ Observação salva!")
+                            st.session_state[f"painel_lead_mostrar_acoes_{_id}"] = False
+                            st.rerun()
+                
+                with col_a3:
+                    st.markdown("**Agendar Retorno:**")
+                    dias_retorno = st.selectbox(
+                        "Daqui a:",
+                        options=[3, 7, 15, 30, 180],
+                        format_func=lambda x: f"{x} dias" if x < 180 else "6 meses",
+                        key=f"painel_lead_dias_{_id}"
+                    )
+                    if st.form_submit_button("📅 Agendar", use_container_width=True, type="primary"):
+                        nova_data_retorno = (datetime.now() + timedelta(days=dias_retorno)).date()
+                        if update_lead_data_proximo_contato(_id, nova_data_retorno):
+                            st.success(f"✅ Retorno agendado para {nova_data_retorno.strftime('%d/%m/%Y')}!")
+                            st.session_state[f"painel_lead_mostrar_acoes_{_id}"] = False
+                            st.rerun()
+                
+                with col_a4:
+                    st.markdown("**Outras Ações:**")
+                    if st.form_submit_button("🚫 Não Perturbar 6m", use_container_width=True, type="secondary"):
+                        nova_data_retorno = (datetime.now() + timedelta(days=180)).date()
+                        if update_lead_data_proximo_contato(_id, nova_data_retorno):
+                            st.success("✅ Marcado para não perturbar por 6 meses!")
+                            st.session_state[f"painel_lead_mostrar_acoes_{_id}"] = False
+                            st.rerun()
+                    
+                    if st.form_submit_button("❌ Remover", use_container_width=True, type="secondary"):
+                        if delete_lead(_id):
+                            st.success("✅ Lead removido!")
+                            st.session_state[f"painel_lead_mostrar_acoes_{_id}"] = False
+                            st.rerun()
+    
+    # === AÇÕES EM LOTE ===
+    if selecionados:
+        st.markdown("---")
+        st.warning(f"🎯 **{len(selecionados)} lead(s) selecionado(s)**")
+        
+        col_lote1, col_lote2, col_lote3, col_lote4 = st.columns(4)
+        
+        with col_lote1:
+            if st.button("✋ Touch em Todos", use_container_width=True, type="primary"):
+                for lid in selecionados:
+                    registrar_touch_lead(lid, "Touch em lote via Painel de Ligações")
+                st.success(f"✅ {len(selecionados)} touches registrados!")
+                st.rerun()
+        
+        with col_lote2:
+            if st.button("📅 Agendar 3 dias (Lote)", use_container_width=True):
+                nova_data_retorno = (datetime.now() + timedelta(days=3)).date()
+                for lid in selecionados:
+                    update_lead_data_proximo_contato(lid, nova_data_retorno)
+                st.success(f"✅ {len(selecionados)} leads agendados para daqui 3 dias!")
+                st.rerun()
+        
+        with col_lote3:
+            if st.button("🚫 Não Perturbar 6m (Lote)", use_container_width=True, type="secondary"):
+                nova_data_retorno = (datetime.now() + timedelta(days=180)).date()
+                for lid in selecionados:
+                    update_lead_data_proximo_contato(lid, nova_data_retorno)
+                st.success(f"✅ {len(selecionados)} leads marcados como não perturbar!")
+                st.rerun()
+        
+        with col_lote4:
+            if st.button("🗑️ Excluir (Lote)", use_container_width=True, type="secondary"):
+                for lid in selecionados:
+                    delete_lead(lid)
+                st.success(f"✅ {len(selecionados)} leads excluídos!")
+                st.rerun()
+
 # --- Execução Principal ---
 if __name__ == "__main__":
     # Criação de Abas
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📝 Cadastro de Leads",
         "📋 Agenda & Lista",
-        "📅 Calendário Mensal"
+        "📅 Calendário Mensal",
+        "📞 Painel de Ligações"
     ])
     
     with tab1:
@@ -1099,3 +1665,6 @@ if __name__ == "__main__":
     
     with tab3:
         render_calendario_leads()
+    
+    with tab4:
+        render_painel_ligacoes_leads()
