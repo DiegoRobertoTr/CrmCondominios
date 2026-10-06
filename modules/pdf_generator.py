@@ -51,6 +51,10 @@ MODELOS_ROTEADORES = [
 PLANOS = [
     "800MB+Canais: 59,99 Exclusivo Vibe Sunset",
     "600MB+Tracecanais+Telecine+Premiere: 159,97",
+    "800MB + 1 Streaming a Escolha",
+    "600MB + 1 Streaming a Escolha",
+    "800MB",
+    "600MB",
     "600MB+Canais: 69,99",
     "600MB+Trace Canais Novo: 99,99",
     "800MB+Trace Canais Novo: 99,99",
