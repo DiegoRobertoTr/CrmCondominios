@@ -19,7 +19,7 @@ DADOS_EMPRESA = {
     "estado_empresa": "RJ",
     "cep_empresa": "26900-000",
     "telefone_empresa": "(21) 3500-0188",
-    "email_empresa": "atendimento@tracecom.com.br",
+    "email_empresa": "atendimento@tracecom.net.br",
     "site_empresa": "www.tracecom.net.br",
     "anatel_autorizacao": "Ato no. 6.015/2019",
     "forma_pagamento": "Boleto Bancario",
