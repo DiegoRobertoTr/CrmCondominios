@@ -12,11 +12,19 @@ Correções aplicadas:
 - NOVO: Valor mensal auto-preenchido do plano (CORRIGIDO)
 - NOVO: Checkbox "Integrar com IXC ao salvar" (marcado por padrão)
 
-🔧 CORREÇÃO APLICADA (valor mensal 0,00 no PDF):
-- O valor_mensal agora é calculado DIRETAMENTE do plano (variável Python),
-  não dependendo mais do retorno do text_input com disabled=True.
-- O widget de display usa key dinâmica (inclui o plano escolhido) para
-  forçar re-renderização quando o plano muda.
+🔧 CORREÇÕES APLICADAS:
+1. Valor mensal 0,00 no PDF:
+   - O valor_mensal agora é calculado DIRETAMENTE do plano (variável Python),
+     não dependendo mais do retorno do text_input com disabled=True.
+   - O widget de display usa key dinâmica (inclui o plano escolhido) para
+     forçar re-renderização quando o plano muda.
+
+2. Botão "Baixar Termo" persistente após trocar cliente:
+   - Nova função limpar_estados_pdf() centraliza a limpeza de todos os
+     estados relacionados a PDFs gerados (termo, contrato, comodato).
+   - Chamada em todos os pontos de navegação: fechar, voltar, ver detalhes,
+     completar cadastro, iniciar novo cadastro.
+   - Trava de contexto adicional no bloco de download.
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -112,6 +120,45 @@ def obter_dados_condominio(suffix):
         "cidade": safe_session_state_get(f"cidade_{suffix}"),
         "cep": safe_session_state_get(f"cep_{suffix}"),
     }
+
+
+# ============================================================================
+# 🧹 FUNÇÃO HELPER: LIMPAR ESTADOS DE PDFs GERADOS
+# ============================================================================
+def limpar_estados_pdf():
+    """
+    Limpa TODOS os estados relacionados a PDFs gerados (termo, contrato, comodato).
+    Deve ser chamada sempre que o usuário fecha/volta/troca de cliente,
+    para evitar que botões de download "fantasmas" apareçam com dados antigos.
+    
+    ⚡ Performance: operação O(n) pequena (poucas chaves), sem query ao banco.
+    """
+    chaves_para_limpar = [
+        # Termo de Adesão
+        "termo_pdf_bytes", "termo_nome",
+        "termo_pronto_principal", "termo_pronto_visualizar", "termo_pronto_completar",
+        "gerando_termo_principal", "gerando_termo_visualizar", "gerando_termo_completar",
+        "dados_temp_termo_principal", "dados_temp_termo_visualizar", "dados_temp_termo_completar",
+        "nome_arquivo_termo_principal", "nome_arquivo_termo_visualizar", "nome_arquivo_termo_completar",
+        
+        # Contrato
+        "contrato_pdf_bytes", "contrato_nome",
+        "contrato_pronto_principal", "contrato_pronto_visualizar", "contrato_pronto_completar",
+        "gerando_contrato_principal", "gerando_contrato_visualizar", "gerando_contrato_completar",
+        "dados_temp_contrato_principal", "dados_temp_contrato_visualizar", "dados_temp_contrato_completar",
+        "nome_arquivo_contrato_principal", "nome_arquivo_contrato_visualizar", "nome_arquivo_contrato_completar",
+        
+        # Comodato
+        "comodato_pdf_bytes", "comodato_nome",
+        "comodato_pronto_principal", "comodato_pronto_visualizar", "comodato_pronto_completar",
+        "gerando_comodato_principal", "gerando_comodato_visualizar", "gerando_comodato_completar",
+        "dados_temp_comodato_principal", "dados_temp_comodato_visualizar", "dados_temp_comodato_completar",
+        "nome_arquivo_comodato_principal", "nome_arquivo_comodato_visualizar", "nome_arquivo_comodato_completar",
+    ]
+    
+    for chave in chaves_para_limpar:
+        if chave in st.session_state:
+            del st.session_state[chave]
 
 
 # ============================================================================
@@ -473,6 +520,8 @@ def expander_visualizar_editar(cliente, clientes_collection):
         with col_bt1:
             if st.button("❌ Fechar", key="fechar_visualizar"):
                 st.session_state["mostrar_visualizar"] = False
+                st.session_state["cliente_selecionado"] = None      # 🆕 Limpa cliente
+                limpar_estados_pdf()                                 # 🆕 Limpa PDFs órfãos
                 if "mensagem_confirmacao_visualizar" in st.session_state:
                     del st.session_state["mensagem_confirmacao_visualizar"]
                 st.rerun()
@@ -484,6 +533,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 st.session_state["busca_pre_preenchida"] = ""
                 st.session_state["acao_selecionada"] = "Novo Cadastro"
                 st.session_state["form_key"] += 1
+                limpar_estados_pdf()                                 # 🆕 Limpa PDFs órfãos
                 st.rerun()
         
         # Verificação de endereço bloqueado
@@ -1595,6 +1645,7 @@ def render_cadastro(clientes_collection):
                                 st.session_state["mostrar_visualizar"] = False
                                 st.session_state["mostrar_completar"] = False
                                 st.session_state["cliente_selecionado"] = None
+                                limpar_estados_pdf()                         # 🆕 Limpa PDFs do cliente anterior
                                 st.session_state["cliente_selecionado"] = copy.deepcopy(dict(cliente))
                                 st.session_state["mostrar_visualizar"] = True
                                 st.rerun()
@@ -1605,6 +1656,7 @@ def render_cadastro(clientes_collection):
                                     st.session_state["mostrar_visualizar"] = False
                                     st.session_state["mostrar_completar"] = False
                                     st.session_state["cliente_selecionado"] = None
+                                    limpar_estados_pdf()                     # 🆕 Limpa PDFs do cliente anterior
                                     st.session_state["cliente_selecionado"] = copy.deepcopy(dict(cliente))
                                     st.session_state["mostrar_completar"] = True
                                     st.rerun()
@@ -1616,6 +1668,8 @@ def render_cadastro(clientes_collection):
     if st.button("➕ Iniciar Novo Cadastro", key="novo_cadastro_via_busca"):
         st.session_state["acao_selecionada"] = "Novo Cadastro"
         st.session_state["busca_pre_preenchida"] = ""
+        st.session_state["cliente_selecionado"] = None           # 🆕 Garante limpeza total
+        limpar_estados_pdf()                                     # 🆕 Limpa PDFs órfãos
         st.rerun()
     else:
         st.info("🔍 Digite um nome, CPF (11 dígitos) ou celular para buscar.")
@@ -2784,6 +2838,7 @@ def render_cadastro(clientes_collection):
                 
                 if cliente.get("tipo_cadastro") == "simples":
                     if st.button("✏️ Abrir Formulário para Completar", key="abrir_completar_radio"):
+                        limpar_estados_pdf()                             # 🆕 Limpa PDFs antes de trocar cliente
                         st.session_state["cliente_selecionado"] = copy.deepcopy(dict(cliente))
                         st.session_state["mostrar_completar"] = True
                         st.rerun()
@@ -2792,7 +2847,9 @@ def render_cadastro(clientes_collection):
             else:
                 st.warning("⚠️ Nenhum cliente encontrado com esse nome ou telefone.")
     
+    # =========================================================================
     # Gerar PDFs - ADICIONAR O TERMO DE ADESÃO
+    # =========================================================================
     for tipo in ["contrato", "comodato", "termo"]:
         for contexto in ["principal", "visualizar", "completar"]:
             estado_gerando = f"gerando_{tipo}_{contexto}"
@@ -2830,54 +2887,77 @@ def render_cadastro(clientes_collection):
                         if nome_arquivo in st.session_state:
                             del st.session_state[nome_arquivo]
     
+    # =========================================================================
+    # 🛡️ BOTÕES DE DOWNLOAD COM TRAVA DE CONTEXTO
+    # =========================================================================
+    # Só mostra o botão de download se houver contexto ativo de cliente
+    # (evita botão "fantasma" após trocar de cliente)
+    tem_contexto_ativo = (
+        st.session_state.get("mostrar_visualizar", False)
+        or st.session_state.get("mostrar_completar", False)
+        or st.session_state.get("mostrar_botao_novo", False)
+    )
+    
     # Download do Termo de Adesão
     if "termo_pdf_bytes" in st.session_state and "termo_nome" in st.session_state:
-        st.download_button(
-            label="📄 Baixar Termo de Adesão",
-            data=st.session_state["termo_pdf_bytes"],
-            file_name=st.session_state["termo_nome"],
-            mime="application/pdf",
-            key="download_termo_global_unica_key"
-        )
-        
-        if st.button("🗑️ Limpar Termo", key="limpar_termo_global"):
-            del st.session_state["termo_pdf_bytes"]
-            del st.session_state["termo_nome"]
-            for key in ["termo_pronto_principal", "termo_pronto_visualizar", "termo_pronto_completar"]:
-                if key in st.session_state:
-                    del st.session_state[key]
+        if tem_contexto_ativo:
+            st.download_button(
+                label="📄 Baixar Termo de Adesão",
+                data=st.session_state["termo_pdf_bytes"],
+                file_name=st.session_state["termo_nome"],
+                mime="application/pdf",
+                key="download_termo_global_unica_key"
+            )
+            
+            if st.button("🗑️ Limpar Termo", key="limpar_termo_global"):
+                del st.session_state["termo_pdf_bytes"]
+                del st.session_state["termo_nome"]
+                for key in ["termo_pronto_principal", "termo_pronto_visualizar", "termo_pronto_completar"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+        else:
+            # 🧹 Estado órfão: limpa automaticamente
+            limpar_estados_pdf()
     
+    # Download do Contrato
     if "contrato_pdf_bytes" in st.session_state and "contrato_nome" in st.session_state:
-        st.download_button(
-            label="📥 Baixar Contrato Gerado",
-            data=st.session_state["contrato_pdf_bytes"],
-            file_name=st.session_state["contrato_nome"],
-            mime="application/pdf",
-            key="download_contrato_global_unica_key"
-        )
-        
-        if st.button("🗑️ Limpar Contrato", key="limpar_contrato_global"):
-            del st.session_state["contrato_pdf_bytes"]
-            del st.session_state["contrato_nome"]
-            for key in ["contrato_pronto_principal", "contrato_pronto_visualizar", "contrato_pronto_completar"]:
-                if key in st.session_state:
-                    del st.session_state[key]
+        if tem_contexto_ativo:
+            st.download_button(
+                label="📥 Baixar Contrato Gerado",
+                data=st.session_state["contrato_pdf_bytes"],
+                file_name=st.session_state["contrato_nome"],
+                mime="application/pdf",
+                key="download_contrato_global_unica_key"
+            )
+            
+            if st.button("🗑️ Limpar Contrato", key="limpar_contrato_global"):
+                del st.session_state["contrato_pdf_bytes"]
+                del st.session_state["contrato_nome"]
+                for key in ["contrato_pronto_principal", "contrato_pronto_visualizar", "contrato_pronto_completar"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+        else:
+            limpar_estados_pdf()
     
+    # Download do Comodato
     if "comodato_pdf_bytes" in st.session_state and "comodato_nome" in st.session_state:
-        st.download_button(
-            label="📥 Baixar Termo de Comodato",
-            data=st.session_state["comodato_pdf_bytes"],
-            file_name=st.session_state["comodato_nome"],
-            mime="application/pdf",
-            key="download_comodato_global_unica_key"
-        )
-        
-        if st.button("🗑️ Limpar Termo", key="limpar_comodato_global"):
-            del st.session_state["comodato_pdf_bytes"]
-            del st.session_state["comodato_nome"]
-            for key in ["comodato_pronto_principal", "comodato_pronto_visualizar", "comodato_pronto_completar"]:
-                if key in st.session_state:
-                    del st.session_state[key]
+        if tem_contexto_ativo:
+            st.download_button(
+                label="📥 Baixar Termo de Comodato",
+                data=st.session_state["comodato_pdf_bytes"],
+                file_name=st.session_state["comodato_nome"],
+                mime="application/pdf",
+                key="download_comodato_global_unica_key"
+            )
+            
+            if st.button("🗑️ Limpar Termo", key="limpar_comodato_global"):
+                del st.session_state["comodato_pdf_bytes"]
+                del st.session_state["comodato_nome"]
+                for key in ["comodato_pronto_principal", "comodato_pronto_visualizar", "comodato_pronto_completar"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+        else:
+            limpar_estados_pdf()
     
     if st.session_state.get("mostrar_botao_novo", False):
         if st.button("🔄 Novo Cadastro", key="btn_novo_cadastro_global"):
