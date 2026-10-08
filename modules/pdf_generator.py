@@ -21,7 +21,7 @@ DADOS_EMPRESA = {
     "telefone_empresa": "(21) 3500-0188",
     "email_empresa": "atendimento@tracecom.com.br",
     "site_empresa": "www.tracecom.net.br",
-    "anatel_autorizacao": "Ato no. 6015/2017",
+    "anatel_autorizacao": "Ato no. 6.015/2019",
     "forma_pagamento": "Boleto Bancario",
     "indice_correcao": "IPCA",
     "tecnologia": "Fibra Optica",
