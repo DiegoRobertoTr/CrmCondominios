@@ -9,8 +9,14 @@ Correções aplicadas:
 - NOVO: Termo de Adesão substituindo contrato tradicional
 - NOVO: Checkbox de fidelidade (12 meses)
 - NOVO: Multiselect de SVA (opcional)
-- NOVO: Valor mensal auto-preenchido do plano
+- NOVO: Valor mensal auto-preenchido do plano (CORRIGIDO)
 - NOVO: Checkbox "Integrar com IXC ao salvar" (marcado por padrão)
+
+🔧 CORREÇÃO APLICADA (valor mensal 0,00 no PDF):
+- O valor_mensal agora é calculado DIRETAMENTE do plano (variável Python),
+  não dependendo mais do retorno do text_input com disabled=True.
+- O widget de display usa key dinâmica (inclui o plano escolhido) para
+  forçar re-renderização quando o plano muda.
 """
 import streamlit as st
 from datetime import datetime, timedelta
@@ -1028,11 +1034,16 @@ def expander_visualizar_editar(cliente, clientes_collection):
                 for sva in sva_selecionados:
                     st.caption(f"• {sva}")
 
-            # ========== 💰 VALOR MENSAL (AUTO-PREENCHIDO) ==========
-            valor_mensal = st.text_input(
+            # =================================================================
+            # 💰 VALOR MENSAL (CORRIGIDO - calculado direto do plano)
+            # =================================================================
+            valor_mensal = extrair_valor_plano(plano_escolhido)
+            
+            # Widget APENAS para exibição (key dinâmica força re-render quando o plano muda)
+            st.text_input(
                 "Valor Mensal (R$)*",
-                value=extrair_valor_plano(plano_escolhido),
-                key="valor_mensal_editar",
+                value=valor_mensal,
+                key=f"valor_mensal_display_editar_{plano_escolhido}",
                 disabled=True,
                 help="Valor extraído automaticamente do plano selecionado"
             )
@@ -1112,7 +1123,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                                 "bloco": bloco,
                                 "apartamento": apartamento,
                                 "plano_escolhido": plano_escolhido,
-                                "valor_mensal": valor_mensal,
+                                "valor_mensal": valor_mensal,  # ✅ Agora vem da variável correta
                                 "data_vencimento": str(data_vencimento),
                                 "optou_fidelidade": optou_fidelidade == "Sim",
                                 "equipamento_descricao": equip_desc,
@@ -1298,7 +1309,7 @@ def expander_visualizar_editar(cliente, clientes_collection):
                             "bloco": bloco if bloco else None,
                             "apartamento": apartamento if apartamento else None,
                             "produtos_interesse": produtos_interesse if produtos_interesse else [],
-                            "valor_mensal": valor_mensal,
+                            "valor_mensal": valor_mensal,  # ✅ Valor correto
                             "optou_fidelidade": optou_fidelidade == "Sim",
                             "sva_selecionados": sva_selecionados if sva_selecionados else [],
                         }
@@ -2111,11 +2122,16 @@ def render_cadastro(clientes_collection):
                     for sva in sva_selecionados:
                         st.caption(f"• {sva}")
 
-                # ========== 💰 VALOR MENSAL (AUTO-PREENCHIDO) ==========
-                valor_mensal = st.text_input(
+                # =================================================================
+                # 💰 VALOR MENSAL (CORRIGIDO - calculado direto do plano)
+                # =================================================================
+                valor_mensal = extrair_valor_plano(plano_escolhido)
+                
+                # Widget APENAS para exibição (key dinâmica força re-render quando o plano muda)
+                st.text_input(
                     "Valor Mensal (R$)*",
-                    value=extrair_valor_plano(plano_escolhido),
-                    key=f"valor_mensal_{st.session_state['form_key']}",
+                    value=valor_mensal,
+                    key=f"valor_mensal_display_{st.session_state['form_key']}_{plano_escolhido}",
                     disabled=True,
                     help="Valor extraído automaticamente do plano selecionado"
                 )
@@ -2227,6 +2243,7 @@ def render_cadastro(clientes_collection):
                         elif not all([nome_completo, cpf_valido, endereco, celular_principal, plano_escolhido != "Selecione..."]):
                             st.error("❌ Preencha todos os campos obrigatórios para gerar o termo!")
                         else:
+                            # ✅ valor_mensal já é a variável Python correta
                             st.session_state["dados_temp_termo_principal"] = {
                                 "nome_completo": nome_completo,
                                 "cpf": cpf_valido,
@@ -2245,7 +2262,7 @@ def render_cadastro(clientes_collection):
                                 "bloco": bloco if bloco else "",
                                 "apartamento": apartamento if apartamento else "",
                                 "plano_escolhido": plano_escolhido,
-                                "valor_mensal": valor_mensal,
+                                "valor_mensal": valor_mensal,  # ✅ CORRETO
                                 "data_vencimento": str(data_vencimento),
                                 "optou_fidelidade": optou_fidelidade == "Sim",
                                 "equipamento_descricao": equip_desc,
@@ -2907,6 +2924,11 @@ def render_cadastro(clientes_collection):
             # Limpar também os checkboxes de integração IXC (eles têm o form_key no nome)
             integrar_keys = [k for k in st.session_state.keys() if k.startswith("integrar_ixc_novo_")]
             for key in integrar_keys:
+                del st.session_state[key]
+            
+            # Limpar também os widgets de display do valor mensal
+            valor_mensal_keys = [k for k in st.session_state.keys() if k.startswith("valor_mensal_display_")]
+            for key in valor_mensal_keys:
                 del st.session_state[key]
             
             suffixes = ["", "_completar", "_dialog", "_editar", "_visualizar", "_principal"]
