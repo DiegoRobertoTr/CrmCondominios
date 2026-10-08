@@ -126,6 +126,41 @@ def extrair_valor_do_plano(plano_nome):
     return "0,00"
 
 # ============================================================================
+# 🛡️ FUNÇÃO AUXILIAR: GARANTIR VALOR MENSAL VÁLIDO
+# ============================================================================
+def garantir_valor_mensal(dados):
+    """
+    Garante que o campo 'valor_mensal' esteja preenchido corretamente.
+    
+    🔧 CORREÇÃO APLICADA:
+    - Se o valor recebido vier vazio, None, "0", "0,00" ou similar, 
+      recalcula diretamente do plano escolhido.
+    - Isso blinda o PDF contra o bug de widget desabilitado no Streamlit,
+      onde o valor chegava sempre como 0,00.
+    """
+    valor_calculado = extrair_valor_do_plano(dados.get("plano_escolhido", ""))
+    valor_recebido = dados.get("valor_mensal")
+    
+    # Lista de valores considerados "inválidos" (que acionam o fallback)
+    valores_invalidos = ("", "0,00", "0", "None", "none", "0.00", "0.0")
+    
+    if valor_recebido is None:
+        dados["valor_mensal"] = valor_calculado
+    else:
+        valor_str = str(valor_recebido).strip()
+        if valor_str in valores_invalidos:
+            dados["valor_mensal"] = valor_calculado
+        else:
+            # Valor recebido é válido - mantém
+            dados["valor_mensal"] = valor_str
+    
+    # Log para debug (opcional - pode remover em produção)
+    print(f"🔍 [PDF] Plano: {dados.get('plano_escolhido', 'N/A')[:60]}")
+    print(f"🔍 [PDF] Valor recebido: {valor_recebido} | Valor calculado: {valor_calculado} | Valor final: {dados['valor_mensal']}")
+    
+    return dados
+
+# ============================================================================
 # FUNCOES PARA CARREGAR TEMPLATES
 # ============================================================================
 def load_template(filename):
@@ -353,6 +388,9 @@ def gerar_pdf_contrato(dados):
         dados.setdefault("bloco", "")
         dados.setdefault("apartamento", "")
 
+        # 🛡️ Garantir valor mensal correto
+        dados = garantir_valor_mensal(dados)
+
         template = Template(CONTRATO_TEMPLATE)
         contrato_preenchido = template.render(dados)
         pdf = FPDF()
@@ -408,6 +446,10 @@ def gerar_pdf_termo_adesao(dados_cliente):
     """
     Gera o PDF do Termo de Adesao Unificado (SCM + referencia SVA)
     Usa dados do cliente + dados da empresa
+    
+    🔧 CORREÇÃO APLICADA:
+    - Não usa mais setdefault para valor_mensal (que não sobrescrevia valor inválido)
+    - Chama garantir_valor_mensal() que blinda contra 0,00
     """
     if not TERMO_ADESAO_TEMPLATE:
         return None
@@ -419,8 +461,11 @@ def gerar_pdf_termo_adesao(dados_cliente):
         # Mesclar com os dados do cliente (cliente tem prioridade)
         dados.update(dados_cliente)
         
-        # Garantir campos obrigatorios
-        dados.setdefault("valor_mensal", extrair_valor_do_plano(dados.get("plano_escolhido", "")))
+        # 🛡️ BLINDAGEM: Garantir que valor_mensal esteja correto
+        # Se veio vazio/0,00, recalcula do plano escolhido
+        dados = garantir_valor_mensal(dados)
+        
+        # Garantir outros campos obrigatorios
         dados.setdefault("optou_fidelidade", True)
         dados.setdefault("data_assinatura", datetime.now().strftime("%d/%m/%Y"))
         dados.setdefault("rg", "Nao informado")
