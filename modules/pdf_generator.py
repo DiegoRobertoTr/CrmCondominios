@@ -53,6 +53,7 @@ PLANOS = [
     "600MB+Tracecanais+Telecine+Premiere: 159,97",
     "800MB + 1 Streaming a Escolha",
     "800MB + 1 Streaming: R$119,99",
+    "600MB + 1 Streaming: R$99,99",
     "600MB + 1 Streaming a Escolha",
     "800MB",
     "600MB",
