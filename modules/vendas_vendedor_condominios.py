@@ -13,10 +13,11 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Desempenho por condomínio (integrado com módulo condominios.py)
 - Filtro de período aplicado em TODAS as análises
 - Seletor de período: Personalizado primeiro, depois pré-selecionados, depois meses (do mais recente para o mais antigo)
-- Exportação em Excel
+- Exportação em Excel (Analítico + Por Vendedor)
 - Permissões: admin e diretoria
 - RÓTULOS DE DADOS VISÍVEIS E DESTAQUE PARA O LÍDER DE VENDAS
-- NOVA ABA: VALORES DE COMISSÃO (Comissionados % e Freelancers R$50/ativação)
+- ABA DE VALORES DE COMISSÃO (Comissionados % e Freelancers R$50/ativação)
+- EXPORTAÇÃO POR VENDEDOR (uma aba por vendedor + RESUMO + TODOS)
 """
 import streamlit as st
 import pandas as pd
@@ -81,6 +82,17 @@ FREELANCERS_PADRAO = [
     'Erick Eduardo Lombardi',
     'Estephani Marcolino',
 ]
+
+# Mapeamento de volta para nomes originais das colunas
+RENOMEAR_PARA_ORIGINAL = {
+    'cliente': 'RAZAO SOCIAL/NOME',
+    'id_cliente': 'ID',
+    'data_ativacao': 'DATA ATIVAAAO',
+    'status': 'STATUS CONTRATO',
+    'vendedor': 'VENDEDOR',
+    'condominio_id': 'CONDOMANIO',
+    'data_cadastro': 'DATA DE CADASTRO NO SISTEMA'
+}
 
 # ==================== CONEXÃO MONGODB ====================
 @st.cache_resource(ttl=CONFIG['cache_ttl'])
@@ -1228,6 +1240,148 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
             }
         )
 
+# ==================== EXPORTAÇÃO POR VENDEDOR ====================
+
+def _sanitizar_nome_aba(nome: str, usados: set = None) -> str:
+    """
+    Sanitiza o nome de uma aba do Excel.
+    - Remove caracteres inválidos: : \ / ? * [ ]
+    - Trunca para 31 caracteres (limite do Excel)
+    - Garante unicidade se necessário
+    """
+    if usados is None:
+        usados = set()
+    
+    # Caracteres inválidos no Excel
+    invalidos = [':', '\\', '/', '?', '*', '[', ']']
+    nome_limpo = nome
+    for c in invalidos:
+        nome_limpo = nome_limpo.replace(c, '_')
+    
+    # Truncar para 31 caracteres
+    nome_limpo = nome_limpo[:31].strip()
+    
+    # Garantir unicidade
+    nome_base = nome_limpo
+    contador = 1
+    while nome_limpo in usados:
+        sufixo = f"_{contador}"
+        nome_limpo = nome_base[:31 - len(sufixo)] + sufixo
+        contador += 1
+    
+    usados.add(nome_limpo)
+    return nome_limpo
+
+def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
+    """
+    Gera um arquivo Excel com uma aba por vendedor.
+    Colunas no formato original da planilha de importação.
+    
+    Estrutura:
+    - Aba 'RESUMO': totais por vendedor
+    - Aba 'TODOS': todos os dados juntos
+    - Uma aba por vendedor com suas ativações
+    """
+    output = BytesIO()
+    
+    # ========== PREPARAR DADOS ==========
+    df_export = df_filtrado.copy()
+    
+    # Renomear colunas de volta para o formato original
+    df_export = df_export.rename(columns=RENOMEAR_PARA_ORIGINAL)
+    
+    # Garantir colunas na ordem correta
+    colunas_ordem = [
+        'RAZAO SOCIAL/NOME',
+        'ID',
+        'DATA ATIVAAAO',
+        'STATUS CONTRATO',
+        'VENDEDOR',
+        'CONDOMANIO',
+        'DATA DE CADASTRO NO SISTEMA'
+    ]
+    
+    # Adicionar colunas faltantes (caso existam no df)
+    colunas_presentes = [c for c in colunas_ordem if c in df_export.columns]
+    df_export = df_export[colunas_presentes]
+    
+    # Formatar datas como texto DD/MM/YYYY
+    for col in ['DATA ATIVAAAO', 'DATA DE CADASTRO NO SISTEMA']:
+        if col in df_export.columns:
+            df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime('%d/%m/%Y')
+    
+    # Ordenar por vendedor e data
+    if 'VENDEDOR' in df_export.columns and 'DATA ATIVAAAO' in df_export.columns:
+        df_export = df_export.sort_values(['VENDEDOR', 'DATA ATIVAAAO'])
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # ========== ABA 1: RESUMO ==========
+        resumo = df_export.groupby('VENDEDOR').size().reset_index(name='TOTAL ATIVAÇÕES')
+        resumo = resumo.sort_values('TOTAL ATIVAÇÕES', ascending=False)
+        resumo.columns = ['VENDEDOR', 'TOTAL ATIVAÇÕES']
+        
+        # Adicionar linha de total
+        total_geral = pd.DataFrame([{
+            'VENDEDOR': '📊 TOTAL GERAL',
+            'TOTAL ATIVAÇÕES': resumo['TOTAL ATIVAÇÕES'].sum()
+        }])
+        resumo_com_total = pd.concat([resumo, total_geral], ignore_index=True)
+        
+        # Adicionar info do período
+        info_periodo = pd.DataFrame({
+            'VENDEDOR': ['📅 Período', '📅 De', '📅 Até'],
+            'TOTAL ATIVAÇÕES': [
+                f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}",
+                data_inicio.strftime('%d/%m/%Y'),
+                data_fim.strftime('%d/%m/%Y')
+            ]
+        })
+        
+        # Escrever resumo
+        info_periodo.to_excel(writer, sheet_name='RESUMO', index=False, startrow=0)
+        resumo_com_total.to_excel(writer, sheet_name='RESUMO', index=False, startrow=len(info_periodo) + 2)
+        
+        # ========== ABA 2: TODOS ==========
+        df_export.to_excel(writer, sheet_name='TODOS', index=False)
+        
+        # ========== UMA ABA POR VENDEDOR ==========
+        abas_usadas = {'RESUMO', 'TODOS'}
+        vendedores = df_export['VENDEDOR'].dropna().unique().tolist()
+        vendedores = sorted(vendedores)
+        
+        for vendedor in vendedores:
+            df_vendedor = df_export[df_export['VENDEDOR'] == vendedor].copy()
+            
+            if df_vendedor.empty:
+                continue
+            
+            nome_aba = _sanitizar_nome_aba(str(vendedor), abas_usadas)
+            
+            try:
+                df_vendedor.to_excel(writer, sheet_name=nome_aba, index=False)
+            except Exception as e:
+                logger.warning(f"Erro ao criar aba para {vendedor}: {e}")
+                continue
+        
+        # ========== AJUSTAR LARGURA DAS COLUNAS ==========
+        for sheet_name in writer.sheets:
+            worksheet = writer.sheets[sheet_name]
+            for column_cells in worksheet.columns:
+                try:
+                    max_length = 0
+                    column_letter = column_cells[0].column_letter
+                    for cell in column_cells:
+                        if cell.value is not None:
+                            max_length = max(max_length, len(str(cell.value)))
+                    # Limitar largura máxima
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+                except Exception:
+                    pass
+    
+    output.seek(0)
+    return output
+
 # ==================== FUNÇÕES DE UI ====================
 def gerar_opcoes_periodo(df):
     """
@@ -1405,7 +1559,7 @@ def render_dashboard():
         "📤 Exportar"
     ])
     
-    # ========== ABA 1: VENDAS POR VENDEDOR (ATUALIZADA COM RÓTULOS) ==========
+    # ========== ABA 1: VENDAS POR VENDEDOR ==========
     with tab1:
         st.subheader("👥 Vendas por Vendedor")
         
@@ -1434,7 +1588,7 @@ def render_dashboard():
                 y=top_vendedores['total_vendas'],
                 marker_color=cores,
                 text=top_vendedores['total_vendas'],
-                textposition='outside',  # Rótulos fora das barras
+                textposition='outside',
                 textfont=dict(
                     size=14,
                     color='black',
@@ -1454,16 +1608,13 @@ def render_dashboard():
                 ),
                 xaxis_title="",
                 yaxis_title="Vendas",
-                height=450,  # Aumentei a altura para melhor visualização
+                height=450,
                 bargap=0.3,
                 showlegend=False,
                 margin=dict(t=50, b=50, l=50, r=50)
             )
             
-            # Ajustar eixo Y para caber os rótulos
-            fig.update_yaxes(
-                range=[0, max_vendas * 1.25]  # 25% de espaço extra para os rótulos
-            )
+            fig.update_yaxes(range=[0, max_vendas * 1.25])
             
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
@@ -1487,12 +1638,10 @@ def render_dashboard():
             # ========== TABELA COM DESTAQUE PARA O LÍDER ==========
             st.markdown("### 📋 Ranking de Vendas")
             
-            # Criar uma cópia com índice para posição
             df_ranking_vendas = vendas_vendedor.copy()
             df_ranking_vendas = df_ranking_vendas.reset_index(drop=True)
             df_ranking_vendas.index = df_ranking_vendas.index + 1
             
-            # Adicionar emoji de posição
             def get_pos_emoji(pos):
                 if pos == 1:
                     return "🥇"
@@ -1506,11 +1655,9 @@ def render_dashboard():
             df_ranking_vendas['Posição'] = df_ranking_vendas.index
             df_ranking_vendas['Posição'] = df_ranking_vendas['Posição'].apply(get_pos_emoji)
             
-            # Reordenar colunas
             df_ranking_vendas = df_ranking_vendas[['Posição', 'vendedor', 'total_vendas']]
             df_ranking_vendas.columns = ['Posição', 'Vendedor', 'Vendas']
             
-            # Destacar o líder na tabela com CSS condicional (via dataframe)
             st.dataframe(
                 df_ranking_vendas,
                 use_container_width=True,
@@ -1597,7 +1744,6 @@ def render_dashboard():
                 fill_value=0
             )
             
-            # Ordenar semanas (1, 2, 3, 4, 5)
             pivot_semanal = pivot_semanal.reindex(sorted(pivot_semanal.index), axis=0)
             
             if not pivot_semanal.empty:
@@ -1799,7 +1945,6 @@ def render_dashboard():
             df_ranking['Posição'] = df_ranking.index
             df_ranking['Posição'] = df_ranking['Posição'].apply(get_posicao_emoji)
             
-            # Identificar mês parcial
             mes_parcial_nome = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].iloc[0] if not vendas_mensais[vendas_mensais['is_mes_parcial']].empty else None
             
             st.markdown(f"""
@@ -1991,6 +2136,52 @@ def render_dashboard():
     with tab6:
         st.subheader("📤 Exportar Dados")
         
+        # ========== SEÇÃO 1: EXCEL POR VENDEDOR ==========
+        st.markdown("### 📊 Exportar Excel — Uma Aba por Vendedor")
+        st.markdown(f"""
+        <div style="background-color:#e8f5e9; padding:12px; border-radius:8px; margin-bottom:15px; font-size:13px;">
+        <strong>📅 Período:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}<br>
+        <strong>📋 Estrutura:</strong> Aba <b>RESUMO</b> + Aba <b>TODOS</b> + 1 aba por vendedor<br>
+        <strong>📝 Formato:</strong> Colunas originais (RAZAO SOCIAL/NOME, ID, DATA ATIVAAAO, ...)
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col_exp1, col_exp2 = st.columns([1, 2])
+        
+        with col_exp1:
+            gerar_por_vendedor = st.button(
+                "📥 Gerar Excel por Vendedor",
+                type="primary",
+                use_container_width=True,
+                key="btn_export_vendedor"
+            )
+        
+        with col_exp2:
+            st.caption("💡 Gera um arquivo com uma aba por vendedor + RESUMO + TODOS. Ideal para enviar comissões individuais.")
+        
+        if gerar_por_vendedor:
+            with st.spinner("🔄 Gerando Excel por vendedor..."):
+                try:
+                    output_vendedor = gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim)
+                    
+                    st.download_button(
+                        label="⬇️ Baixar Excel por Vendedor",
+                        data=output_vendedor,
+                        file_name=f"ativacoes_por_vendedor_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="dl_vendedor"
+                    )
+                    st.success(f"✅ Arquivo gerado com {df_filtrado['vendedor'].nunique()} abas de vendedores!")
+                except Exception as e:
+                    st.error(f"❌ Erro ao gerar: {str(e)}")
+        
+        st.markdown("---")
+        
+        # ========== SEÇÃO 2: EXPORTAÇÃO ANALÍTICA ==========
+        st.markdown("### 📈 Exportar Excel Analítico Completo")
+        st.caption("Exporta todas as análises (vendas, evolução, metas, comissões, condomínios).")
+        
         exportar_vendas_vendedor = st.checkbox("📊 Vendas por Vendedor", value=True)
         exportar_evolucao = st.checkbox("📈 Indicador de Evolução Semanal", value=True)
         exportar_semanal = st.checkbox("📅 Dados Semanais", value=True)
@@ -1998,7 +2189,7 @@ def render_dashboard():
         exportar_condominios = st.checkbox("🏢 Desempenho por Condomínio", value=True)
         exportar_comissoes = st.checkbox("💰 Valores de Comissão", value=True)
         
-        if st.button("📥 Gerar Excel", type="primary"):
+        if st.button("📥 Gerar Excel Analítico", type="primary", key="btn_export_analitico"):
             with st.spinner("🔄 Gerando arquivo..."):
                 try:
                     output = BytesIO()
@@ -2037,7 +2228,6 @@ def render_dashboard():
                         
                         if exportar_comissoes:
                             freelancers_export = tuple(st.session_state.get('freelancers_selecionados', []))
-                            # Exportar com percentual padrão para todos os comissionados
                             todos = df['vendedor'].unique().tolist()
                             comissionados_exp = [v for v in todos if v not in freelancers_export]
                             percentuais_exp = tuple((v, PERCENTUAL_COMISSAO_PADRAO) for v in comissionados_exp)
@@ -2058,13 +2248,14 @@ def render_dashboard():
                     output.seek(0)
                     
                     st.download_button(
-                        label="⬇️ Baixar Excel",
+                        label="⬇️ Baixar Excel Analítico",
                         data=output,
-                        file_name=f"vendas_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.xlsx",
+                        file_name=f"analise_vendas_{data_inicio.strftime('%Y%m%d')}_{data_fim.strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        use_container_width=True,
+                        key="dl_analitico"
                     )
-                    st.success("✅ Arquivo gerado!")
+                    st.success("✅ Arquivo analítico gerado!")
                 except Exception as e:
                     st.error(f"❌ Erro: {str(e)}")
 
