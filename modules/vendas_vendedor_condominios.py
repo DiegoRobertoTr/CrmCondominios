@@ -16,6 +16,7 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Exportação em Excel
 - Permissões: admin e diretoria
 - RÓTULOS DE DADOS VISÍVEIS E DESTAQUE PARA O LÍDER DE VENDAS
+- NOVA ABA: VALORES DE COMISSÃO (Comissionados % e Freelancers R$50/ativação)
 """
 import streamlit as st
 import pandas as pd
@@ -69,6 +70,17 @@ METAS_PADRAO = {
     'RETORNO FINANCEIRO': 10,
     'Vendedor padrão': 20
 }
+
+# ==================== CONFIGURAÇÕES DE COMISSÃO ====================
+VALOR_MENSALIDADE_PADRAO = 79.99
+VALOR_FREELANCER_POR_ATIVACAO = 50.00
+PERCENTUAL_COMISSAO_PADRAO = 4.0  # 4% (meio da faixa 3%-5%)
+
+# Vendedores que por padrão são freelancers (podem ser ajustados na UI)
+FREELANCERS_PADRAO = [
+    'Erick Eduardo Lombardi',
+    'Estephani Marcolino',
+]
 
 # ==================== CONEXÃO MONGODB ====================
 @st.cache_resource(ttl=CONFIG['cache_ttl'])
@@ -908,6 +920,314 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     
     st.caption(f"📌 Mostrando {len(df_ranking_display)} de {len(df_ranking)} condomínios com vendas no período {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
 
+# ==================== CÁLCULO DE COMISSÕES ====================
+
+@st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
+def calcular_comissoes_cached(
+    df_hash,
+    data_inicio_str,
+    data_fim_str,
+    freelancers_tuple,
+    percentuais_tuple,
+    valor_mensalidade
+):
+    """
+    Calcula comissões no período.
+    
+    - Comissionados: vendas × valor_mensalidade × percentual
+    - Freelancers: agrupado por dia; max(0, vendas_dia - 1) × R$50
+    """
+    data_inicio = datetime.fromisoformat(data_inicio_str)
+    data_fim = datetime.fromisoformat(data_fim_str)
+    freelancers = set(freelancers_tuple)
+    percentuais = dict(percentuais_tuple)
+    
+    df_filtrado = df_hash[
+        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) &
+        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
+    ].copy()
+    
+    if df_filtrado.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # ========== COMISSIONADOS (não freelancers) ==========
+    df_com = df_filtrado[~df_filtrado['vendedor'].isin(freelancers)].copy()
+    
+    if not df_com.empty:
+        df_com['percentual'] = df_com['vendedor'].apply(
+            lambda v: percentuais.get(v, PERCENTUAL_COMISSAO_PADRAO)
+        )
+        df_com['valor_comissao'] = df_com['percentual'] / 100 * valor_mensalidade
+        
+        comissao_com = df_com.groupby('vendedor').agg(
+            total_vendas=('cliente', 'count'),
+            percentual=('percentual', 'first'),
+            valor_comissao=('valor_comissao', 'sum')
+        ).reset_index()
+        comissao_com['tipo'] = 'Comissionado'
+        comissao_com['detalhe'] = comissao_com.apply(
+            lambda r: f"{r['total_vendas']} × R${valor_mensalidade:.2f} × {r['percentual']:.1f}%",
+            axis=1
+        )
+    else:
+        comissao_com = pd.DataFrame()
+    
+    # ========== FREELANCERS ==========
+    df_free = df_filtrado[df_filtrado['vendedor'].isin(freelancers)].copy()
+    free_diario = pd.DataFrame()
+    
+    if not df_free.empty:
+        df_free['dia'] = df_free['data_ativacao'].dt.date
+        
+        # Contar ativações por vendedor/dia
+        free_diario = df_free.groupby(['vendedor', 'dia']).agg(
+            ativacoes_dia=('cliente', 'count')
+        ).reset_index()
+        
+        # 1ª ativação do dia = R$0; da 2ª em diante = R$50
+        free_diario['ativacoes_pagas'] = (free_diario['ativacoes_dia'] - 1).clip(lower=0)
+        free_diario['valor_dia'] = free_diario['ativacoes_pagas'] * VALOR_FREELANCER_POR_ATIVACAO
+        
+        comissao_free = free_diario.groupby('vendedor').agg(
+            total_vendas=('ativacoes_dia', 'sum'),
+            ativacoes_pagas=('ativacoes_pagas', 'sum'),
+            valor_comissao=('valor_dia', 'sum'),
+            dias_trabalhados=('dia', 'nunique')
+        ).reset_index()
+        comissao_free['tipo'] = 'Freelancer'
+        comissao_free['percentual'] = 0.0
+        comissao_free['detalhe'] = comissao_free.apply(
+            lambda r: f"{int(r['ativacoes_pagas'])} ativações pagas × R${VALOR_FREELANCER_POR_ATIVACAO:.2f} ({int(r['dias_trabalhados'])} dias)",
+            axis=1
+        )
+    else:
+        comissao_free = pd.DataFrame()
+    
+    # ========== CONSOLIDADO ==========
+    colunas_comuns = ['vendedor', 'total_vendas', 'valor_comissao', 'tipo', 'detalhe']
+    
+    partes = []
+    if not comissao_com.empty:
+        partes.append(comissao_com[colunas_comuns])
+    if not comissao_free.empty:
+        partes.append(comissao_free[colunas_comuns])
+    
+    if partes:
+        comissao_total = pd.concat(partes, ignore_index=True)
+        comissao_total = comissao_total.sort_values('valor_comissao', ascending=False)
+    else:
+        comissao_total = pd.DataFrame()
+    
+    return comissao_total, free_diario
+
+# ==================== ABA: VALORES DE COMISSÃO ====================
+
+def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
+    """Renderiza a aba de comissões."""
+    st.subheader("💰 Valores de Comissão no Período")
+    
+    st.markdown(f"""
+    <div style="background-color:#fff8e1; padding:12px; border-radius:8px; margin-bottom:15px; font-size:14px;">
+    <strong>📅 Período:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ========== CONFIGURAÇÕES ==========
+    st.markdown("### ⚙️ Configurações de Comissão")
+    
+    col_cfg1, col_cfg2 = st.columns(2)
+    
+    with col_cfg1:
+        valor_mensalidade = st.number_input(
+            "💵 Valor da Mensalidade (R$)",
+            min_value=1.0,
+            max_value=10000.0,
+            value=VALOR_MENSALIDADE_PADRAO,
+            step=10.0,
+            format="%.2f",
+            key="valor_mensalidade"
+        )
+    
+    with col_cfg2:
+        st.markdown(f"""
+        <div style="background-color:#e8f5e9; padding:10px; border-radius:6px; font-size:13px;">
+        <strong>💼 Regras:</strong><br>
+        • <b>Comissionado:</b> % sobre a mensalidade (3% a 5%)<br>
+        • <b>Freelancer:</b> R$ {VALOR_FREELANCER_POR_ATIVACAO:.2f} a partir da 2ª ativação/dia
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # ========== SELETOR DE FREELANCERS ==========
+    st.markdown("### 🆓 Vendedores Freelancers")
+    st.caption("Marque os vendedores que recebem por ativação (R$ 50 a partir da 2ª no dia). Os demais são tratados como comissionados por percentual.")
+    
+    todos_vendedores = sorted(df_filtrado['vendedor'].unique().tolist())
+    
+    # Inicializar no session_state
+    if 'freelancers_selecionados' not in st.session_state:
+        st.session_state.freelancers_selecionados = [
+            v for v in todos_vendedores if v in FREELANCERS_PADRAO
+        ]
+    
+    cols_free = st.columns(3)
+    freelancers_selecionados = []
+    for i, v in enumerate(todos_vendedores):
+        col = cols_free[i % 3]
+        checked = col.checkbox(
+            f"🆓 {v}",
+            value=(v in st.session_state.freelancers_selecionados),
+            key=f"free_{i}_{v}"
+        )
+        if checked:
+            freelancers_selecionados.append(v)
+    
+    st.session_state.freelancers_selecionados = freelancers_selecionados
+    
+    st.markdown("---")
+    
+    # ========== PERCENTUAIS POR COMISSIONADO ==========
+    comissionados = [v for v in todos_vendedores if v not in freelancers_selecionados]
+    
+    percentuais = {}
+    if comissionados:
+        st.markdown("### 📊 Percentual de Comissão (Comissionados)")
+        st.caption("Ajuste o percentual de cada vendedor (3% a 5%).")
+        
+        cols_pct = st.columns(2)
+        for i, v in enumerate(comissionados):
+            col = cols_pct[i % 2]
+            pct = col.slider(
+                f"💼 {v}",
+                min_value=3.0,
+                max_value=5.0,
+                value=PERCENTUAL_COMISSAO_PADRAO,
+                step=0.5,
+                format="%.1f%%",
+                key=f"pct_{i}_{v}"
+            )
+            percentuais[v] = pct
+    
+    st.markdown("---")
+    
+    # ========== CALCULAR ==========
+    with st.spinner("🔄 Calculando comissões..."):
+        comissao_total, free_diario = calcular_comissoes_cached(
+            df_hash,
+            datetime.combine(data_inicio, datetime.min.time()).isoformat(),
+            datetime.combine(data_fim, datetime.min.time()).isoformat(),
+            tuple(freelancers_selecionados),
+            tuple(percentuais.items()),
+            valor_mensalidade
+        )
+    
+    if comissao_total.empty:
+        st.info("ℹ️ Nenhuma comissão a calcular no período.")
+        return
+    
+    # ========== KPIs ==========
+    valor_total = comissao_total['valor_comissao'].sum()
+    total_com = comissao_total[comissao_total['tipo'] == 'Comissionado']['valor_comissao'].sum()
+    total_free = comissao_total[comissao_total['tipo'] == 'Freelancer']['valor_comissao'].sum()
+    total_vendas = comissao_total['total_vendas'].sum()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💰 Comissão Total", f"R$ {valor_total:,.2f}")
+    col2.metric("💼 Comissionados", f"R$ {total_com:,.2f}")
+    col3.metric("🆓 Freelancers", f"R$ {total_free:,.2f}")
+    col4.metric("📊 Total Vendas", f"{total_vendas:,}")
+    
+    st.markdown("---")
+    
+    # ========== GRÁFICO ==========
+    st.markdown("### 📊 Comissão por Vendedor")
+    
+    cores = ['#3498db' if t == 'Comissionado' else '#e67e22' for t in comissao_total['tipo']]
+    
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=comissao_total['vendedor'],
+        y=comissao_total['valor_comissao'],
+        marker_color=cores,
+        text=[f"R$ {v:,.2f}" for v in comissao_total['valor_comissao']],
+        textposition='outside',
+        textfont=dict(size=12, color='black'),
+        hovertemplate='<b>%{x}</b><br>Comissão: R$ %{y:,.2f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title='💰 Valor de Comissão por Vendedor',
+        xaxis_title="",
+        yaxis_title="Comissão (R$)",
+        height=450,
+        showlegend=False,
+        yaxis=dict(range=[0, comissao_total['valor_comissao'].max() * 1.25 if comissao_total['valor_comissao'].max() > 0 else 100])
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    
+    # ========== TABELA ==========
+    st.markdown("### 📋 Detalhamento por Vendedor")
+    
+    df_display = comissao_total.copy()
+    df_display.index = range(1, len(df_display) + 1)
+    df_display = df_display.rename(columns={
+        'vendedor': 'Vendedor',
+        'tipo': 'Tipo',
+        'total_vendas': 'Vendas',
+        'valor_comissao': 'Comissão (R$)',
+        'detalhe': 'Cálculo'
+    })
+    
+    st.dataframe(
+        df_display[['Vendedor', 'Tipo', 'Vendas', 'Comissão (R$)', 'Cálculo']],
+        use_container_width=True,
+        height=400,
+        column_config={
+            'Vendedor': st.column_config.TextColumn('Vendedor', width='medium'),
+            'Tipo': st.column_config.TextColumn('Tipo', width='small'),
+            'Vendas': st.column_config.NumberColumn('Vendas', format='%d'),
+            'Comissão (R$)': st.column_config.NumberColumn('Comissão (R$)', format='R$ %.2f'),
+            'Cálculo': st.column_config.TextColumn('Cálculo', width='large')
+        }
+    )
+    
+    st.markdown(f"""
+    <div style="background-color:#1a1a2e; padding:15px; border-radius:10px; text-align:center; margin-top:15px;">
+    <h3 style="color:#FFD700; margin:0;">💵 TOTAL DE COMISSÕES NO PERÍODO</h3>
+    <h1 style="color:#FFD700; margin:5px 0; font-size:36px;">R$ {valor_total:,.2f}</h1>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ========== DETALHE FREELANCERS ==========
+    if not free_diario.empty:
+        st.markdown("---")
+        st.markdown("### 🆓 Detalhamento Freelancer (por dia)")
+        st.caption("Regra: 1ª ativação do dia = R$ 0 | Da 2ª em diante = R$ 50 cada")
+        
+        free_display = free_diario.copy()
+        free_display = free_display.sort_values(['vendedor', 'dia'])
+        free_display = free_display.rename(columns={
+            'vendedor': 'Vendedor',
+            'dia': 'Dia',
+            'ativacoes_dia': 'Ativações no Dia',
+            'ativacoes_pagas': 'Ativações Pagas',
+            'valor_dia': 'Valor (R$)'
+        })
+        
+        st.dataframe(
+            free_display,
+            use_container_width=True,
+            height=300,
+            column_config={
+                'Vendedor': 'Vendedor',
+                'Dia': st.column_config.DateColumn('Dia', format='DD/MM/YYYY'),
+                'Ativações no Dia': st.column_config.NumberColumn('Ativações', format='%d'),
+                'Ativações Pagas': st.column_config.NumberColumn('Pagas', format='%d'),
+                'Valor (R$)': st.column_config.NumberColumn('Valor (R$)', format='R$ %.2f')
+            }
+        )
+
 # ==================== FUNÇÕES DE UI ====================
 def gerar_opcoes_periodo(df):
     """
@@ -1076,11 +1396,12 @@ def render_dashboard():
     st.markdown("---")
     
     # ========== ABAS ==========
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Vendas por Vendedor",
         "📈 Evolução Semanal",
         "📈 Evolução Mensal",
         "🏢 Desempenho por Condomínio",
+        "💰 Valores de Comissão",
         "📤 Exportar"
     ])
     
@@ -1662,7 +1983,12 @@ def render_dashboard():
     with tab4:
         render_desempenho_por_condominio(df, data_inicio, data_fim)
     
+    # ========== ABA 5: VALORES DE COMISSÃO ==========
     with tab5:
+        render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado)
+    
+    # ========== ABA 6: EXPORTAR ==========
+    with tab6:
         st.subheader("📤 Exportar Dados")
         
         exportar_vendas_vendedor = st.checkbox("📊 Vendas por Vendedor", value=True)
@@ -1670,6 +1996,7 @@ def render_dashboard():
         exportar_semanal = st.checkbox("📅 Dados Semanais", value=True)
         exportar_mensal = st.checkbox("📈 Evolução Mensal", value=True)
         exportar_condominios = st.checkbox("🏢 Desempenho por Condomínio", value=True)
+        exportar_comissoes = st.checkbox("💰 Valores de Comissão", value=True)
         
         if st.button("📥 Gerar Excel", type="primary"):
             with st.spinner("🔄 Gerando arquivo..."):
@@ -1707,6 +2034,26 @@ def render_dashboard():
                             df_cond = get_condominios_crm_cached()
                             if not df_cond.empty:
                                 df_cond.to_excel(writer, sheet_name='Condomínios CRM', index=False)
+                        
+                        if exportar_comissoes:
+                            freelancers_export = tuple(st.session_state.get('freelancers_selecionados', []))
+                            # Exportar com percentual padrão para todos os comissionados
+                            todos = df['vendedor'].unique().tolist()
+                            comissionados_exp = [v for v in todos if v not in freelancers_export]
+                            percentuais_exp = tuple((v, PERCENTUAL_COMISSAO_PADRAO) for v in comissionados_exp)
+                            
+                            comissao_total, free_diario = calcular_comissoes_cached(
+                                df_hash,
+                                data_inicio_str,
+                                data_fim_str,
+                                freelancers_export,
+                                percentuais_exp,
+                                VALOR_MENSALIDADE_PADRAO
+                            )
+                            if not comissao_total.empty:
+                                comissao_total.to_excel(writer, sheet_name='Comissões', index=False)
+                            if not free_diario.empty:
+                                free_diario.to_excel(writer, sheet_name='Comissões Freelancer', index=False)
                     
                     output.seek(0)
                     
