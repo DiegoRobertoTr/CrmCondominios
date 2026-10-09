@@ -10,6 +10,7 @@ VERSÃO OTIMIZADA COM ANÁLISE TEMPORAL POR CONDOMÍNIO
 - NOVA ABA: ANÁLISE AVANÇADA DE CANCELAMENTOS (tendência, sazonalidade, coorte)
 - MELHORIAS: Total Geral na pivô, Filtro por Região, Top N configurável, Heatmap
 - NOVO: Exportação de Clientes para Win-Back com Filtro de Saúde do Cliente (Health Score)
+- NOVO: Filtro por Condomínio no Win-Back (1, vários ou todos) com abas individuais no Excel
 - CORREÇÃO CRÍTICA: Health Score agora aceita "Recebida", "Paga", "Pago", "Recebido"
 - OTIMIZAÇÃO: Cache de Health Score, carregamento em batch, prospecção cacheada
 - OTIMIZAÇÃO DE IMPORTAÇÃO: planilha lida uma única vez (engine calamine quando disponível) e
@@ -1966,10 +1967,6 @@ def calcular_health_score_clientes(df_cancelados, df_parcelas, df_clientes_origi
     # Filtrar apenas parcelas relevantes (excluir canceladas/isento/estornadas)
     df_relevante = df_parcelas_temp[~df_parcelas_temp['_is_ignorar']].copy()
     
-    # Debug (opcional, útil para diagnosticar)
-    # st.write(f"Status únicos encontrados: {sorted(s.unique().tolist())[:20]}")
-    # st.write(f"Total relevante: {len(df_relevante)} | Pagos: {df_relevante['_is_pago'].sum()} | A receber: {df_relevante['_is_a_receber'].sum()}")
-    
     if df_relevante.empty:
         return df
     
@@ -2109,7 +2106,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         st.warning("⚠️ Nenhum dado de cliente carregado.")
         return
 
-    # Identificar coluna de cancelamento
+    # ========== IDENTIFICAR COLUNA DE CANCELAMENTO ==========
     data_cancel_col = None
     possiveis_colunas_cancel = [
         'data cancelamento', 'data_cancelamento', 'dt_cancelamento',
@@ -2131,7 +2128,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         st.error("❌ Coluna de data de cancelamento não encontrada na base de dados.")
         return
 
-    # 🔑 CACHE: só recalcula se mudou algo relevante
+    # ========== CACHE DO HEALTH SCORE ==========
     n_clientes = len(df_clientes)
     n_parcelas = len(df_parcelas) if df_parcelas is not None else 0
     first_id = df_clientes['ID'].iloc[0] if 'ID' in df_clientes.columns and n_clientes > 0 else 0
@@ -2143,7 +2140,6 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         st.session_state.get('_winback_cache') is not None):
         df_winback_base = st.session_state._winback_cache
     else:
-        # Processar apenas na primeira vez
         df_winback_base = df_clientes.copy()
         df_winback_base[data_cancel_col] = pd.to_datetime(df_winback_base[data_cancel_col], errors='coerce')
         df_winback_base = df_winback_base.dropna(subset=[data_cancel_col])
@@ -2155,18 +2151,33 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
             st.info("ℹ️ Nenhum cliente desativado encontrado na base.")
             return
         
-        data_ref = datetime.now().replace(tzinfo=None)
-        df_winback_base['dias_desde_cancelamento'] = (data_ref - df_winback_base[data_cancel_col]).dt.days
-        df_winback_base['meses_desde_cancelamento'] = (df_winback_base['dias_desde_cancelamento'] / 30.44).round(1)
-        
         with st.spinner("🔄 Calculando Health Score dos clientes (primeira vez pode demorar)..."):
             df_winback_base = calcular_health_score_clientes(df_winback_base, df_parcelas, df_clientes)
             st.session_state._winback_cache = df_winback_base
             st.session_state._winback_cache_key = cache_key
     
+    # ========== RECALCULAR DIAS FORA DO CACHE (evita defasagem em sessões longas) ==========
     df_winback = df_winback_base.copy()
+    data_ref = datetime.now().replace(tzinfo=None)
+    df_winback['dias_desde_cancelamento'] = (data_ref - df_winback[data_cancel_col]).dt.days
+    df_winback['meses_desde_cancelamento'] = (df_winback['dias_desde_cancelamento'] / 30.44).round(1)
     
-    # ========== INTERFACE DE SELEÇÃO ==========
+    # ========== ALERTA: CANCELADOS SEM DATA ==========
+    df_sem_data = df_clientes.copy()
+    df_sem_data[data_cancel_col] = pd.to_datetime(df_sem_data[data_cancel_col], errors='coerce')
+    df_sem_data['status_classificacao'] = classificar_status_serie(df_sem_data.get('STATUS ACESSO', pd.Series()))
+    n_sem_data = len(df_sem_data[
+        (df_sem_data['status_classificacao'] == 'Desativado') & 
+        (df_sem_data[data_cancel_col].isna())
+    ])
+    
+    if n_sem_data > 0:
+        st.warning(
+            f"⚠️ **{n_sem_data} cliente(s) desativado(s) sem data de cancelamento** "
+            f"não aparecem em nenhuma janela de tempo e ficam fora da campanha."
+        )
+    
+    # ========== INTERFACE DE SELEÇÃO DE TEMPO ==========
     st.markdown("### 📅 Selecione a Janela de Tempo para Recuperação")
     
     opcoes_faixa = {
@@ -2175,6 +2186,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         "1 a 2 anos (365 a 730 dias)": (365, 730),
         "2 a 3 anos (730 a 1095 dias)": (730, 1095),
         "Mais de 3 anos (1095+ dias)": (1095, 99999),
+        "Todos os cancelados (qualquer data)": (0, 99999),
         "Personalizado": None
     }
     
@@ -2235,8 +2247,78 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         st.warning("⚠️ Nenhum cliente atende aos filtros de perfil selecionados.")
         return
     
-    # ========== NOME DO CONDOMÍNIO ==========
-    df_export = adicionar_nome_condominio(df_export, df_condominios)
+    # ========== 🆕 FILTRO POR CONDOMÍNIO ==========
+    st.markdown("### 🏢 Filtro por Condomínio")
+    
+    # Adiciona nome do condomínio temporariamente para popular o multiselect
+    df_export_temp = adicionar_nome_condominio(df_export.copy(), df_condominios)
+    
+    # Cria um rótulo amigável: usa nome do condomínio se disponível, senão o ID
+    if 'Condomínio' in df_export_temp.columns:
+        df_export_temp['_label_cond'] = df_export_temp['Condomínio'].fillna(
+            df_export_temp['CONDOMANIO'].astype(str)
+        )
+    else:
+        df_export_temp['_label_cond'] = df_export_temp['CONDOMANIO'].astype(str)
+    
+    condominios_disponiveis = sorted(df_export_temp['_label_cond'].dropna().unique().tolist())
+    contagem_por_cond = df_export_temp['_label_cond'].value_counts().to_dict()
+    
+    # Inicializa session_state para suportar botões "Todos"/"Limpar"
+    if 'winback_condominios' not in st.session_state:
+        st.session_state.winback_condominios = []
+    
+    # Sanitiza seleção anterior caso a lista de opções tenha mudado
+    st.session_state.winback_condominios = [
+        c for c in st.session_state.winback_condominios if c in condominios_disponiveis
+    ]
+    
+    col_cond1, col_cond2, col_cond3 = st.columns([3, 1, 1])
+    
+    with col_cond1:
+        condominios_selecionados = st.multiselect(
+            "Selecione os condomínios que deseja incluir na campanha:",
+            options=condominios_disponiveis,
+            format_func=lambda x: f"{x} ({contagem_por_cond.get(x, 0)} clientes)",
+            key="winback_condominios",
+            help="Deixe vazio para incluir TODOS. Selecione 1 ou vários para ações específicas."
+        )
+    
+    with col_cond2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("✅ Todos", key="winback_cond_todos", use_container_width=True):
+            st.session_state.winback_condominios = condominios_disponiveis
+            st.rerun()
+    
+    with col_cond3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🗑️ Limpar", key="winback_cond_limpar", use_container_width=True):
+            st.session_state.winback_condominios = []
+            st.rerun()
+    
+    # Indicador visual do filtro aplicado
+    if condominios_selecionados:
+        st.success(
+            f"🎯 Filtrando **{len(condominios_selecionados)} condomínio(s)** — "
+            f"{len(df_export_temp[df_export_temp['_label_cond'].isin(condominios_selecionados)])} clientes no total"
+        )
+        df_export_temp = df_export_temp[
+            df_export_temp['_label_cond'].isin(condominios_selecionados)
+        ].copy()
+    else:
+        st.info(f"🌍 Incluindo **todos os {len(condominios_disponiveis)} condomínios** — {len(df_export_temp)} clientes")
+    
+    # Aplica o filtro final
+    df_export = df_export_temp.drop(columns=['_label_cond']).copy()
+    
+    if df_export.empty:
+        st.warning("⚠️ Nenhum cliente encontrado com os condomínios selecionados.")
+        return
+    # ========== FIM FILTRO POR CONDOMÍNIO ==========
+    
+    # Garante coluna de nome do condomínio
+    if 'Condomínio' not in df_export.columns:
+        df_export = adicionar_nome_condominio(df_export, df_condominios)
     
     # ========== RESUMO ==========
     st.markdown("### 📊 Resumo dos Clientes Encontrados")
@@ -2345,20 +2427,22 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
             }
         )
     
-    # ========== EXPORTAÇÃO ==========
+    # ========== EXPORTAÇÃO EXCEL (COM ABA POR CONDOMÍNIO) ==========
     st.markdown("---")
     st.subheader("📎 Exportar Dados")
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export_export = df_export.copy()
         cols_remover = ['status_classificacao', 'score_pagamento', 'score_atraso', 'score_tempo']
+        
+        # ---- Aba 1: Todos os clientes ----
+        df_export_export = df_export.copy()
         for col in cols_remover:
             if col in df_export_export.columns:
                 df_export_export = df_export_export.drop(columns=[col])
-        
         df_export_export.to_excel(writer, sheet_name='WinBack_Clientes', index=False)
         
+        # ---- Aba 2: Apenas Saudáveis ----
         df_saudaveis = df_export[df_export['perfil_cliente'] == '🟢 Saudável'].copy()
         if not df_saudaveis.empty:
             for col in cols_remover:
@@ -2366,6 +2450,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
                     df_saudaveis = df_saudaveis.drop(columns=[col])
             df_saudaveis.to_excel(writer, sheet_name='Apenas_Saudaveis', index=False)
         
+        # ---- Aba 3: Resumo por Condomínio ----
         if 'CONDOMANIO' in df_export.columns:
             resumo_cond = df_export.groupby(['CONDOMANIO', 'perfil_cliente']).size().unstack(fill_value=0)
             resumo_cond['Total'] = resumo_cond.sum(axis=1)
@@ -2373,6 +2458,7 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
             resumo_cond = adicionar_nome_condominio(resumo_cond, df_condominios)
             resumo_cond.to_excel(writer, sheet_name='Resumo_Por_Condominio', index=False)
         
+        # ---- Aba 4: Resumo por Perfil ----
         resumo_perfil = df_export.groupby('perfil_cliente').agg(
             total=('perfil_cliente', 'count'),
             media_health_score=('health_score', 'mean'),
@@ -2380,6 +2466,57 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
         ).round(2).reset_index()
         resumo_perfil.to_excel(writer, sheet_name='Resumo_Por_Perfil', index=False)
         
+        # ---- 🆕 Aba por Condomínio (somente quando filtro por condomínio está ativo) ----
+        LIMITE_ABAS_POR_CONDOMINIO = 15
+        
+        if condominios_selecionados and len(condominios_selecionados) <= LIMITE_ABAS_POR_CONDOMINIO:
+            st.info(f"📑 Serão geradas **{len(condominios_selecionados)} abas individuais** (uma por condomínio) no Excel.")
+            
+            nomes_usados = {'WinBack_Clientes', 'Apenas_Saudaveis', 
+                            'Resumo_Por_Condominio', 'Resumo_Por_Perfil'}
+            
+            for cond_nome in condominios_selecionados:
+                df_cond_aba = pd.DataFrame()
+                
+                # Busca por nome do condomínio
+                if 'Condomínio' in df_export_export.columns:
+                    df_cond_aba = df_export_export[
+                        df_export_export['Condomínio'] == cond_nome
+                    ].copy()
+                
+                # Fallback: se não achou por nome, tenta por ID
+                if df_cond_aba.empty and 'CONDOMANIO' in df_export_export.columns:
+                    df_cond_aba = df_export_export[
+                        df_export_export['CONDOMANIO'].astype(str) == str(cond_nome)
+                    ].copy()
+                
+                if df_cond_aba.empty:
+                    continue
+                
+                # Sanitiza nome da aba (Excel: máx 31 chars, sem []:*?/\)
+                nome_aba = str(cond_nome)[:28]
+                for ch in '[]:*?/\\':
+                    nome_aba = nome_aba.replace(ch, '_')
+                
+                # Garante unicidade
+                base_nome = nome_aba
+                contador = 1
+                while nome_aba in nomes_usados:
+                    sufixo = f"_{contador}"
+                    nome_aba = base_nome[:28 - len(sufixo)] + sufixo
+                    contador += 1
+                
+                nomes_usados.add(nome_aba)
+                df_cond_aba.to_excel(writer, sheet_name=nome_aba, index=False)
+        
+        elif condominios_selecionados and len(condominios_selecionados) > LIMITE_ABAS_POR_CONDOMINIO:
+            st.warning(
+                f"⚠️ Você selecionou **{len(condominios_selecionados)} condomínios**. "
+                f"Para evitar um arquivo gigante, as abas individuais só são geradas "
+                f"até {LIMITE_ABAS_POR_CONDOMINIO} condomínios. Use a aba **Resumo_Por_Condominio** "
+                f"ou filtre menos condomínios."
+            )
+    
     output.seek(0)
     
     st.download_button(
@@ -2413,6 +2550,12 @@ def render_exportacao_winback(df_clientes, df_condominios, df_parcelas=None):
     if 'percentual_atraso' in df_export.columns:
         media_atraso = df_export['percentual_atraso'].mean()
         insights.append(f"⚠️ **% Atraso médio:** {media_atraso:.1f}%")
+    
+    if condominios_selecionados and total_encontrado > 0:
+        if 'Condomínio' in df_export.columns:
+            top_cond = df_export['Condomínio'].value_counts().head(1)
+            if len(top_cond) > 0:
+                insights.append(f"🏆 **Condomínio com mais clientes na campanha:** {top_cond.index[0]} ({top_cond.iloc[0]} clientes)")
     
     for insight in insights:
         st.info(insight)
@@ -2548,7 +2691,6 @@ def _parcelas_para_parquet_bytes(df):
         elif tipo in ("integer", "floating", "mixed-integer-float", "string", "boolean", "empty"):
             continue
         else:
-            # tipos mistos (ex.: números e textos na mesma coluna) -> texto, preservando nulos
             df[col] = s.where(s.isna(), s.astype(str))
 
     buf = io.BytesIO()
@@ -2795,7 +2937,6 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
             collection_clientes.insert_many(docs[i:i + _BATCH], ordered=False)
     
     if df_parcelas is not None and not df_parcelas.empty:
-        # ⚡ Parcelas (~186k linhas) vão como UM arquivo Parquet no GridFS, não como documentos
         parcelas_file_id = None
         try:
             parcelas_file_id = salvar_parcelas_parquet_gridfs(df_parcelas, batch_id)
@@ -2807,7 +2948,6 @@ def save_condominio_data_enhanced(db, df_clientes, df_condominios, df_parcelas, 
         if parcelas_file_id:
             metadata["parcelas_file_id"] = parcelas_file_id
         else:
-            # Fallback legado: parcelas como documentos na coleção
             df_parcelas_limpo = converter_dataframe_dates(df_parcelas)
             df_parcelas_limpo["_import_timestamp"] = datetime.now().replace(tzinfo=None)
             df_parcelas_limpo["_import_batch"] = batch_id
@@ -2859,7 +2999,6 @@ def carregar_dados_mais_recentes(db):
         projection = {'_id': 0, '_import_timestamp': 0, '_import_batch': 0,
                       'source_file_id': 0, 'module': 0}
         
-        # ⚡ OTIMIZADO: list(cursor) direto com batch_size
         cursor_clientes = db["condominios_relatorios"].find(
             {"_import_batch": batch_id, "module": "condominios"},
             projection
@@ -2896,7 +3035,6 @@ def carregar_dados_mais_recentes(db):
         st.session_state.condominios_nome_arquivo = file_name
         st.session_state.condominios_processado = True
         
-        # 🔑 Limpar cache do winback ao recarregar
         st.session_state._winback_cache = None
         st.session_state._winback_cache_key = None
         
@@ -2939,7 +3077,6 @@ def processar_upload_condominios(db, uploaded_file):
     
     with st.spinner('🔄 Processando planilha...'):
         try:
-            # ⚡ Planilha aberta UMA vez; todas as abas reaproveitam o mesmo arquivo já aberto
             xls = _abrir_excel(uploaded_file)
             df_clientes = xls.parse("Dados")
             df_condominios = xls.parse("Condominios")
@@ -2996,7 +3133,6 @@ def processar_upload_condominios(db, uploaded_file):
                 st.session_state.condominios_nome_arquivo = uploaded_file.name
                 st.session_state.condominios_processado = True
                 
-                # 🔑 Limpar cache do winback
                 st.session_state._winback_cache = None
                 st.session_state._winback_cache_key = None
                 
@@ -3614,7 +3750,6 @@ def upload_mode(db):
     if uploaded_file is not None:
         with st.expander("👁️ Visualizar planilha antes de processar"):
             try:
-                # ⚡ Preview cacheado pelo conteúdo do arquivo (não relê a planilha a cada rerun)
                 preview = _preview_planilha(uploaded_file.getvalue())
                 
                 st.markdown("**Aba Dados:**")
@@ -3694,7 +3829,6 @@ def dados_existentes_mode(db):
                         st.session_state.condominios_nome_arquivo = nome
                         st.session_state.condominios_processado = True
                         
-                        # 🔑 Limpar cache do winback
                         st.session_state._winback_cache = None
                         st.session_state._winback_cache_key = None
                     
