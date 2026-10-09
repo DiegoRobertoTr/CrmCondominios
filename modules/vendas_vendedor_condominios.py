@@ -12,7 +12,9 @@ VERSÃO COMPLETA E OTIMIZADA COM:
 - Indicador de evolução/piora semana a semana
 - Desempenho por condomínio (integrado com módulo condominios.py)
 - Filtro de período aplicado em TODAS as análises
-- Seletor de período: Personalizado primeiro, depois pré-selecionados, depois meses (do mais recente para o mais antigo)
+- CORREÇÃO DE TIMEZONE: filtro inclui TODO o dia final (até 23:59:59.999999)
+- NORMALIZAÇÃO DE TIMEZONE: converte UTC para America/Sao_Paulo
+- Seletor de período: Personalizado primeiro, depois pré-selecionados, depois meses
 - Exportação em Excel (Analítico + Por Vendedor)
 - Permissões: admin e diretoria
 - RÓTULOS DE DADOS VISÍVEIS E DESTAQUE PARA O LÍDER DE VENDAS
@@ -54,13 +56,13 @@ CONFIG = {
         5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
         9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
     },
-    'cache_ttl': 300,  # 5 minutos de cache
-    'limite_grafico': 50,  # Máximo de barras em gráficos
-    'limite_tabela': 500  # Máximo de linhas em tabelas
+    'cache_ttl': 300,
+    'limite_grafico': 50,
+    'limite_tabela': 500,
+    'timezone_local': 'America/Sao_Paulo'
 }
 
 # ==================== METAS DOS VENDEDORES ====================
-# Metas padrão - podem ser ajustadas pelo usuário
 METAS_PADRAO = {
     'Larissa Oliveira dos Santos': 200,
     'Leandro Monteiro': 120,
@@ -75,15 +77,13 @@ METAS_PADRAO = {
 # ==================== CONFIGURAÇÕES DE COMISSÃO ====================
 VALOR_MENSALIDADE_PADRAO = 79.99
 VALOR_FREELANCER_POR_ATIVACAO = 50.00
-PERCENTUAL_COMISSAO_PADRAO = 4.0  # 4% (meio da faixa 3%-5%)
+PERCENTUAL_COMISSAO_PADRAO = 4.0
 
-# Vendedores que por padrão são freelancers (podem ser ajustados na UI)
 FREELANCERS_PADRAO = [
     'Erick Eduardo Lombardi',
     'Estephani Marcolino',
 ]
 
-# Mapeamento de volta para nomes originais das colunas
 RENOMEAR_PARA_ORIGINAL = {
     'cliente': 'RAZAO SOCIAL/NOME',
     'id_cliente': 'ID',
@@ -93,6 +93,52 @@ RENOMEAR_PARA_ORIGINAL = {
     'condominio_id': 'CONDOMANIO',
     'data_cadastro': 'DATA DE CADASTRO NO SISTEMA'
 }
+
+# ==================== HELPERS DE TIMEZONE ====================
+
+def normalizar_timezone(df, coluna_data='data_ativacao'):
+    """Remove informação de timezone, convertendo para America/Sao_Paulo antes."""
+    if df is None or df.empty:
+        return df
+    
+    df = df.copy()
+    if coluna_data not in df.columns:
+        return df
+    
+    col = df[coluna_data]
+    
+    if pd.api.types.is_datetime64tz_dtype(col):
+        try:
+            df[coluna_data] = col.dt.tz_convert(CONFIG['timezone_local']).dt.tz_localize(None)
+            logger.info(f"✅ Timezone de '{coluna_data}' convertido para {CONFIG['timezone_local']}")
+        except Exception as e:
+            logger.warning(f"⚠️ Falha ao converter tz de '{coluna_data}': {e}. Removendo tz apenas.")
+            df[coluna_data] = col.dt.tz_localize(None)
+    
+    df[coluna_data] = pd.to_datetime(df[coluna_data], errors='coerce')
+    return df
+
+
+def aplicar_filtro_periodo(df, data_inicio, data_fim, coluna_data='data_ativacao'):
+    """
+    Filtra o DataFrame por período INCLUINDO o dia final por completo (23:59:59.999999).
+    """
+    if df is None or df.empty:
+        return df
+    
+    inicio_dt = pd.Timestamp(datetime.combine(data_inicio, datetime.min.time()))
+    fim_dt = pd.Timestamp(datetime.combine(data_fim, datetime.max.time()))
+    
+    df = df.copy()
+    
+    if pd.api.types.is_datetime64tz_dtype(df[coluna_data]):
+        df = normalizar_timezone(df, coluna_data)
+    
+    df[coluna_data] = pd.to_datetime(df[coluna_data], errors='coerce')
+    
+    mascara = (df[coluna_data] >= inicio_dt) & (df[coluna_data] <= fim_dt)
+    return df[mascara].copy()
+
 
 # ==================== CONEXÃO MONGODB ====================
 @st.cache_resource(ttl=CONFIG['cache_ttl'])
@@ -120,7 +166,6 @@ def init_mongo():
         database_name = st.secrets.get("mongo", {}).get("MONGO_DATABASE", "crm_db")
         db = client[database_name]
         
-        # Índices para performance
         db[CONFIG['colecao_mongo']].create_index([("import_batch", -1)])
         db[CONFIG['colecao_mongo']].create_index([("data_ativacao", -1)])
         db[CONFIG['colecao_mongo']].create_index([("vendedor", 1)])
@@ -130,6 +175,7 @@ def init_mongo():
     except Exception as e:
         st.error(f"❌ Falha ao conectar ao MongoDB: {str(e)}")
         return None
+
 
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def get_condominios_crm_cached():
@@ -150,7 +196,6 @@ def get_condominios_crm_cached():
     client = MongoClient(uri, serverSelectionTimeoutMS=3000, connectTimeoutMS=3000)
     collection = client.crm_db.condominios
     
-    # Buscar apenas campos necessários + limitar para performance
     condominios = list(collection.find(
         {},
         {"_id": 1, "nome": 1, "id_ixc": 1, "cidade": 1, "zona": 1, "bairro": 1}
@@ -165,9 +210,10 @@ def get_condominios_crm_cached():
     
     return df_cond
 
+
 # ==================== FUNÇÕES DE BANCO ====================
 def limpar_dados_antigos(db):
-    """Remove dados antigos - OTIMIZADO com índice"""
+    """Remove dados antigos"""
     try:
         colecao = db[CONFIG['colecao_mongo']]
         resultado = colecao.delete_many({})
@@ -177,6 +223,7 @@ def limpar_dados_antigos(db):
     except Exception as e:
         st.error(f"❌ Erro ao limpar dados: {str(e)}")
         return False
+
 
 def salvar_dados_mongo(db, df):
     """Salva dados em BATCH para performance"""
@@ -193,7 +240,6 @@ def salvar_dados_mongo(db, df):
             record['import_batch'] = batch_id
             record['imported_at'] = datetime.now()
         
-        # Inserção em lotes de 5000
         batch_size = 5000
         total = len(records)
         for i in range(0, total, batch_size):
@@ -205,19 +251,18 @@ def salvar_dados_mongo(db, df):
         st.error(f"❌ Erro ao salvar: {str(e)}")
         return None
 
+
 def carregar_dados_mongo(db):
-    """Carrega dados - OTIMIZADO com projeção"""
+    """Carrega dados com normalização de timezone"""
     try:
         colecao = db[CONFIG['colecao_mongo']]
         
-        # Busca apenas o batch mais recente
         latest = colecao.find_one(sort=[("import_batch", -1)])
         if not latest:
             return None
         
         batch_id = latest.get('import_batch')
         
-        # Projeção para não carregar campos desnecessários
         projection = {'_id': 0, 'import_batch': 0, 'imported_at': 0}
         cursor = colecao.find({"import_batch": batch_id}, projection)
         
@@ -226,15 +271,18 @@ def carregar_dados_mongo(db):
         if df.empty:
             return None
         
+        df = normalizar_timezone(df, 'data_ativacao')
+        
         return df, batch_id
     except Exception as e:
         st.error(f"❌ Erro ao carregar: {str(e)}")
         return None
 
+
 # ==================== FUNÇÕES DE PROCESSAMENTO ====================
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def processar_planilha_cached(uploaded_file_bytes, filename):
-    """Processa planilha com CACHE"""
+    """Processa planilha com CACHE + normalização de timezone"""
     try:
         import io
         df = pd.read_excel(io.BytesIO(uploaded_file_bytes), engine='openpyxl')
@@ -260,20 +308,24 @@ def processar_planilha_cached(uploaded_file_bytes, filename):
         df['status'] = df['status'].astype(str).str.strip()
         df['condominio_id'] = pd.to_numeric(df['condominio_id'], errors='coerce').fillna(0).astype(int)
         
+        df = normalizar_timezone(df, 'data_ativacao')
+        
+        if 'data_cadastro' in df.columns:
+            df['data_cadastro'] = pd.to_datetime(df['data_cadastro'], errors='coerce')
+            df = normalizar_timezone(df, 'data_cadastro')
+        
         return {"df": df, "total": len(df)}
     except Exception as e:
         return {"erro": str(e)}
 
+
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def calcular_vendas_vendedor_cached(df_hash, data_inicio_str, data_fim_str):
     """Calcula vendas por vendedor com CACHE"""
-    data_inicio = datetime.fromisoformat(data_inicio_str)
-    data_fim = datetime.fromisoformat(data_fim_str)
+    data_inicio = datetime.fromisoformat(data_inicio_str).date()
+    data_fim = datetime.fromisoformat(data_fim_str).date()
     
-    df_filtrado = df_hash[
-        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
-    ]
+    df_filtrado = aplicar_filtro_periodo(df_hash, data_inicio, data_fim)
     
     if df_filtrado.empty:
         return pd.DataFrame()
@@ -282,26 +334,19 @@ def calcular_vendas_vendedor_cached(df_hash, data_inicio_str, data_fim_str):
         total_vendas=('cliente', 'count')
     ).reset_index().sort_values('total_vendas', ascending=False)
 
+
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str):
-    """
-    Calcula vendas semanais com SEMANA DO MÊS
-    Ex: Semana 1 = dias 01-07, Semana 2 = dias 08-14, etc
-    """
-    data_inicio = datetime.fromisoformat(data_inicio_str)
-    data_fim = datetime.fromisoformat(data_fim_str)
+    """Calcula vendas semanais com SEMANA DO MÊS"""
+    data_inicio = datetime.fromisoformat(data_inicio_str).date()
+    data_fim = datetime.fromisoformat(data_fim_str).date()
     
-    df_filtrado = df_hash[
-        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
-    ].copy()
+    df_filtrado = aplicar_filtro_periodo(df_hash, data_inicio, data_fim)
     
     if df_filtrado.empty:
         return pd.DataFrame(), pd.DataFrame()
     
-    # ========== CALCULAR SEMANA DO MÊS ==========
     def get_semana_mes(data):
-        """Retorna a semana do mês (1-5) baseado no dia"""
         dia = data.day
         if dia <= 7:
             return 1
@@ -317,12 +362,10 @@ def calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str):
     df_filtrado['semana_mes'] = df_filtrado['data_ativacao'].apply(get_semana_mes)
     df_filtrado['semana_str'] = df_filtrado['semana_mes'].apply(lambda x: f'Semana {x}')
     
-    # Agrupa por vendedor e semana do mês
     vendas_semanais = df_filtrado.groupby(['vendedor', 'semana_str', 'semana_mes']).agg(
         total_vendas=('cliente', 'count')
     ).reset_index().sort_values(['vendedor', 'semana_mes'])
     
-    # Vendas diárias com semana do mês
     df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.day_name()
     df_filtrado['data_str'] = df_filtrado['data_ativacao'].dt.strftime('%d/%m')
     
@@ -332,12 +375,12 @@ def calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str):
     
     return vendas_semanais, vendas_diarias
 
+
 def calcular_indicador_evolucao(vendas_semanais):
     """Calcula indicador de evolução/piora semana a semana"""
     if vendas_semanais.empty:
         return pd.DataFrame()
     
-    # Pivot com semanas do mês
     pivot = vendas_semanais.pivot_table(
         index='vendedor',
         columns='semana_str',
@@ -345,7 +388,6 @@ def calcular_indicador_evolucao(vendas_semanais):
         fill_value=0
     )
     
-    # Ordenar colunas por semana (1, 2, 3, 4, 5)
     pivot = pivot.reindex(sorted(pivot.columns), axis=1)
     
     evolucao = pivot.copy()
@@ -378,94 +420,75 @@ def calcular_indicador_evolucao(vendas_semanais):
     
     return evolucao
 
-# ==================== FUNÇÃO: EVOLUÇÃO MENSAL COM PROJEÇÃO E METAS ====================
 
+# ==================== EVOLUÇÃO MENSAL ====================
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados):
-    """
-    Calcula vendas mensais para vendedores selecionados
-    COM PROJEÇÃO BASEADA NO PERÍODO SELECIONADO
-    CORRIGIDO: Projeção considera apenas o período analisado para meses parciais
-    """
-    data_inicio = datetime.fromisoformat(data_inicio_str)
-    data_fim = datetime.fromisoformat(data_fim_str)
+    """Calcula vendas mensais COM PROJEÇÃO"""
+    data_inicio = datetime.fromisoformat(data_inicio_str).date()
+    data_fim = datetime.fromisoformat(data_fim_str).date()
     
-    df_filtrado = df_hash[
-        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
-    ].copy()
+    df_filtrado = aplicar_filtro_periodo(df_hash, data_inicio, data_fim)
     
     if df_filtrado.empty:
         return pd.DataFrame()
     
-    # Filtrar vendedores selecionados
     if vendedores_selecionados and "Todos" not in vendedores_selecionados:
         df_filtrado = df_filtrado[df_filtrado['vendedor'].isin(vendedores_selecionados)]
     
     if df_filtrado.empty:
         return pd.DataFrame()
     
-    # Criar coluna de mês/ano
     df_filtrado['mes_ano'] = df_filtrado['data_ativacao'].dt.to_period('M')
     df_filtrado['mes_str'] = df_filtrado['data_ativacao'].dt.strftime('%b/%Y')
     df_filtrado['ano_mes_num'] = df_filtrado['data_ativacao'].dt.year * 100 + df_filtrado['data_ativacao'].dt.month
     df_filtrado['dia'] = df_filtrado['data_ativacao'].dt.day
-    df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.dayofweek  # 0=Segunda, 6=Domingo
+    df_filtrado['dia_semana'] = df_filtrado['data_ativacao'].dt.dayofweek
     
-    # ========== DADOS REAIS POR MÊS ==========
     vendas_mensais = df_filtrado.groupby(['vendedor', 'mes_ano', 'mes_str', 'ano_mes_num']).agg(
         total_vendas=('cliente', 'count'),
         dias_com_vendas=('dia', 'nunique')
     ).reset_index().sort_values(['vendedor', 'ano_mes_num'])
     
-    # ========== CALCULAR DIAS ÚTEIS (SEGUNDA A SÁBADO) ==========
-    def get_dias_uteis_seg_sab(ano, mes, data_inicio, data_fim):
-        """Calcula quantos dias úteis (Segunda a Sábado) no período"""
-        import calendar
+    def get_dias_uteis_seg_sab(ano, mes, data_inicio_dt, data_fim_dt):
         dias_uteis = 0
-        
-        # Primeiro dia do mês
         primeiro_dia_mes = datetime(ano, mes, 1)
         ultimo_dia_mes = calendar.monthrange(ano, mes)[1]
         ultimo_dia_mes_dt = datetime(ano, mes, ultimo_dia_mes)
         
-        # Ajustar para o período
-        inicio_periodo = max(primeiro_dia_mes, data_inicio)
-        fim_periodo = min(ultimo_dia_mes_dt, data_fim)
+        inicio_periodo = max(primeiro_dia_mes, data_inicio_dt)
+        fim_periodo = min(ultimo_dia_mes_dt, data_fim_dt)
         
         if inicio_periodo > fim_periodo:
             return 0
         
-        # Contar dias de Segunda a Sábado (0=Segunda, 5=Sábado, 6=Domingo)
         data_atual = inicio_periodo
         while data_atual <= fim_periodo:
-            if data_atual.weekday() < 6:  # Segunda a Sábado
+            if data_atual.weekday() < 6:
                 dias_uteis += 1
             data_atual += timedelta(days=1)
         
         return dias_uteis
     
-    # Adicionar dias úteis do período por mês
+    data_inicio_dt = datetime.combine(data_inicio, datetime.min.time())
+    data_fim_dt = datetime.combine(data_fim, datetime.min.time())
+    
     vendas_mensais['dias_uteis_periodo'] = vendas_mensais.apply(
         lambda row: get_dias_uteis_seg_sab(
             row['mes_ano'].year, 
             row['mes_ano'].month,
-            data_inicio,
-            data_fim
+            data_inicio_dt,
+            data_fim_dt
         ),
         axis=1
     )
     
-    # Calcular total de dias úteis no mês (Segunda a Sábado)
     def get_total_dias_uteis_seg_sab(ano, mes):
-        """Calcula total de dias úteis (Segunda a Sábado) no mês"""
-        import calendar
         dias_uteis = 0
         ultimo_dia = calendar.monthrange(ano, mes)[1]
-        
         for dia in range(1, ultimo_dia + 1):
             data = datetime(ano, mes, dia)
-            if data.weekday() < 6:  # Segunda a Sábado
+            if data.weekday() < 6:
                 dias_uteis += 1
         return dias_uteis
     
@@ -474,36 +497,29 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         axis=1
     )
     
-    # ========== IDENTIFICAR ÚLTIMO MÊS DO PERÍODO ==========
     ultimo_mes_periodo = data_fim.month
     ultimo_ano_periodo = data_fim.year
     
-    # Verificar se o último mês é parcial (data_fim não é o último dia do mês)
     ultimo_dia_mes = calendar.monthrange(data_fim.year, data_fim.month)[1]
     is_mes_parcial = data_fim.day < ultimo_dia_mes
     
     vendas_mensais['is_ultimo_mes'] = (vendas_mensais['mes_ano'].dt.year == ultimo_ano_periodo) & (vendas_mensais['mes_ano'].dt.month == ultimo_mes_periodo)
     
-    # Verificar se o mês é parcial
     vendas_mensais['is_mes_parcial'] = vendas_mensais.apply(
         lambda row: is_mes_parcial if row['is_ultimo_mes'] else False,
         axis=1
     )
     
-    # ========== CALCULAR PROJEÇÃO CORRIGIDA ==========
-    # CORREÇÃO: A média diária deve considerar APENAS os dias úteis do período analisado
     vendas_mensais['media_diaria'] = vendas_mensais.apply(
         lambda row: row['total_vendas'] / row['dias_uteis_periodo'] if row['dias_uteis_periodo'] > 0 else 0,
         axis=1
     )
     
-    # Calcular média por dia com vendas (mais conservadora)
     vendas_mensais['media_por_dia_com_vendas'] = vendas_mensais.apply(
         lambda row: row['total_vendas'] / row['dias_com_vendas'] if row['dias_com_vendas'] > 0 else 0,
         axis=1
     )
     
-    # Usar a média mais conservadora (menor entre as duas)
     vendas_mensais['media_diaria_final'] = vendas_mensais.apply(
         lambda row: min(row['media_diaria'], row['media_por_dia_com_vendas']) 
         if row['media_diaria'] > 0 and row['media_por_dia_com_vendas'] > 0 
@@ -511,8 +527,6 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         axis=1
     )
     
-    # CORREÇÃO: Projeção = média diária final × total de dias úteis do MÊS COMPLETO
-    # Mas apenas para o mês parcial (último mês)
     vendas_mensais['projecao_mes'] = vendas_mensais.apply(
         lambda row: row['media_diaria_final'] * row['dias_uteis_mes'] 
         if row['media_diaria_final'] > 0 and row['is_mes_parcial'] 
@@ -520,19 +534,16 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
         axis=1
     )
     
-    # ========== USAR PROJEÇÃO PARA MÊS PARCIAL ==========
     vendas_mensais['vendas_ajustadas'] = vendas_mensais.apply(
         lambda row: row['projecao_mes'] if row['is_mes_parcial'] else row['total_vendas'],
         axis=1
     )
     
-    # ========== CALCULAR MÉDIA DIÁRIA PROJETADA ==========
     vendas_mensais['media_diaria_projetada'] = vendas_mensais.apply(
         lambda row: row['vendas_ajustadas'] / row['dias_uteis_mes'] if row['dias_uteis_mes'] > 0 else 0,
         axis=1
     )
     
-    # ========== CALCULAR VARIAÇÃO MENSAL ==========
     vendas_mensais['variacao_mensal'] = 0.0
     
     for vendedor in vendas_mensais['vendedor'].unique():
@@ -550,13 +561,10 @@ def calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vende
     
     return vendas_mensais
 
-# ==================== FUNÇÃO: VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ====================
 
+# ==================== VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ====================
 def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim):
-    """
-    Renderiza a visualização evolutiva mês a mês para os vendedores selecionados
-    Exibe gráfico de BARRAS com VENDAS REAIS e linha de PROJEÇÃO para o mês parcial
-    """
+    """Renderiza a visualização evolutiva mês a mês"""
     if vendas_mensais.empty:
         st.info("ℹ️ Nenhum dado mensal disponível para a visualização evolutiva.")
         return
@@ -568,13 +576,9 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
     </div>
     """, unsafe_allow_html=True)
     
-    # ========== ORDENAR DADOS CRONOLOGICAMENTE ==========
-    # Criar uma coluna de data para ordenação
     vendas_mensais['data_ordem'] = pd.to_datetime(vendas_mensais['mes_str'], format='%b/%Y')
     vendas_mensais = vendas_mensais.sort_values(['vendedor', 'data_ordem'])
     
-    # ========== PREPARAR DADOS PARA O GRÁFICO ==========
-    # Pivot para o gráfico com VENDAS REAIS (total_vendas)
     df_pivot_real = vendas_mensais.pivot_table(
         index='mes_str',
         columns='vendedor',
@@ -582,7 +586,6 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         fill_value=0
     )
     
-    # Pivot para a projeção (apenas meses parciais)
     df_pivot_projecao = vendas_mensais.pivot_table(
         index='mes_str',
         columns='vendedor',
@@ -590,20 +593,16 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         fill_value=0
     )
     
-    # Ordenar por data (cronologicamente)
     ordem_meses = vendas_mensais.groupby('mes_str')['data_ordem'].first().sort_values().index.tolist()
     df_pivot_real = df_pivot_real.reindex(ordem_meses, axis=0)
     df_pivot_projecao = df_pivot_projecao.reindex(ordem_meses, axis=0)
     
-    # Identificar meses parciais
     meses_parciais = vendas_mensais[vendas_mensais['is_mes_parcial']]['mes_str'].unique().tolist()
     
-    # ========== GRÁFICO DE BARRAS AGRUPADAS ==========
     st.markdown("### 📊 Evolução Mensal de Vendas Reais")
     
     fig_barras = go.Figure()
     
-    # Adicionar barras para cada vendedor (VENDAS REAIS)
     for vendedor in df_pivot_real.columns:
         fig_barras.add_trace(go.Bar(
             x=df_pivot_real.index,
@@ -614,9 +613,7 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
             hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Vendas Reais: %{{y:.0f}}<extra></extra>'
         ))
     
-    # Adicionar linha de projeção para meses parciais (tracejada)
     for vendedor in df_pivot_projecao.columns:
-        # Filtrar apenas meses parciais com projeção > 0
         meses_com_projecao = []
         valores_projecao = []
         
@@ -638,7 +635,6 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
                 hovertemplate=f'<b>{vendedor}</b><br>Mês: %{{x}}<br>Projeção: %{{y:.1f}}<extra></extra>'
             ))
     
-    # Adicionar linha de meta média
     if metas and len(metas) > 0:
         meta_media = sum(metas.values()) / len(metas)
         if meta_media > 0:
@@ -651,7 +647,6 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
                 annotation_position="bottom right"
             )
     
-    # Adicionar marcações para meses parciais
     for mes in meses_parciais:
         if mes in df_pivot_real.index:
             fig_barras.add_annotation(
@@ -673,43 +668,29 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         yaxis_title='Vendas Reais',
         height=450,
         barmode='group',
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.02,
-            xanchor='right',
-            x=1
-        )
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
     )
     
     st.plotly_chart(fig_barras, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== TABELA DETALHADA EM ORDEM CRONOLÓGICA ==========
     st.markdown("### 📋 Detalhamento Mensal por Vendedor")
     
-    # Preparar tabela com valores em ordem cronológica
     tabela_evolutiva = vendas_mensais[['vendedor', 'mes_str', 'total_vendas', 'projecao_mes', 'variacao_mensal', 'is_mes_parcial', 'data_ordem']].copy()
-    
-    # Ordenar por vendedor e data
     tabela_evolutiva = tabela_evolutiva.sort_values(['vendedor', 'data_ordem'])
     
-    # Adicionar variação mensal formatada
     tabela_evolutiva['variacao_formatada'] = tabela_evolutiva['variacao_mensal'].apply(
         lambda x: f"{x:+.1f}%" if x != 0 else "0%"
     )
     
-    # Marcar meses parciais e mostrar projeção
     tabela_evolutiva['status'] = tabela_evolutiva['is_mes_parcial'].apply(
         lambda x: "⭐ Projetado" if x else "✅ Realizado"
     )
     
-    # Criar coluna com projeção apenas para meses parciais
     tabela_evolutiva['projecao_display'] = tabela_evolutiva.apply(
         lambda row: f"{row['projecao_mes']:.1f}" if row['is_mes_parcial'] and row['projecao_mes'] > 0 else "-",
         axis=1
     )
     
-    # Ordenar e exibir
     tabela_display = tabela_evolutiva[['vendedor', 'mes_str', 'total_vendas', 'projecao_display', 'variacao_formatada', 'status']]
     tabela_display = tabela_display.rename(columns={
         'vendedor': 'Vendedor',
@@ -734,7 +715,6 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         }
     )
     
-    # ========== RESUMO POR VENDEDOR ==========
     st.markdown("### 📊 Resumo por Vendedor")
     
     resumo_vendedor = vendas_mensais.groupby('vendedor').agg(
@@ -745,12 +725,10 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         meses_ativos=('mes_str', 'nunique')
     ).reset_index()
     
-    # Adicionar meta
     resumo_vendedor['meta'] = resumo_vendedor['vendedor'].apply(
         lambda x: metas.get(x, METAS_PADRAO.get(x, 20))
     )
     
-    # Calcular % da meta (média mensal vs meta)
     resumo_vendedor['percentual_meta'] = (resumo_vendedor['media_mensal_real'] / resumo_vendedor['meta'] * 100).fillna(0)
     
     resumo_display = resumo_vendedor[['vendedor', 'total_vendas_periodo', 'media_mensal_real', 'meta', 'percentual_meta', 'meses_ativos']]
@@ -776,10 +754,10 @@ def render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fi
         }
     )
 
-# ==================== FUNÇÃO: DESEMPENHO POR CONDOMÍNIO ====================
 
+# ==================== DESEMPENHO POR CONDOMÍNIO ====================
 def render_desempenho_por_condominio(df, data_inicio, data_fim):
-    """Renderiza análise de desempenho por condomínio - COM FILTRO DE PERÍODO"""
+    """Renderiza análise de desempenho por condomínio"""
     st.subheader("🏢 Desempenho por Condomínio")
     
     st.markdown(f"""
@@ -788,7 +766,6 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     </div>
     """, unsafe_allow_html=True)
     
-    # Carregar condomínios com cache
     with st.spinner("🔄 Carregando condomínios..."):
         df_cond_crm = get_condominios_crm_cached()
     
@@ -804,17 +781,12 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     
     df_vendas['condominio_id'] = pd.to_numeric(df_vendas['condominio_id'], errors='coerce').fillna(0).astype(int)
     
-    # ========== APLICAR FILTRO DE PERÍODO ==========
-    df_vendas_periodo = df_vendas[
-        (df_vendas['data_ativacao'] >= pd.Timestamp(data_inicio)) & 
-        (df_vendas['data_ativacao'] <= pd.Timestamp(data_fim))
-    ].copy()
+    df_vendas_periodo = aplicar_filtro_periodo(df_vendas, data_inicio, data_fim)
     
     if df_vendas_periodo.empty:
         st.warning(f"⚠️ Nenhuma venda no período {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}.")
         return
     
-    # Agrupar e merge
     df_planilha_cond = df_vendas_periodo.groupby('condominio_id', as_index=False).agg(
         total_vendas=('cliente', 'count'),
         vendedores=('vendedor', lambda x: list(set(x))[:10])
@@ -830,7 +802,6 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     df_merged['nome_condominio'] = df_merged['nome'].fillna(f"ID {df_merged['condominio_id']} (não cadastrado)")
     df_merged['status_cadastro'] = df_merged['nome'].apply(lambda x: '✅ Cadastrado' if pd.notna(x) else '⚠️ Não Cadastrado')
     
-    # ========== MÉTRICAS DO PERÍODO ==========
     total_vendas_cond = df_merged['total_vendas'].sum()
     cond_com_vendas = len(df_merged[df_merged['total_vendas'] > 0])
     
@@ -846,7 +817,6 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     
     st.markdown("---")
     
-    # Filtros
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         zonas = ["Todas"] + sorted(df_merged['zona'].dropna().unique().tolist())
@@ -868,17 +838,14 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
         st.warning("⚠️ Nenhum condomínio com os filtros.")
         return
     
-    # Ranking
     df_ranking = df_filtrado.sort_values('total_vendas', ascending=False).reset_index(drop=True)
     df_ranking_display = df_ranking.head(CONFIG['limite_tabela'])
     
-    # ========== TOP 10 COM VALORES REAIS DO PERÍODO ==========
     st.markdown(f"### 🏆 Top 10 Condomínios no Período")
     
     top_10 = df_ranking.head(10)
     
     if not top_10.empty:
-        # Gráfico
         fig_rank = px.bar(
             top_10,
             x='total_vendas',
@@ -893,7 +860,6 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
         fig_rank.update_layout(height=400, xaxis_title="Vendas no Período", yaxis_title="")
         st.plotly_chart(fig_rank, use_container_width=True, config={'displayModeBar': False})
         
-        # Pódio
         st.markdown("### 🏅 Pódio do Período")
         col_p1, col_p2, col_p3 = st.columns(3)
         
@@ -910,8 +876,6 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
                 st.warning(f"🥉 **{top_10.iloc[2]['nome_condominio']}**\n\n{top_10.iloc[2]['total_vendas']} vendas")
     
     st.markdown("---")
-    
-    # Tabela completa
     st.markdown("### 📋 Lista Completa do Período")
     
     colunas = ['nome_condominio', 'total_vendas', 'zona', 'cidade', 'status_cadastro']
@@ -932,8 +896,8 @@ def render_desempenho_por_condominio(df, data_inicio, data_fim):
     
     st.caption(f"📌 Mostrando {len(df_ranking_display)} de {len(df_ranking)} condomínios com vendas no período {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
 
-# ==================== CÁLCULO DE COMISSÕES ====================
 
+# ==================== CÁLCULO DE COMISSÕES ====================
 @st.cache_data(ttl=CONFIG['cache_ttl'], show_spinner=False)
 def calcular_comissoes_cached(
     df_hash,
@@ -943,26 +907,17 @@ def calcular_comissoes_cached(
     percentuais_tuple,
     valor_mensalidade
 ):
-    """
-    Calcula comissões no período.
-    
-    - Comissionados: vendas × valor_mensalidade × percentual
-    - Freelancers: agrupado por dia; max(0, vendas_dia - 1) × R$50
-    """
-    data_inicio = datetime.fromisoformat(data_inicio_str)
-    data_fim = datetime.fromisoformat(data_fim_str)
+    """Calcula comissões no período (com filtro correto de timezone)"""
+    data_inicio = datetime.fromisoformat(data_inicio_str).date()
+    data_fim = datetime.fromisoformat(data_fim_str).date()
     freelancers = set(freelancers_tuple)
     percentuais = dict(percentuais_tuple)
     
-    df_filtrado = df_hash[
-        (df_hash['data_ativacao'] >= pd.Timestamp(data_inicio)) &
-        (df_hash['data_ativacao'] <= pd.Timestamp(data_fim))
-    ].copy()
+    df_filtrado = aplicar_filtro_periodo(df_hash, data_inicio, data_fim)
     
     if df_filtrado.empty:
         return pd.DataFrame(), pd.DataFrame()
     
-    # ========== COMISSIONADOS (não freelancers) ==========
     df_com = df_filtrado[~df_filtrado['vendedor'].isin(freelancers)].copy()
     
     if not df_com.empty:
@@ -984,19 +939,16 @@ def calcular_comissoes_cached(
     else:
         comissao_com = pd.DataFrame()
     
-    # ========== FREELANCERS ==========
     df_free = df_filtrado[df_filtrado['vendedor'].isin(freelancers)].copy()
     free_diario = pd.DataFrame()
     
     if not df_free.empty:
         df_free['dia'] = df_free['data_ativacao'].dt.date
         
-        # Contar ativações por vendedor/dia
         free_diario = df_free.groupby(['vendedor', 'dia']).agg(
             ativacoes_dia=('cliente', 'count')
         ).reset_index()
         
-        # 1ª ativação do dia = R$0; da 2ª em diante = R$50
         free_diario['ativacoes_pagas'] = (free_diario['ativacoes_dia'] - 1).clip(lower=0)
         free_diario['valor_dia'] = free_diario['ativacoes_pagas'] * VALOR_FREELANCER_POR_ATIVACAO
         
@@ -1015,7 +967,6 @@ def calcular_comissoes_cached(
     else:
         comissao_free = pd.DataFrame()
     
-    # ========== CONSOLIDADO ==========
     colunas_comuns = ['vendedor', 'total_vendas', 'valor_comissao', 'tipo', 'detalhe']
     
     partes = []
@@ -1032,8 +983,8 @@ def calcular_comissoes_cached(
     
     return comissao_total, free_diario
 
-# ==================== ABA: VALORES DE COMISSÃO ====================
 
+# ==================== ABA: VALORES DE COMISSÃO ====================
 def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     """Renderiza a aba de comissões."""
     st.subheader("💰 Valores de Comissão no Período")
@@ -1044,7 +995,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     </div>
     """, unsafe_allow_html=True)
     
-    # ========== CONFIGURAÇÕES ==========
     st.markdown("### ⚙️ Configurações de Comissão")
     
     col_cfg1, col_cfg2 = st.columns(2)
@@ -1071,13 +1021,11 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     
     st.markdown("---")
     
-    # ========== SELETOR DE FREELANCERS ==========
     st.markdown("### 🆓 Vendedores Freelancers")
     st.caption("Marque os vendedores que recebem por ativação (R$ 50 a partir da 2ª no dia). Os demais são tratados como comissionados por percentual.")
     
     todos_vendedores = sorted(df_filtrado['vendedor'].unique().tolist())
     
-    # Inicializar no session_state
     if 'freelancers_selecionados' not in st.session_state:
         st.session_state.freelancers_selecionados = [
             v for v in todos_vendedores if v in FREELANCERS_PADRAO
@@ -1099,7 +1047,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     
     st.markdown("---")
     
-    # ========== PERCENTUAIS POR COMISSIONADO ==========
     comissionados = [v for v in todos_vendedores if v not in freelancers_selecionados]
     
     percentuais = {}
@@ -1123,7 +1070,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     
     st.markdown("---")
     
-    # ========== CALCULAR ==========
     with st.spinner("🔄 Calculando comissões..."):
         comissao_total, free_diario = calcular_comissoes_cached(
             df_hash,
@@ -1138,7 +1084,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
         st.info("ℹ️ Nenhuma comissão a calcular no período.")
         return
     
-    # ========== KPIs ==========
     valor_total = comissao_total['valor_comissao'].sum()
     total_com = comissao_total[comissao_total['tipo'] == 'Comissionado']['valor_comissao'].sum()
     total_free = comissao_total[comissao_total['tipo'] == 'Freelancer']['valor_comissao'].sum()
@@ -1151,8 +1096,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     col4.metric("📊 Total Vendas", f"{total_vendas:,}")
     
     st.markdown("---")
-    
-    # ========== GRÁFICO ==========
     st.markdown("### 📊 Comissão por Vendedor")
     
     cores = ['#3498db' if t == 'Comissionado' else '#e67e22' for t in comissao_total['tipo']]
@@ -1178,7 +1121,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
-    # ========== TABELA ==========
     st.markdown("### 📋 Detalhamento por Vendedor")
     
     df_display = comissao_total.copy()
@@ -1211,7 +1153,6 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
     </div>
     """, unsafe_allow_html=True)
     
-    # ========== DETALHE FREELANCERS ==========
     if not free_diario.empty:
         st.markdown("---")
         st.markdown("### 🆓 Detalhamento Freelancer (por dia)")
@@ -1240,28 +1181,20 @@ def render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado):
             }
         )
 
-# ==================== EXPORTAÇÃO POR VENDEDOR ====================
 
+# ==================== EXPORTAÇÃO POR VENDEDOR ====================
 def _sanitizar_nome_aba(nome: str, usados: set = None) -> str:
-    """
-    Sanitiza o nome de uma aba do Excel.
-    - Remove caracteres inválidos: : \ / ? * [ ]
-    - Trunca para 31 caracteres (limite do Excel)
-    - Garante unicidade se necessário
-    """
+    """Sanitiza o nome de uma aba do Excel"""
     if usados is None:
         usados = set()
     
-    # Caracteres inválidos no Excel
     invalidos = [':', '\\', '/', '?', '*', '[', ']']
     nome_limpo = nome
     for c in invalidos:
         nome_limpo = nome_limpo.replace(c, '_')
     
-    # Truncar para 31 caracteres
     nome_limpo = nome_limpo[:31].strip()
     
-    # Garantir unicidade
     nome_base = nome_limpo
     contador = 1
     while nome_limpo in usados:
@@ -1272,25 +1205,14 @@ def _sanitizar_nome_aba(nome: str, usados: set = None) -> str:
     usados.add(nome_limpo)
     return nome_limpo
 
+
 def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
-    """
-    Gera um arquivo Excel com uma aba por vendedor.
-    Colunas no formato original da planilha de importação.
-    
-    Estrutura:
-    - Aba 'RESUMO': totais por vendedor
-    - Aba 'TODOS': todos os dados juntos
-    - Uma aba por vendedor com suas ativações
-    """
+    """Gera Excel com uma aba por vendedor (df_filtrado já deve vir filtrado)"""
     output = BytesIO()
     
-    # ========== PREPARAR DADOS ==========
     df_export = df_filtrado.copy()
-    
-    # Renomear colunas de volta para o formato original
     df_export = df_export.rename(columns=RENOMEAR_PARA_ORIGINAL)
     
-    # Garantir colunas na ordem correta
     colunas_ordem = [
         'RAZAO SOCIAL/NOME',
         'ID',
@@ -1301,33 +1223,27 @@ def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
         'DATA DE CADASTRO NO SISTEMA'
     ]
     
-    # Adicionar colunas faltantes (caso existam no df)
     colunas_presentes = [c for c in colunas_ordem if c in df_export.columns]
     df_export = df_export[colunas_presentes]
     
-    # Formatar datas como texto DD/MM/YYYY
     for col in ['DATA ATIVAAAO', 'DATA DE CADASTRO NO SISTEMA']:
         if col in df_export.columns:
             df_export[col] = pd.to_datetime(df_export[col], errors='coerce').dt.strftime('%d/%m/%Y')
     
-    # Ordenar por vendedor e data
     if 'VENDEDOR' in df_export.columns and 'DATA ATIVAAAO' in df_export.columns:
         df_export = df_export.sort_values(['VENDEDOR', 'DATA ATIVAAAO'])
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # ========== ABA 1: RESUMO ==========
         resumo = df_export.groupby('VENDEDOR').size().reset_index(name='TOTAL ATIVAÇÕES')
         resumo = resumo.sort_values('TOTAL ATIVAÇÕES', ascending=False)
         resumo.columns = ['VENDEDOR', 'TOTAL ATIVAÇÕES']
         
-        # Adicionar linha de total
         total_geral = pd.DataFrame([{
             'VENDEDOR': '📊 TOTAL GERAL',
             'TOTAL ATIVAÇÕES': resumo['TOTAL ATIVAÇÕES'].sum()
         }])
         resumo_com_total = pd.concat([resumo, total_geral], ignore_index=True)
         
-        # Adicionar info do período
         info_periodo = pd.DataFrame({
             'VENDEDOR': ['📅 Período', '📅 De', '📅 Até'],
             'TOTAL ATIVAÇÕES': [
@@ -1337,14 +1253,11 @@ def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
             ]
         })
         
-        # Escrever resumo
         info_periodo.to_excel(writer, sheet_name='RESUMO', index=False, startrow=0)
         resumo_com_total.to_excel(writer, sheet_name='RESUMO', index=False, startrow=len(info_periodo) + 2)
         
-        # ========== ABA 2: TODOS ==========
         df_export.to_excel(writer, sheet_name='TODOS', index=False)
         
-        # ========== UMA ABA POR VENDEDOR ==========
         abas_usadas = {'RESUMO', 'TODOS'}
         vendedores = df_export['VENDEDOR'].dropna().unique().tolist()
         vendedores = sorted(vendedores)
@@ -1363,7 +1276,6 @@ def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
                 logger.warning(f"Erro ao criar aba para {vendedor}: {e}")
                 continue
         
-        # ========== AJUSTAR LARGURA DAS COLUNAS ==========
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]
             for column_cells in worksheet.columns:
@@ -1373,7 +1285,6 @@ def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
                     for cell in column_cells:
                         if cell.value is not None:
                             max_length = max(max_length, len(str(cell.value)))
-                    # Limitar largura máxima
                     adjusted_width = min(max_length + 2, 50)
                     worksheet.column_dimensions[column_letter].width = adjusted_width
                 except Exception:
@@ -1382,30 +1293,21 @@ def gerar_excel_por_vendedor(df_filtrado, data_inicio, data_fim):
     output.seek(0)
     return output
 
+
 # ==================== FUNÇÕES DE UI ====================
 def gerar_opcoes_periodo(df):
-    """
-    Gera opções de período para o seletor.
-    Ordem:
-    1. Personalizado (primeiro)
-    2. Períodos pré-selecionados (3 meses, 6 meses, etc)
-    3. Meses disponíveis (do mais recente para o mais antigo)
-    """
+    """Gera opções de período para o seletor"""
     if df is None or df.empty:
         return {}
     
     periodo_opcoes = {}
     
-    # ========== 1. PERSONALIZADO (primeiro) ==========
     periodo_opcoes["🎯 Personalizado"] = "personalizado"
-    
-    # ========== 2. PERÍODOS PRÉ-SELECIONADOS ==========
     periodo_opcoes["📅 Últimos 3 Meses"] = 90
     periodo_opcoes["📅 Últimos 6 Meses"] = 180
     periodo_opcoes["📅 Último Ano"] = 365
     periodo_opcoes["📆 Todo o período"] = None
     
-    # ========== 3. MESES DISPONÍVEIS (do mais recente para o mais antigo) ==========
     anos_meses = df.groupby(df['data_ativacao'].dt.to_period('M')).size().index
     anos_meses_ordenados = sorted(anos_meses, reverse=True)
     
@@ -1418,6 +1320,7 @@ def gerar_opcoes_periodo(df):
     
     return periodo_opcoes
 
+
 # ==================== DASHBOARD ====================
 def render_dashboard():
     """Renderiza o dashboard completo"""
@@ -1427,7 +1330,6 @@ def render_dashboard():
     if db is None:
         st.stop()
     
-    # ========== UPLOAD ==========
     st.markdown("---")
     st.subheader("📤 Importar Dados")
     
@@ -1458,7 +1360,6 @@ def render_dashboard():
                             st.success(f"✅ {resultado['total']:,} registros em {time.time() - start_time:.1f}s")
                             st.rerun()
     
-    # ========== CARREGAR DADOS ==========
     if 'vendas_df' not in st.session_state:
         with st.spinner("🔄 Carregando dados..."):
             resultado = carregar_dados_mongo(db)
@@ -1476,7 +1377,6 @@ def render_dashboard():
         st.warning("⚠️ Nenhum dado carregado.")
         return
     
-    # ========== PERÍODO ==========
     st.markdown("---")
     st.subheader("📅 Período de Análise")
     
@@ -1497,7 +1397,6 @@ def render_dashboard():
         if st.button("🔄 Atualizar", use_container_width=True):
             st.rerun()
     
-    # Calcular período
     if periodo_selecionado == "🎯 Personalizado":
         col_d1, col_d2 = st.columns(2)
         with col_d1:
@@ -1518,17 +1417,15 @@ def render_dashboard():
         st.error("⚠️ Data inválida")
         return
     
-    # Hash para cache
     df_hash = df.copy()
     data_inicio_str = datetime.combine(data_inicio, datetime.min.time()).isoformat()
     data_fim_str = datetime.combine(data_fim, datetime.min.time()).isoformat()
     
-    # ========== FILTRO VENDEDOR ==========
     vendedores = ["Todos"] + sorted(df['vendedor'].unique().tolist())
     vendedor_sel = st.sidebar.selectbox("👤 Vendedor", vendedores, key="vendedor_filtro")
     
-    # ========== DADOS FILTRADOS ==========
-    df_filtrado = df[(df['data_ativacao'] >= pd.Timestamp(data_inicio)) & (df['data_ativacao'] <= pd.Timestamp(data_fim))].copy()
+    # Filtro correto de período
+    df_filtrado = aplicar_filtro_periodo(df, data_inicio, data_fim)
     
     if vendedor_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado['vendedor'] == vendedor_sel]
@@ -1537,7 +1434,6 @@ def render_dashboard():
         st.warning("⚠️ Nenhum dado no período.")
         return
     
-    # ========== MÉTRICAS ==========
     total_vendas = len(df_filtrado)
     total_vendedores = df_filtrado['vendedor'].nunique()
     
@@ -1549,7 +1445,6 @@ def render_dashboard():
     
     st.markdown("---")
     
-    # ========== ABAS ==========
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Vendas por Vendedor",
         "📈 Evolução Semanal",
@@ -1559,7 +1454,7 @@ def render_dashboard():
         "📤 Exportar"
     ])
     
-    # ========== ABA 1: VENDAS POR VENDEDOR ==========
+    # ========== ABA 1 ==========
     with tab1:
         st.subheader("👥 Vendas por Vendedor")
         
@@ -1569,18 +1464,15 @@ def render_dashboard():
         if not vendas_vendedor.empty:
             top_vendedores = vendas_vendedor.head(CONFIG['limite_grafico'])
             
-            # ========== DESTACAR O VENDEDOR COM MAIS VENDAS ==========
             max_vendas = top_vendedores['total_vendas'].max()
             
-            # Criar coluna de cores - destaque para o líder
             cores = []
             for idx, row in top_vendedores.iterrows():
                 if row['total_vendas'] == max_vendas:
-                    cores.append('#FFD700')  # Dourado para o líder
+                    cores.append('#FFD700')
                 else:
-                    cores.append('#3498db')  # Azul padrão
+                    cores.append('#3498db')
             
-            # ========== GRÁFICO COM RÓTULOS MELHORADOS ==========
             fig = go.Figure()
             
             fig.add_trace(go.Bar(
@@ -1589,15 +1481,10 @@ def render_dashboard():
                 marker_color=cores,
                 text=top_vendedores['total_vendas'],
                 textposition='outside',
-                textfont=dict(
-                    size=14,
-                    color='black',
-                    family='Arial Black'
-                ),
+                textfont=dict(size=14, color='black', family='Arial Black'),
                 hovertemplate='<b>%{x}</b><br>Vendas: %{y}<extra></extra>'
             ))
             
-            # Adicionar anotação do líder
             lider = top_vendedores.iloc[0]['vendedor']
             vendas_lider = top_vendedores.iloc[0]['total_vendas']
             
@@ -1618,7 +1505,6 @@ def render_dashboard():
             
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
-            # ========== ADICIONAR UM CARD DE DESTAQUE PARA O LÍDER ==========
             st.markdown("---")
             st.markdown(f"""
             <div style="background: linear-gradient(135deg, #FFD700, #FFA500); 
@@ -1635,7 +1521,6 @@ def render_dashboard():
             </div>
             """, unsafe_allow_html=True)
             
-            # ========== TABELA COM DESTAQUE PARA O LÍDER ==========
             st.markdown("### 📋 Ranking de Vendas")
             
             df_ranking_vendas = vendas_vendedor.copy()
@@ -1673,6 +1558,7 @@ def render_dashboard():
         else:
             st.info("ℹ️ Nenhuma venda no período selecionado.")
     
+    # ========== ABA 2 ==========
     with tab2:
         st.subheader("📈 Evolução Semanal de Vendas")
         
@@ -1680,7 +1566,6 @@ def render_dashboard():
             vendas_semanais, vendas_diarias = calcular_vendas_semanais_cached(df_hash, data_inicio_str, data_fim_str)
         
         if not vendas_semanais.empty:
-            # ========== INDICADOR DE EVOLUÇÃO ==========
             st.markdown("### 🎯 Indicador de Evolução por Vendedor")
             
             evolucao_df = calcular_indicador_evolucao(vendas_semanais)
@@ -1733,7 +1618,6 @@ def render_dashboard():
                     }
                 )
             
-            # ========== GRÁFICO SEMANAL ==========
             st.markdown("---")
             st.markdown("### 📊 Vendas Semanais por Vendedor")
             
@@ -1756,7 +1640,6 @@ def render_dashboard():
                 fig_linhas.update_layout(height=400, hovermode='x unified')
                 st.plotly_chart(fig_linhas, use_container_width=True, config={'displayModeBar': False})
             
-            # ========== VENDAS DIÁRIAS ==========
             st.markdown("---")
             st.markdown("### 📅 Vendas Diárias por Semana")
             
@@ -1807,11 +1690,10 @@ def render_dashboard():
         else:
             st.info("ℹ️ Nenhum dado semanal disponível para o período selecionado.")
     
-    # ========== ABA: EVOLUÇÃO MENSAL ==========
+    # ========== ABA 3 ==========
     with tab3:
         st.subheader("📈 Evolução Mensal")
         
-        # ========== SELETOR DE VENDEDORES ==========
         vendedores_disponiveis = sorted(df_filtrado['vendedor'].unique().tolist())
         
         st.markdown("### 👥 Selecione os Vendedores")
@@ -1836,7 +1718,6 @@ def render_dashboard():
                 st.session_state.vendedores_mensais = ["👥 Todos"]
                 st.rerun()
         
-        # Processar seleção
         if not vendedores_selecionados:
             st.warning("⚠️ Selecione pelo menos um vendedor.")
             return
@@ -1849,7 +1730,6 @@ def render_dashboard():
         
         st.caption(f"📌 {label_selecao}")
         
-        # ========== CONFIGURAR METAS ==========
         st.markdown("---")
         st.markdown("### 🎯 Configurar Metas")
         
@@ -1874,7 +1754,6 @@ def render_dashboard():
             if st.button("📊 Aplicar Metas", key="aplicar_metas"):
                 st.success("✅ Metas aplicadas com sucesso!")
         
-        # ========== CALCULAR DADOS MENSAIS ==========
         with st.spinner("🔄 Calculando evolução mensal..."):
             vendas_mensais = calcular_vendas_mensais_cached(df_hash, data_inicio_str, data_fim_str, vendedores_selecionados)
         
@@ -1882,13 +1761,11 @@ def render_dashboard():
             st.warning("⚠️ Nenhum dado mensal disponível para os vendedores selecionados.")
             return
         
-        # ========== VISUALIZAÇÃO EVOLUTIVA MÊS A MÊS ==========
         render_evolucao_mensal_evolutiva(vendas_mensais, metas, data_inicio, data_fim)
         
         st.markdown("---")
         st.markdown("### 🏆 Ranking de Desempenho")
         
-        # ========== CRIAR RANKING ==========
         ranking_data = []
         
         for vendedor in vendedores_selecionados:
@@ -1971,7 +1848,6 @@ def render_dashboard():
                 }
             )
             
-            # ========== GRÁFICO DE BARRAS COMPARATIVO ==========
             st.markdown("---")
             st.markdown("### 📊 Comparativo de Vendas")
             
@@ -2011,17 +1887,10 @@ def render_dashboard():
                 yaxis_title='Vendas',
                 height=400,
                 barmode='group',
-                legend=dict(
-                    orientation='h',
-                    yanchor='bottom',
-                    y=1.02,
-                    xanchor='right',
-                    x=1
-                )
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
             )
             st.plotly_chart(fig_compare, use_container_width=True, config={'displayModeBar': False})
             
-            # ========== GRÁFICO DE BARRAS: % DA META ==========
             st.markdown("### 🎯 Percentual de Alcance da Meta")
             
             df_percentual = df_ranking.sort_values('% da Meta', ascending=True)
@@ -2056,7 +1925,6 @@ def render_dashboard():
             )
             st.plotly_chart(fig_percent, use_container_width=True, config={'displayModeBar': False})
             
-            # ========== TABELA DE DETALHES ==========
             st.markdown("---")
             st.markdown("### 📋 Detalhamento Mensal")
             
@@ -2128,21 +1996,21 @@ def render_dashboard():
     with tab4:
         render_desempenho_por_condominio(df, data_inicio, data_fim)
     
-    # ========== ABA 5: VALORES DE COMISSÃO ==========
+    # ========== ABA 5 ==========
     with tab5:
         render_valores_comissao(df_hash, data_inicio, data_fim, df_filtrado)
     
-    # ========== ABA 6: EXPORTAR ==========
+    # ========== ABA 6 ==========
     with tab6:
         st.subheader("📤 Exportar Dados")
         
-        # ========== SEÇÃO 1: EXCEL POR VENDEDOR ==========
         st.markdown("### 📊 Exportar Excel — Uma Aba por Vendedor")
         st.markdown(f"""
         <div style="background-color:#e8f5e9; padding:12px; border-radius:8px; margin-bottom:15px; font-size:13px;">
         <strong>📅 Período:</strong> {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}<br>
         <strong>📋 Estrutura:</strong> Aba <b>RESUMO</b> + Aba <b>TODOS</b> + 1 aba por vendedor<br>
-        <strong>📝 Formato:</strong> Colunas originais (RAZAO SOCIAL/NOME, ID, DATA ATIVAAAO, ...)
+        <strong>📝 Formato:</strong> Colunas originais (RAZAO SOCIAL/NOME, ID, DATA ATIVAAAO, ...)<br>
+        <strong>✅ Timezone corrigido:</strong> inclui TODAS as ativações do dia final
         </div>
         """, unsafe_allow_html=True)
         
@@ -2178,7 +2046,6 @@ def render_dashboard():
         
         st.markdown("---")
         
-        # ========== SEÇÃO 2: EXPORTAÇÃO ANALÍTICA ==========
         st.markdown("### 📈 Exportar Excel Analítico Completo")
         st.caption("Exporta todas as análises (vendas, evolução, metas, comissões, condomínios).")
         
@@ -2259,6 +2126,7 @@ def render_dashboard():
                 except Exception as e:
                     st.error(f"❌ Erro: {str(e)}")
 
+
 # ==================== FUNÇÃO PRINCIPAL ====================
 def render_vendas_vendedor_condominios():
     """Função principal do módulo"""
@@ -2268,6 +2136,7 @@ def render_vendas_vendedor_condominios():
         return
     
     render_dashboard()
+
 
 if __name__ == "__main__":
     render_vendas_vendedor_condominios()
