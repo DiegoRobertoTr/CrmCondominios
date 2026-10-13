@@ -1,8 +1,52 @@
 # modules/roteiro_vendas.py
-# ✅ VERSÃO FINAL - Lazy loading, sem travamentos, fluxo corrigido
+# ✅ VERSÃO FINAL - Lazy loading, planos principais fixos, suporte a Google Drive
 import streamlit as st
 from datetime import datetime
+import re
 from modules.condominios import get_condominios_collection
+
+
+# ============================================================
+# 🛠️ FUNÇÃO AUXILIAR: Converte link do Google Drive em link direto
+# ============================================================
+def converter_link_drive(url: str) -> str:
+    """
+    Converte links do Google Drive (compartilhamento) em links diretos de imagem.
+    Aceita:
+      - https://drive.google.com/file/d/ID/view?usp=sharing
+      - https://drive.google.com/open?id=ID
+      - https://drive.google.com/uc?id=ID
+      - Links já diretos (http/https terminando em imagem)
+    Retorna o link pronto para <img src> ou st.image.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+
+    url = url.strip()
+
+    # Se não for Drive, retorna como está
+    if "drive.google.com" not in url:
+        return url
+
+    # Extrai o ID do arquivo com regex (cobre vários formatos)
+    padroes = [
+        r"/file/d/([a-zA-Z0-9_-]+)",
+        r"[?&]id=([a-zA-Z0-9_-]+)",
+        r"/d/([a-zA-Z0-9_-]+)",
+    ]
+    file_id = None
+    for padrao in padroes:
+        match = re.search(padrao, url)
+        if match:
+            file_id = match.group(1)
+            break
+
+    if not file_id:
+        return url  # não conseguiu extrair, devolve original
+
+    # Usa o formato lh3 (mais confiável para exibição de imagens)
+    return f"https://lh3.googleusercontent.com/d/{file_id}"
+
 
 def render_roteiro_vendas(clientes_collection):
     """Módulo de roteiro de vendas com checklist interativo e textos prontos"""
@@ -11,18 +55,18 @@ def render_roteiro_vendas(clientes_collection):
 
     # Criar as 6 abas
     tab_checklist, tab_planos, tab_confirmacao, tab_antifraude, tab_orientacoes, tab_recusa = st.tabs([
-        "✅ Checklist de Abordagem", 
-        "💰 Planos", 
-        " Confirmação de Venda",
-        "️ Anti-Fraude",
-        " Orientações Iniciais",
+        "✅ Checklist de Abordagem",
+        "💰 Planos",
+        "📝 Confirmação de Venda",
+        "🛡️ Anti-Fraude",
+        "📋 Orientações Iniciais",
         "❌ Recusa"
     ])
 
     # ==================== ABA 1: CHECKLIST DE ABORDAGEM ====================
     with tab_checklist:
         st.header("CHECKLIST – ABORDAGEM DE VENDAS WHATSAPP")
-        
+
         if "checklist_abertura" not in st.session_state:
             st.session_state.checklist_abertura = {"cumprimento": False, "intencao": False, "nome": False}
         if "checklist_diagnostico" not in st.session_state:
@@ -38,7 +82,6 @@ def render_roteiro_vendas(clientes_collection):
         if "checklist_regra_ouro" not in st.session_state:
             st.session_state.checklist_regra_ouro = {"pergunta_ou_passo": False}
 
-        # 1) ABERTURA
         with st.container(border=True):
             st.subheader("1️⃣ ABERTURA")
             col1, col2 = st.columns([3, 1])
@@ -53,7 +96,6 @@ def render_roteiro_vendas(clientes_collection):
                 st.session_state.checklist_abertura["intencao"] = st.checkbox("Validou intenção", value=st.session_state.checklist_abertura["intencao"], key="abert_int")
                 st.session_state.checklist_abertura["nome"] = st.checkbox("Confirmou nome", value=st.session_state.checklist_abertura["nome"], key="abert_nome")
 
-        # 2) MICRO-DIAGNÓSTICO
         with st.container(border=True):
             st.subheader("2️⃣ MICRO-DIAGNÓSTICO (máx. 2 perguntas)")
             col1, col2 = st.columns([3, 1])
@@ -66,9 +108,8 @@ def render_roteiro_vendas(clientes_collection):
                 st.session_state.checklist_diagnostico["pessoas"] = st.checkbox("Qtd pessoas", value=st.session_state.checklist_diagnostico["pessoas"], key="diag_pess")
                 st.session_state.checklist_diagnostico["trabalho"] = st.checkbox("Trabalho/estudo", value=st.session_state.checklist_diagnostico["trabalho"], key="diag_trab")
 
-        # 3) RECOMENDAÇÃO
         with st.container(border=True):
-            st.subheader("3️ RECOMENDAÇÃO (NUNCA LISTA)")
+            st.subheader("3️⃣ RECOMENDAÇÃO (NUNCA LISTA)")
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.markdown("""
@@ -78,7 +119,6 @@ def render_roteiro_vendas(clientes_collection):
             with col2:
                 st.session_state.checklist_recomendacao["plano_unico"] = st.checkbox("Indicou 1 plano", value=st.session_state.checklist_recomendacao["plano_unico"], key="rec_plano")
 
-        # 4) VALOR + BENEFÍCIO
         with st.container(border=True):
             st.subheader("4️⃣ VALOR + BENEFÍCIO")
             col1, col2 = st.columns([3, 1])
@@ -90,7 +130,6 @@ def render_roteiro_vendas(clientes_collection):
             with col2:
                 st.session_state.checklist_valor["valor_diferencial"] = st.checkbox("Valor + Diferencial", value=st.session_state.checklist_valor["valor_diferencial"], key="val_dif")
 
-        # 5) FECHAMENTO SUAVE
         with st.container(border=True):
             st.subheader("5️⃣ FECHAMENTO SUAVE")
             col1, col2 = st.columns([3, 1])
@@ -102,7 +141,6 @@ def render_roteiro_vendas(clientes_collection):
             with col2:
                 st.session_state.checklist_fechamento["pergunta_direcionada"] = st.checkbox("Pergunta direcionada", value=st.session_state.checklist_fechamento["pergunta_direcionada"], key="fech_dir")
 
-        # 6) TRATAMENTO DE OBJEÇÃO
         with st.container(border=True):
             st.subheader("6️⃣ TRATAMENTO DE OBJEÇÃO")
             col1, col2 = st.columns([3, 1])
@@ -114,7 +152,6 @@ def render_roteiro_vendas(clientes_collection):
             with col2:
                 st.session_state.checklist_objecao["preparado"] = st.checkbox("Preparado para objeções", value=st.session_state.checklist_objecao["preparado"], key="obj_prep")
 
-        # 7) REGRA DE OURO
         with st.container(border=True):
             st.subheader("7️⃣ REGRA DE OURO")
             col1, col2 = st.columns([3, 1])
@@ -127,7 +164,6 @@ def render_roteiro_vendas(clientes_collection):
             with col2:
                 st.session_state.checklist_regra_ouro["pergunta_ou_passo"] = st.checkbox("Final direcionado", value=st.session_state.checklist_regra_ouro["pergunta_ou_passo"], key="regra_fim")
 
-        # Barra de progresso visual
         st.divider()
         total_checks = (
             sum(st.session_state.checklist_abertura.values()) +
@@ -140,9 +176,9 @@ def render_roteiro_vendas(clientes_collection):
         )
         total_items = 10
         progresso = total_checks / total_items
-        
+
         st.progress(progresso, text=f"Progresso: {int(progresso * 100)}%")
-        
+
         if progresso == 1.0:
             st.success("🎉 Checklist completo! Venda bem conduzida!")
             st.balloons()
@@ -153,22 +189,58 @@ def render_roteiro_vendas(clientes_collection):
         VALIDA → DIAGNOSTICA → RECOMENDA → DIRECIONA
         """)
 
-    # ==================== ABA 2: PLANOS (LAZY LOADING) ====================
+    # ==================== ABA 2: PLANOS ====================
     with tab_planos:
-        st.header("💰 Planos e Promoções por Condomínio")
+        st.header("💰 Planos e Promoções")
+
+        # ---------- PLANOS PRINCIPAIS (FIXOS) ----------
+        st.subheader("⭐ Planos Principais Tracecom")
+        st.caption("Planos padrão para Paraíba do Sul")
+
+        col_p1, col_p2 = st.columns(2)
+
+        with col_p1:
+            with st.container(border=True):
+                st.markdown("### 🚀 600 Mega")
+                st.markdown("### R$ 79,99")
+                st.caption("600 Mbps Residencial PS + Trace Canais")
+                if st.button("📋 Copiar 600MB", key="copy_600", use_container_width=True):
+                    st.code("600 Mbps Residencial PS + Trace Canais — R$79,99", language=None)
+                    st.toast("✅ Plano 600MB copiado!", icon="📋")
+
+        with col_p2:
+            with st.container(border=True):
+                st.markdown("### ⚡ 800 Mega")
+                st.markdown("### R$ 99,99")
+                st.caption("800 Mbps Residencial PS + Trace Canais")
+                if st.button("📋 Copiar 800MB", key="copy_800", use_container_width=True):
+                    st.code("800 Mbps Residencial PS + Trace Canais — R$99,99", language=None)
+                    st.toast("✅ Plano 800MB copiado!", icon="📋")
+
+        st.divider()
+
+        # ---------- PLANOS POR CONDOMÍNIO ----------
+        st.subheader("🏢 Planos e Promoções por Condomínio")
         st.caption("Busque um condomínio para ver promoções e planos exclusivos")
-        
+
         if "planos_carregado" not in st.session_state:
             st.session_state.planos_carregado = False
             st.session_state.todos_condominios = []
-        
-        # Lógica de carregamento (sem return)
+
+        # Lógica de carregamento (lazy loading)
         if not st.session_state.planos_carregado:
-            if st.button(" Carregar Condomínios", type="primary", use_container_width=True):
+            if st.button("🔄 Carregar Condomínios", type="primary", use_container_width=True):
                 with st.spinner("Carregando lista de condomínios..."):
                     try:
                         condominios_coll = get_condominios_collection()
-                        st.session_state.todos_condominios = list(condominios_coll.find({}).sort("nome", 1))
+                        # Otimização: traz apenas os campos necessários
+                        st.session_state.todos_condominios = list(
+                            condominios_coll.find(
+                                {},
+                                {"nome": 1, "bairro": 1, "endereco": 1, "numero": 1,
+                                 "cidade": 1, "marketing": 1}
+                            ).sort("nome", 1)
+                        )
                         st.session_state.planos_carregado = True
                         st.rerun()
                     except Exception as e:
@@ -176,7 +248,6 @@ def render_roteiro_vendas(clientes_collection):
             else:
                 st.info("👆 Clique no botão acima para carregar os condomínios cadastrados.")
         else:
-            # Já carregou os dados
             if not st.session_state.todos_condominios:
                 st.warning("⚠️ Nenhum condomínio cadastrado no sistema ainda.")
                 st.info("Solicite ao administrador o cadastro dos condomínios.")
@@ -184,49 +255,46 @@ def render_roteiro_vendas(clientes_collection):
                     st.session_state.planos_carregado = False
                     st.rerun()
             else:
-                # Campo de busca
                 busca = st.text_input(
                     "🔍 Digite o nome do condomínio:",
                     placeholder="Ex: Residencial Parque das Flores",
                     key="busca_condominio_planos"
                 )
-                
+
                 if not busca:
                     st.info("👆 Digite o nome de um condomínio para buscar promoções e planos exclusivos.")
                 else:
-                    # Filtrar condomínios
                     condominios_filtrados = [
-                        c for c in st.session_state.todos_condominios 
+                        c for c in st.session_state.todos_condominios
                         if busca.lower() in c.get("nome", "").lower()
                     ]
-                    
+
                     if not condominios_filtrados:
                         st.warning(f"🔍 Nenhum condomínio encontrado com: '{busca}'")
                         st.info("Tente buscar por parte do nome (ex: 'Parque' em vez de 'Residencial Parque das Flores')")
                     else:
-                        # Selecionar condomínio
                         opcoes = {}
                         for i, c in enumerate(condominios_filtrados):
                             label = f"🏢 {c['nome']} - {c.get('bairro', 'N/A')}"
                             opcoes[label] = c
-                        
+
                         selecionado_label = st.selectbox(
                             "Selecione o condomínio:",
                             options=list(opcoes.keys()),
                             key="select_condominio_planos"
                         )
-                        
+
                         if selecionado_label:
                             condominio = opcoes[selecionado_label]
                             marketing = condominio.get("marketing", {})
-                            
+
                             st.divider()
-                            
+
                             # ========== PAINEL DO CONDOMÍNIO ==========
                             endereco_completo = f"{condominio.get('endereco', '')}, {condominio.get('numero', '')}"
                             bairro = condominio.get('bairro', '')
                             cidade = condominio.get('cidade', 'Rio de Janeiro')
-                            
+
                             st.markdown(f"""
                             <div style="
                                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -241,29 +309,64 @@ def render_roteiro_vendas(clientes_collection):
                                 </p>
                             </div>
                             """, unsafe_allow_html=True)
-                            
-                            # ========== FOLDER DO CONDOMÍNIO ==========
+
+                            # ========== PLANOS ESPECÍFICOS FIXOS (Vibe Sunset / Primor Carioca) ==========
+                            nome_lower = condominio['nome'].lower()
+                            planos_fixos = []
+
+                            if "vibe sunset" in nome_lower:
+                                planos_fixos.append({
+                                    "nome": "🎯 Plano Vibe Sunset",
+                                    "preco": "R$ 59,99",
+                                    "texto": "Plano Vibe Sunset - R$ 59,99"
+                                })
+
+                            if "primor carioca" in nome_lower:
+                                planos_fixos.append({
+                                    "nome": "🎯 Plano Primor Carioca",
+                                    "preco": "R$ 69,99",
+                                    "texto": "Plano Primor Carioca - R$ 69,99"
+                                })
+
+                            if planos_fixos:
+                                st.subheader("🎁 Planos Exclusivos deste Condomínio")
+                                for idx, plano in enumerate(planos_fixos):
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([3, 1])
+                                        with col1:
+                                            st.markdown(f"### {plano['nome']}")
+                                            st.markdown(f"#### {plano['preco']}")
+                                        with col2:
+                                            if st.button("📋 Copiar", key=f"copy_fixo_{idx}_{plano['nome']}", use_container_width=True):
+                                                st.code(plano['texto'], language=None)
+                                                st.toast("✅ Plano copiado!", icon="📋")
+
+                            # ========== FOLDER DO CONDOMÍNIO (com suporte ao Google Drive) ==========
                             folder_url = marketing.get("folder_url", "")
+
                             if folder_url:
                                 st.subheader("📋 Folder Promocional")
+
+                                # 🔥 Converte o link do Drive automaticamente
+                                link_direto = converter_link_drive(folder_url)
+
                                 try:
-                                    if folder_url.startswith("http"):
-                                        st.image(folder_url, use_container_width=True)
-                                        st.link_button(" Abrir Folder", folder_url)
-                                    else:
-                                        try:
-                                            st.image(folder_url, use_container_width=True)
-                                        except:
-                                            st.warning(f"⚠️ Imagem não encontrada no caminho: {folder_url}")
-                                            st.info("💡 O supervisor precisa atualizar o caminho da imagem do folder.")
+                                    st.image(
+                                        link_direto,
+                                        use_container_width=True,
+                                        caption=f"Folder - {condominio['nome']}"
+                                    )
+                                    st.link_button("🔗 Abrir Folder Original", folder_url)
                                 except Exception as e:
-                                    st.warning(f"⚠️ Não foi possível carregar a imagem. Erro: {e}")
+                                    st.warning("⚠️ Não foi possível carregar a imagem do folder.")
+                                    st.caption(f"Link usado: {link_direto}")
+                                    st.info("💡 Verifique se o arquivo no Drive está compartilhado como 'Qualquer pessoa com o link'.")
                             else:
                                 st.info("📷 Nenhum folder cadastrado para este condomínio ainda.")
-                                st.caption("Solicite ao supervisor para cadastrar o folder promocional.")
-                            
+                                st.caption("Solicite ao supervisor para cadastrar o link da imagem no módulo 'Marketing Condomínios'.")
+
                             st.divider()
-                            
+
                             # ========== PROMOÇÕES ATIVAS ==========
                             promocoes = marketing.get("promocoes", [])
                             promocoes_ativas = [p for p in promocoes if p.get("ativa", True)]
@@ -278,7 +381,7 @@ def render_roteiro_vendas(clientes_collection):
                                     except:
                                         pass
                                 promocoes_validas.append(promo)
-                            
+
                             if promocoes_validas:
                                 st.subheader("🎯 Promoções Ativas")
                                 for idx, promo in enumerate(promocoes_validas):
@@ -300,13 +403,13 @@ def render_roteiro_vendas(clientes_collection):
                                             st.toast("✅ Promoção copiada!", icon="📋")
                             else:
                                 st.info("📢 Nenhuma promoção ativa no momento para este condomínio.")
-                            
+
                             st.divider()
-                            
-                            # ========== PLANOS ESPECIAIS ==========
+
+                            # ========== PLANOS ESPECIAIS (do banco) ==========
                             planos_especiais = marketing.get("planos_especiais", [])
                             planos_ativos = [p for p in planos_especiais if p.get("ativo", True)]
-                            
+
                             if planos_ativos:
                                 st.subheader("💎 Planos Especiais para este Condomínio")
                                 for idx, plano in enumerate(planos_ativos):
@@ -330,10 +433,7 @@ def render_roteiro_vendas(clientes_collection):
                                             if st.button("📋 Copiar", key=f"copiar_plano_{plano_id}", use_container_width=True):
                                                 st.code(texto_plano, language=None)
                                                 st.toast("✅ Plano copiado!", icon="📋")
-                            else:
-                                st.info("💎 Nenhum plano especial cadastrado para este condomínio.")
-                                st.caption("Os supervisores podem cadastrar planos especiais no módulo 'Marketing Condomínios'.")
-                            
+
                             # Rodapé
                             st.divider()
                             with st.expander("ℹ️ Informações de Contato", expanded=False):
@@ -342,8 +442,7 @@ def render_roteiro_vendas(clientes_collection):
                                 📱 **WhatsApp:** (21) 3500-0188  
                                 🌐 **Site:** www.tracecom.net
                                 """)
-                            
-                            # Botão para resetar cache
+
                             if st.button("🔄 Resetar cache de condomínios", type="secondary"):
                                 st.session_state.planos_carregado = False
                                 st.session_state.todos_condominios = []
@@ -353,14 +452,14 @@ def render_roteiro_vendas(clientes_collection):
     with tab_confirmacao:
         st.header("📝 Confirmação de Venda")
         st.caption("Texto para solicitar dados do cliente")
-        
+
         nome_cliente = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_conf")
-        
+
         if nome_cliente:
             saudacao = f"Olá {nome_cliente}!\n\n"
         else:
             saudacao = "Olá!\n\n"
-            
+
         mensagem = f"""{saudacao}Vamos enviar os dados para o cadastro e análise, ok?
 📌 Por favor, envie:
 1️⃣ Uma foto segurando um documento com foto.
@@ -382,7 +481,7 @@ Tempo de Moradia:
 Plano escolhido:
 Profissão:
 Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposição!"""
-        
+
         with st.container(border=True):
             st.markdown(mensagem)
             if st.button("📋 Copiar Mensagem Completa", type="primary", key="copiar_confirm", use_container_width=True):
@@ -393,14 +492,14 @@ Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposiç
     with tab_antifraude:
         st.header("🛡️ Validação Anti-Fraude")
         st.caption("Mensagem para validação presencial obrigatória")
-        
+
         nome_cliente_af = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_af")
-        
+
         if nome_cliente_af:
             saudacao_af = f"Olá {nome_cliente_af}!\n\n"
         else:
             saudacao_af = "Olá!\n\n"
-            
+
         mensagem_antifraude = f"""{saudacao_af}Para darmos continuidade à sua solicitação, será necessária a validação presencial mediante comparecimento à nossa loja com documento original com foto para assinatura do contrato."""
 
         with st.container(border=True):
@@ -413,14 +512,14 @@ Aguardamos sua resposta para prosseguirmos. Qualquer dúvida, estou à disposiç
     with tab_orientacoes:
         st.header("📋 Orientações Iniciais")
         st.caption("Mensagem para clientes com instalação agendada")
-        
+
         nome_cliente_ori = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_ori")
-        
+
         if nome_cliente_ori:
             saudacao_ori = f"Olá {nome_cliente_ori}!\n\n"
         else:
             saudacao_ori = "Olá!\n\n"
-            
+
         mensagem_orientacoes = f"""{saudacao_ori}Sua instalação está agendada.
  Informações Importantes:
 📡 Suporte e Acesso:
@@ -438,28 +537,28 @@ Seja bem-vinda à Tracecom 🚀
 """
         with st.container(border=True):
             st.markdown(mensagem_orientacoes)
-            if st.button(" Copiar Orientações", type="primary", key="copiar_orientacoes", use_container_width=True):
+            if st.button("📋 Copiar Orientações", type="primary", key="copiar_orientacoes", use_container_width=True):
                 st.code(mensagem_orientacoes, language=None)
                 st.toast("✅ Orientações copiadas!", icon="📋")
 
     # ==================== ABA 6: RECUSA ====================
     with tab_recusa:
         st.header("❌ Recusa por Restrição")
-        
+
         nome_recusa = st.text_input("Nome do cliente (opcional):", placeholder="Deixe em branco para mensagem genérica", key="nome_rec")
-        
+
         if nome_recusa:
             saudacao_rec = f"Olá {nome_recusa},\n\n"
         else:
             saudacao_rec = "Olá,\n\n"
-            
+
         mensagem_recusa = f"""{saudacao_rec}Agradecemos pelo seu interesse em nossos serviços de internet!
 Informamos que, neste momento, não foi possível dar continuidade à contratação.
 Mas não se preocupe! Você poderá realizar uma nova solicitação após 30 dias.
 Esperamos poder atendê-lo em breve!
 Atenciosamente,
 Tracecom"""
-        
+
         with st.container(border=True):
             st.markdown(f"""
             <div style="
@@ -470,11 +569,11 @@ Tracecom"""
                 margin: 10px 0;
             ">{mensagem_recusa.replace(chr(10), '<br>')}</div>
             """, unsafe_allow_html=True)
-            
+
             if st.button("📋 Copiar Mensagem de Recusa", key="copiar_rec", use_container_width=True):
                 st.code(mensagem_recusa, language=None)
                 st.toast("✅ Mensagem de recusa copiada!", icon="📋")
-        
+
         st.divider()
         if st.button("🔄 Resetar Checklist", type="secondary"):
             keys_to_clear = [
