@@ -78,6 +78,7 @@ PLANOS = [
     "600MB+Trace Canais: 89,99",
     "600MB+Trace Canais: 99,99",
     "600MB: 79,99",
+    "600MB: 39,99 nos 3 primeiros meses e após, 79,99",
     "600MB: 109,99",
     "600MB: 129,99",
     "600MB: 69,99",
@@ -97,6 +98,7 @@ PLANOS = [
     "800MB: 119,99",
     "800MB: 129,99",
     "800MB: 89,99",
+    "800MB: 44,99 nos 3 primeiros meses e após 89,99",
     "600MB + HBO + Premiere + Sky+ : 239,88",
     "600MB + HBO (R$99,99) + Premiere (R$49,99) + Sky+ (R$89,99) : 239,88",
     "800MB: 99,99"
