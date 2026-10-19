@@ -679,7 +679,7 @@ def _leads_por_vendedora_followup(collection, inicio, fim, modo_delegacao_ativo=
                 "condominio_nome": "$condominio_nome",
                 "bloco": "$bloco",
                 "apartamento": "$apartamento",
-                "observacoes_followup": "$observacoes_followup"  # <-- CAMPO CORRETO
+                "observacoes_followup": "$observacoes_followup"
             }}
         }},
         {"$project": {
@@ -1046,6 +1046,239 @@ def render_relatorios_followup(clientes_collection):
         else:
             st.info(f"📭 {vendedora_selecionada} não possui leads em follow-up no período selecionado.")
 
+# ==================== NOVA ABA: CLIENTES POR VENDEDORA ====================
+def _clientes_por_vendedora(collection, inicio, fim, vendedora=None):
+    """
+    Retorna lista completa de clientes cadastrados por vendedora no período.
+    Se vendedora=None, retorna todos agrupados.
+    """
+    query = {"data_cadastro": {"$gte": inicio, "$lte": fim}}
+    if vendedora:
+        query["cadastrado_por"] = vendedora
+    
+    docs = list(collection.find(query).sort("data_cadastro", -1))
+    
+    if not docs:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # DataFrame completo com todos os campos relevantes
+    dados = []
+    for doc in docs:
+        data_cad = doc.get("data_cadastro")
+        dados.append({
+            "Nome Completo": doc.get("nome_completo", ""),
+            "CPF": doc.get("cpf", ""),
+            "Celular": doc.get("celular", ""),
+            "Celular Contato 1": doc.get("celular_contato_1", ""),
+            "Celular Contato 2": doc.get("celular_contato_2", ""),
+            "Email": doc.get("email", ""),
+            "Data Cadastro": data_cad.strftime("%d/%m/%Y %H:%M") if isinstance(data_cad, datetime) else "",
+            "Mês/Ano": data_cad.strftime("%Y-%m") if isinstance(data_cad, datetime) else "",
+            "Mês Nome": data_cad.strftime("%B/%Y") if isinstance(data_cad, datetime) else "",
+            "Vendedora": doc.get("cadastrado_por", ""),
+            "Origem": doc.get("origem", ""),
+            "Plano": doc.get("plano_escolhido", ""),
+            "Restritivo": doc.get("restritivo", ""),
+            "Qtd Restrições": doc.get("restritivo_qtd_registros", ""),
+            "Seguiu Ativação": doc.get("seguiu_ativacao", ""),
+            "Data Ativação": doc.get("data_ativacao").strftime("%d/%m/%Y") if isinstance(doc.get("data_ativacao"), datetime) else "",
+            "Profissão": doc.get("profissao", ""),
+            "Endereço": doc.get("endereco", ""),
+            "Número": doc.get("numero", ""),
+            "Complemento": doc.get("complemento", ""),
+            "Bairro": doc.get("bairro", ""),
+            "Cidade": doc.get("cidade", ""),
+            "Condomínio": doc.get("condominio_nome", ""),
+            "Bloco": doc.get("bloco", ""),
+            "Apartamento": doc.get("apartamento", ""),
+            "Código Indicação": doc.get("codigo_indicacao", ""),
+            "Observações": doc.get("observacoes", ""),
+        })
+    
+    df = pd.DataFrame(dados)
+    
+    # Resumo por vendedora e mês
+    if not df.empty and not vendedora:
+        resumo = df.groupby(["Vendedora", "Mês/Ano"]).size().reset_index(name="Total Clientes")
+    else:
+        resumo = pd.DataFrame()
+    
+    return df, resumo
+
+
+def render_clientes_por_vendedora(clientes_collection):
+    """Renderiza aba de clientes completos por vendedora, com filtro por mês."""
+    st.subheader("👥 Clientes Completos por Vendedora")
+    st.markdown("Visualize todos os cadastros completos de cada vendedora, com identificação por mês.")
+    
+    # Filtro de período (sufixo único)
+    inicio, fim = _get_date_filters(clientes_collection, key_suffix="clientes_vendedora")
+    st.caption(f"Período: **{inicio.strftime('%d/%m/%Y')}** a **{fim.strftime('%d/%m/%Y')}**")
+    
+    # Buscar todas as vendedoras do período
+    vendedoras = clientes_collection.distinct(
+        "cadastrado_por",
+        {"data_cadastro": {"$gte": inicio, "$lte": fim}}
+    )
+    vendedoras = sorted([v for v in vendedoras if v])
+    
+    if not vendedoras:
+        st.warning("📭 Nenhum cadastro encontrado no período selecionado.")
+        return
+    
+    # Seleção de vendedora
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        vendedora_sel = st.selectbox(
+            "Selecione a vendedora:",
+            options=["Todas as vendedoras"] + vendedoras,
+            key="select_vendedora_clientes"
+        )
+    with col2:
+        # Buscar meses disponíveis para essa seleção
+        filtro_vend = {} if vendedora_sel == "Todas as vendedoras" else {"cadastrado_por": vendedora_sel}
+        query_meses = {
+            "data_cadastro": {"$gte": inicio, "$lte": fim},
+            **filtro_vend
+        }
+        docs_meses = clientes_collection.distinct("data_cadastro", query_meses)
+        meses_disponiveis = sorted(set([
+            d.strftime("%Y-%m") for d in docs_meses if isinstance(d, datetime)
+        ]), reverse=True)
+        
+        filtro_mes = st.selectbox(
+            "Filtrar por mês:",
+            options=["Todos os meses"] + meses_disponiveis,
+            key="select_mes_clientes"
+        )
+    
+    # Buscar dados
+    vendedora_param = None if vendedora_sel == "Todas as vendedoras" else vendedora_sel
+    df, resumo = _clientes_por_vendedora(clientes_collection, inicio, fim, vendedora=vendedora_param)
+    
+    if df.empty:
+        st.warning("📭 Nenhum cliente encontrado para essa seleção.")
+        return
+    
+    # Aplicar filtro de mês
+    if filtro_mes != "Todos os meses":
+        df = df[df["Mês/Ano"] == filtro_mes]
+    
+    if df.empty:
+        st.warning(f"📭 Nenhum cliente em **{filtro_mes}**.")
+        return
+    
+    # KPIs
+    total_clientes = len(df)
+    total_ativados = (df["Seguiu Ativação"] == "Sim").sum()
+    total_restritivos = (df["Restritivo"] == "Sim").sum()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total de Clientes", total_clientes)
+    col2.metric("Ativados", total_ativados)
+    col3.metric("Restritivos", total_restritivos)
+    col4.metric("Taxa Conversão", f"{(total_ativados/total_clientes*100):.1f}%" if total_clientes > 0 else "0%")
+    
+    st.markdown("---")
+    
+    # Distribuição por mês (se "todas as vendedoras" e "todos os meses")
+    if vendedora_sel == "Todas as vendedoras" and filtro_mes == "Todos os meses" and not resumo.empty:
+        st.markdown("### 📊 Distribuição de Clientes por Vendedora e Mês")
+        df_pivot = resumo.pivot_table(
+            index="Vendedora", columns="Mês/Ano", values="Total Clientes", fill_value=0
+        )
+        st.dataframe(df_pivot, use_container_width=True)
+        
+        # Gráfico de barras empilhadas
+        fig = px.bar(
+            resumo, x="Vendedora", y="Total Clientes", color="Mês/Ano",
+            title="Clientes por Vendedora e Mês", barmode="stack"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("---")
+    
+    # Distribuição por mês (para vendedora específica)
+    if vendedora_sel != "Todas as vendedoras" and filtro_mes == "Todos os meses":
+        st.markdown(f"### 📅 Clientes de **{vendedora_sel}** por Mês")
+        contagem_mes = df.groupby("Mês Nome").size().reset_index(name="Total")
+        contagem_mes = contagem_mes.sort_values("Mês Nome", ascending=False)
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.dataframe(contagem_mes, use_container_width=True, hide_index=True)
+        with col2:
+            fig = px.bar(contagem_mes, x="Mês Nome", y="Total", 
+                         title=f"Clientes de {vendedora_sel} por Mês",
+                         color="Total", color_continuous_scale="Blues")
+            st.plotly_chart(fig, use_container_width=True)
+        st.markdown("---")
+    
+    # Tabela detalhada
+    st.markdown(f"### 📋 Clientes Detalhados ({total_clientes})")
+    
+    # Colunas de exibição principal
+    colunas_principais = [
+        "Nome Completo", "CPF", "Celular", "Email", "Data Cadastro",
+        "Mês Nome", "Vendedora", "Plano", "Restritivo", "Seguiu Ativação"
+    ]
+    colunas_exibicao = [c for c in colunas_principais if c in df.columns]
+    
+    # Toggle para ver todas as colunas
+    ver_todas = st.checkbox("Ver todas as colunas (cadastro completo)", value=False)
+    df_exibir = df if ver_todas else df[colunas_exibicao]
+    
+    st.dataframe(df_exibir, use_container_width=True, hide_index=True)
+    
+    # Exportação
+    st.markdown("---")
+    st.markdown("### 📥 Exportar Dados")
+    col1, col2 = st.columns(2)
+    
+    suf = filtro_mes if filtro_mes != "Todos os meses" else f"{inicio.strftime('%Y%m%d')}_{fim.strftime('%Y%m%d')}"
+    vend_slug = vendedora_sel.replace(" ", "_") if vendedora_sel != "Todas as vendedoras" else "todas"
+    
+    with col1:
+        csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        st.download_button(
+            label="📥 Exportar CSV",
+            data=csv.encode('utf-8-sig'),
+            file_name=f"clientes_{vend_slug}_{suf}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="export_csv_clientes_vend"
+        )
+    
+    with col2:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Clientes')
+            worksheet = writer.sheets['Clientes']
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            header_font = Font(color="FFFFFF", bold=True)
+            for cell in worksheet[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                worksheet.column_dimensions[column_letter].width = min(max_length + 2, 45)
+        st.download_button(
+            label="📊 Exportar Excel",
+            data=output.getvalue(),
+            file_name=f"clientes_{vend_slug}_{suf}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="export_excel_clientes_vend"
+        )
+
+
 # ==================== FUNÇÃO PRINCIPAL DE RENDERIZAÇÃO ====================
 def render_relatorios(clientes_collection):
     st.header("📊 Dashboard de Relatórios - CRM")
@@ -1058,7 +1291,8 @@ def render_relatorios(clientes_collection):
     if is_admin or is_diretoria:
         tabs = st.tabs([
             "📊 Dashboard Geral",
-            "📊 Follow-up Leads por Vendedora"
+            "📊 Follow-up Leads por Vendedora",
+            "👥 Clientes por Vendedora"
         ])
         
         with tabs[0]:
@@ -1451,6 +1685,9 @@ def render_relatorios(clientes_collection):
         
         with tabs[1]:
             render_relatorios_followup(clientes_collection)
+        
+        with tabs[2]:
+            render_clientes_por_vendedora(clientes_collection)
     
     else:
         # Usuário normal vê apenas o dashboard geral
