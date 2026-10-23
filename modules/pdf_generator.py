@@ -101,6 +101,11 @@ PLANOS = [
     "800MB: 44,99 nos 3 primeiros meses e após 89,99",
     "600MB + HBO + Premiere + Sky+ : 239,88",
     "600MB + HBO (R$99,99) + Premiere (R$49,99) + Sky+ (R$89,99) : 239,88",
+    "15MB = R$53,88 pagando até o vencimento R$44,90",
+    "20MB = R$59,88 pagando até o vencimento R$49,90",
+    "25MB = R$65,88 pagando até o vencimento R$54,90",
+    "35MB = R$71,88 pagando até o vencimento R$59,90",
+    "50MB = R$95,88 pagando até o vencimento R$79,90",
     "800MB: 99,99"
 ]
 
