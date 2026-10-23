@@ -100,6 +100,8 @@ PLANOS = [
     "800MB: 119,99",
     "800MB: 129,99",
     "800MB: 89,99",
+    "800 MB por 99,99 com 50% de desconto nos 3 primeiros meses",
+    "800 MB por 119,99 com 50% de desconto nos 3 primeiros meses",    
     "800MB: 44,99 nos 3 primeiros meses e após 89,99",
     "600MB + HBO + Premiere + Sky+ : 239,88",
     "600MB + HBO (R$99,99) + Premiere (R$49,99) + Sky+ (R$89,99) : 239,88",
