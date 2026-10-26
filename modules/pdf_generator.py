@@ -78,6 +78,8 @@ PLANOS = [
     "600MB+Trace Canais: 89,99",
     "600MB+Trace Canais: 99,99",
     "600MB: 79,99",
+    "600MB: 79,99" co 50% de desconto no primeiro mês,
+    "800MB: 79,99" co 50% de desconto no primeiro mês,
     "600MB: 39,99 nos 3 primeiros meses e após, 79,99",
     "800MB: 49,99 nos 3 primeiros meses e após, 99,99",
     "800MB: 59,99 nos 3 primeiros meses e após, 119,99",
