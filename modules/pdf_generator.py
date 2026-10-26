@@ -54,7 +54,7 @@ PLANOS = [
     "800MB + 1 Streaming: R$119,99",
     "800MB + 1 Streaming: R$119,99 com 50% de desconto no primeiro mês",
     "800MB + 1 Streaming: R$99,99 com 50% de desconto no primeiro mês",
-    "600MB + 1 Streaming: R$79,99 com 50% de desconto no primeiro mês",
+    "600MB + 1 Streaming: R$99,99 com 50% de desconto no primeiro mês",
     "600MB + 1 Streaming: R$99,99",
     "600MB + 1 Streaming a Escolha",
     "600MB+Canais: 69,99",
