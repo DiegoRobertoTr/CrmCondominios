@@ -94,6 +94,7 @@ PLANOS = [
     "600MB: 109,99",
     "600MB: 129,99",
     "600MB + Disney + Premiere: 149,98",
+    "600MB + Disney + Premiere: 149,98",
     "600MB: 69,99",
     "600MB: 89,99",
     "600MB: 99,99",
