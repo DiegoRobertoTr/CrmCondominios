@@ -50,6 +50,7 @@ MODELOS_ROTEADORES = [
 
 PLANOS = [
     "800MB+Canais: 59,99 Exclusivo Vibe Sunset",
+    "600MB+Disney+Premiere: 149,98",
     "600MB+Tracecanais+Telecine+Premiere: 159,97",
     "800MB + 1 Streaming: R$119,99",
     "800MB + 1 Streaming: R$119,99 com 50% de desconto no primeiro mês",
