@@ -93,6 +93,7 @@ PLANOS = [
     "800MB: 59,99 nos 3 primeiros meses e após, 119,99",
     "600MB: 109,99",
     "600MB: 129,99",
+    "600MB + Disney + Premiere: 149,98",
     "600MB: 69,99",
     "600MB: 89,99",
     "600MB: 99,99",
