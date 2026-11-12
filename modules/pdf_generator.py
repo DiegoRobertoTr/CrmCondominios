@@ -49,6 +49,7 @@ MODELOS_ROTEADORES = [
 ]
 
 PLANOS = [
+    "1000MB: 99,99",
     "800MB+Canais: 59,99 Exclusivo Vibe Sunset",
     "600MB+Disney+Premiere: 149,98",
     "600MB+Tracecanais+Telecine+Premiere: 159,97",
