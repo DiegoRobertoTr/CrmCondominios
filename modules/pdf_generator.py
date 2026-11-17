@@ -91,6 +91,7 @@ PLANOS = [
     "800MB: 99,99 com 50% de desconto no primeiro mês",
     "600MB: 39,99 nos 3 primeiros meses e após, 79,99",
     "800MB: 49,99 nos 3 primeiros meses e após, 99,99",
+    "800MB: 99,99, com desconto de 50% nos 3 primeiros meses",
     "800MB: 59,99 nos 3 primeiros meses e após, 119,99",
     "600MB: 109,99",
     "600MB + Disney + Premiere: 149,98",
